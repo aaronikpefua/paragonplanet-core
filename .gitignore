@@ -1,0 +1,16 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Env
+.env
+.env.local
+
+# Firebase / Google
+service-account.json
+*.adminsdk.json
+
+# OS / Editor
+.DS_Store
+.vscode/
