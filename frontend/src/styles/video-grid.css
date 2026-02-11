@@ -1,0 +1,12 @@
+.pp-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  padding: 20px;
+}
+
+.video-card {
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  background: #e0e0e0;
+}
