@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth } from "../config/firebase";
-import { getFirestore, addDoc, collection, serverTimestamp } from "firebase/firestore";
+import {
+  getFirestore,
+  addDoc,
+  collection,
+  serverTimestamp
+} from "firebase/firestore";
 
 const db = getFirestore();
-const BACKEND_URL = "https://api.paragonplanet.com";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
 const CATEGORIES = [
   "Dancer",
@@ -30,13 +35,7 @@ export default function Upload() {
   const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-
-  // Simple compression (reduces resolution slightly before upload)
-  const compressVideo = async (file) => {
-    // NOTE: true heavy compression requires ffmpeg
-    // For now we reduce size by re-encoding via blob slicing
-    return file;
-  };
+  const [processing, setProcessing] = useState(false);
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -49,56 +48,87 @@ export default function Upload() {
     try {
       setLoading(true);
       setProgress(0);
+      setProcessing(false);
 
       const user = auth.currentUser;
       if (!user) throw new Error("Not authenticated");
 
       const token = await user.getIdToken();
 
-      const compressedFile = await compressVideo(file);
+      /* =========================
+         1️⃣ REQUEST SIGNED URL
+      ========================== */
 
-      // 1️⃣ Get signed URL
-      const response = await fetch(`${BACKEND_URL}/generate-upload-url`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          fileName: compressedFile.name,
-          fileType: compressedFile.type
-        })
-      });
+      const signedResponse = await fetch(
+        `${BACKEND_URL}/generate-upload-url`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size
+          })
+        }
+      );
 
-      if (!response.ok) throw new Error("Failed to generate upload URL");
+      const signedData = await signedResponse.json();
 
-      const { uploadUrl, fileUrl } = await response.json();
+      if (!signedResponse.ok) {
+        throw new Error(signedData.error || "Failed to generate upload URL");
+      }
 
-      // 2️⃣ Upload with progress tracking
+      const { uploadUrl, fileUrl, fileName } = signedData;
+
+      /* =========================
+         2️⃣ DIRECT UPLOAD TO GCS
+      ========================== */
+
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("PUT", uploadUrl);
-
-        xhr.setRequestHeader("Content-Type", compressedFile.type);
+        xhr.setRequestHeader("Content-Type", file.type);
 
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
+            const percent = Math.round(
+              (event.loaded / event.total) * 100
+            );
             setProgress(percent);
           }
         };
 
         xhr.onload = () => {
           if (xhr.status === 200) resolve();
-          else reject(new Error("Upload failed"));
+          else reject(new Error("Upload to storage failed"));
         };
 
         xhr.onerror = () => reject(new Error("Upload failed"));
 
-        xhr.send(compressedFile);
+        xhr.send(file);
       });
 
-      // 3️⃣ Save metadata
+      /* =========================
+         3️⃣ TRIGGER COMPRESSION (ASYNC)
+      ========================== */
+
+      setProcessing(true);
+
+      await fetch(`${BACKEND_URL}/trigger-compression`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ fileName })
+      });
+
+      /* =========================
+         4️⃣ SAVE METADATA
+      ========================== */
+
       await addDoc(collection(db, "videos"), {
         uid: user.uid,
         title,
@@ -111,15 +141,14 @@ export default function Upload() {
         comments: 0
       });
 
-      // 🚀 Redirect instantly
-      navigate("/");
+      // Immediate redirect (compression continues in background)
+      navigate("/", { replace: true });
 
     } catch (error) {
       console.error(error);
       alert(error.message);
-    } finally {
       setLoading(false);
-      setProgress(0);
+      setProcessing(false);
     }
   };
 
@@ -128,7 +157,6 @@ export default function Upload() {
       <h2>Upload Video</h2>
 
       <form onSubmit={handleUpload}>
-
         <div>
           <label>Category *</label><br />
           <select
@@ -172,7 +200,7 @@ export default function Upload() {
           <label>Video File *</label><br />
           <input
             type="file"
-            accept="video/*"
+            accept="video/mp4,video/webm,video/quicktime"
             onChange={(e) => setFile(e.target.files[0])}
             required
           />
@@ -182,28 +210,38 @@ export default function Upload() {
 
         {loading && (
           <>
-            <div style={{
-              width: "100%",
-              height: 10,
-              background: "#ddd",
-              borderRadius: 5,
-              overflow: "hidden"
-            }}>
-              <div style={{
-                width: `${progress}%`,
-                height: "100%",
-                background: "#4CAF50",
-                transition: "width 0.3s"
-              }} />
+            <div
+              style={{
+                width: "100%",
+                background: "#eee",
+                height: 10,
+                borderRadius: 6,
+                overflow: "hidden"
+              }}
+            >
+              <div
+                style={{
+                  width: `${progress}%`,
+                  background: "#28a745",
+                  height: "100%",
+                  transition: "width 0.2s ease"
+                }}
+              />
             </div>
-            <p>{progress}% uploading...</p>
+
+            <p style={{ marginTop: 5 }}>
+              {progress < 100
+                ? `Uploading ${progress}%`
+                : processing
+                ? "Optimizing video in background..."
+                : "Finalizing..."}
+            </p>
           </>
         )}
 
         <button type="submit" disabled={loading}>
           {loading ? "Uploading..." : "Upload"}
         </button>
-
       </form>
     </div>
   );
