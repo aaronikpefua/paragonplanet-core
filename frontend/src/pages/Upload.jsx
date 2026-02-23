@@ -1,14 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth } from "../config/firebase";
+import { auth, db } from "../config/firebase";
 import {
-  getFirestore,
   addDoc,
   collection,
-  serverTimestamp
+  serverTimestamp,
+  doc,
+  getDoc
 } from "firebase/firestore";
 
-const db = getFirestore();
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
 const CATEGORIES = [
@@ -36,6 +36,47 @@ export default function Upload() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [processing, setProcessing] = useState(false);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+
+  /* =========================
+     CHECK ROLE ACCESS
+  ========================= */
+
+  useEffect(() => {
+    const checkAccess = async () => {
+      const user = auth.currentUser;
+
+      if (!user) {
+        navigate("/");
+        return;
+      }
+
+      const profileRef = doc(db, "citizen_profiles", user.uid);
+      const profileSnap = await getDoc(profileRef);
+
+      if (!profileSnap.exists()) {
+        alert("You must become a Citizen before uploading.");
+        navigate("/profile");
+        return;
+      }
+
+      const profileData = profileSnap.data();
+
+      if (profileData.role !== "Citizen") {
+        alert("Only Citizens can upload videos.");
+        navigate("/profile");
+        return;
+      }
+
+      setCheckingAccess(false);
+    };
+
+    checkAccess();
+  }, [navigate]);
+
+  /* =========================
+     HANDLE UPLOAD
+  ========================= */
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -55,10 +96,7 @@ export default function Upload() {
 
       const token = await user.getIdToken();
 
-      /* =========================
-         1️⃣ REQUEST SIGNED URL
-      ========================== */
-
+      /* 1️⃣ REQUEST SIGNED URL */
       const signedResponse = await fetch(
         `${BACKEND_URL}/generate-upload-url`,
         {
@@ -83,10 +121,7 @@ export default function Upload() {
 
       const { uploadUrl, fileUrl, fileName } = signedData;
 
-      /* =========================
-         2️⃣ DIRECT UPLOAD TO GCS
-      ========================== */
-
+      /* 2️⃣ DIRECT UPLOAD TO GCS */
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("PUT", uploadUrl);
@@ -111,37 +146,32 @@ export default function Upload() {
         xhr.send(file);
       });
 
-      /* =========================
-         3️⃣ TRIGGER COMPRESSION (ASYNC)
-      ========================== */
-
+      /* 3️⃣ TRIGGER COMPRESSION (NOW WITH AUTH HEADER) */
       setProcessing(true);
 
       await fetch(`${BACKEND_URL}/trigger-compression`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({ fileName })
       });
 
-      /* =========================
-         4️⃣ SAVE METADATA
-      ========================== */
-
+      /* 4️⃣ SAVE METADATA */
       await addDoc(collection(db, "videos"), {
-        uid: user.uid,
+        ownerId: user.uid,
         title,
         description,
         category,
         videoUrl: fileUrl,
+        fileName,
         createdAt: serverTimestamp(),
         votes: 0,
         views: 0,
         comments: 0
       });
 
-      // Immediate redirect (compression continues in background)
       navigate("/", { replace: true });
 
     } catch (error) {
@@ -151,6 +181,10 @@ export default function Upload() {
       setProcessing(false);
     }
   };
+
+  if (checkingAccess) {
+    return <p style={{ padding: 20 }}>Checking access...</p>;
+  }
 
   return (
     <div style={{ padding: 20, maxWidth: 600 }}>

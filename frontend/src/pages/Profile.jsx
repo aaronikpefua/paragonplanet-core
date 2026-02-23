@@ -1,68 +1,100 @@
 import { useEffect, useState } from "react";
-import { auth, db } from "../config/firebase";
+import { useNavigate } from "react-router-dom";
+import { db } from "../config/firebase";
 import { doc, getDoc } from "firebase/firestore";
+import { useAuth } from "../auth/AuthContext";
 
 export default function Profile() {
+  const { user, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+
   const [profile, setProfile] = useState(null);
+  const [role, setRole] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (authLoading) return; // wait for auth to resolve
+
+    if (!user) {
+      navigate("/login");
+      return;
+    }
+
     const loadProfile = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
+      try {
+        // Check promoter first
+        const promoterSnap = await getDoc(
+          doc(db, "promoter_profiles", user.uid)
+        );
 
-      const ref = doc(db, "citizen_profiles", user.uid);
-      const snap = await getDoc(ref);
+        if (promoterSnap.exists()) {
+          setProfile(promoterSnap.data());
+          setRole("PROMOTER");
+          setLoading(false);
+          return;
+        }
 
-      if (snap.exists()) {
-        setProfile(snap.data());
+        // Then check citizen
+        const citizenSnap = await getDoc(
+          doc(db, "citizen_profiles", user.uid)
+        );
+
+        if (citizenSnap.exists()) {
+          setProfile(citizenSnap.data());
+          setRole("CITIZEN");
+          setLoading(false);
+          return;
+        }
+
+        // No profile found → send to role selector
+        navigate("/roles");
+
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setLoading(false);
       }
     };
 
     loadProfile();
-  }, []);
+  }, [user, authLoading, navigate]);
 
-  if (!profile) return <p>Loading profile...</p>;
+  if (authLoading || loading) {
+    return <p style={{ padding: 20 }}>Loading profile...</p>;
+  }
+
+  if (!profile) {
+    return null;
+  }
 
   return (
     <div style={{ padding: 20 }}>
-      <h1>Profile</h1>
+      <h2>{role} Profile</h2>
 
-      <h3>Identity</h3>
-      <p><b>Stage Name:</b> {profile.stageName}</p>
-      <p><b>Real Name:</b> {profile.realName}</p>
-      <p><b>Email:</b> {profile.email}</p>
-      <p><b>Role:</b> {profile.role}</p>
+      {role === "PROMOTER" && (
+        <>
+          <p><b>Brand Name:</b> {profile.brandName}</p>
+          <p><b>Real Name:</b> {profile.realName}</p>
+          <p><b>Phone:</b> {profile.phone}</p>
+          <p><b>Country:</b> {profile.country}</p>
+          <p><b>State:</b> {profile.state}</p>
+          <p><b>Declared Capacity:</b> {profile.declaredCapacity}</p>
+          <p><b>Types:</b> {profile.promoterTypes?.join(", ")}</p>
+          <p><b>Practice Areas:</b> {profile.subFields?.join(", ")}</p>
+          <p><b>Status:</b> {profile.status}</p>
+        </>
+      )}
 
-      <h3>Personal Information</h3>
-      <p><b>Age:</b> {profile.age}</p>
-      <p><b>Gender:</b> {profile.gender}</p>
-      <p><b>Marital Status:</b> {profile.maritalStatus}</p>
-      <p><b>Profession:</b> {profile.profession}</p>
-      <p><b>Phone:</b> {profile.phone}</p>
-      <p><b>Country:</b> {profile.country}</p>
-      <p><b>State:</b> {profile.state}</p>
-      <p><b>Tribe:</b> {profile.tribe}</p>
-      <p><b>Residence:</b> {profile.residence}</p>
-
-      <h3>Talents</h3>
-      <ul>
-        {profile.talents.map((t) => (
-          <li key={t}>{t}</li>
-        ))}
-      </ul>
-
-      <h3>Promoter</h3>
-      <p>{profile.promoterName || "None"}</p>
-
-      <h3>Wallet</h3>
-      <p>Status: Coming soon</p>
-
-      <h3 style={{ color: "red" }}>Danger Zone</h3>
-      <button disabled>Delete Posts (coming soon)</button>
-      <br />
-      <button disabled style={{ color: "red" }}>
-        Delete Account (coming soon)
-      </button>
+      {role === "CITIZEN" && (
+        <>
+          <p><b>Stage Name:</b> {profile.stageName}</p>
+          <p><b>Real Name:</b> {profile.realName}</p>
+          <p><b>Email:</b> {profile.email}</p>
+          <p><b>Country:</b> {profile.country}</p>
+          <p><b>State:</b> {profile.state}</p>
+          <p><b>Talents:</b> {profile.talents?.join(", ")}</p>
+        </>
+      )}
     </div>
   );
 }

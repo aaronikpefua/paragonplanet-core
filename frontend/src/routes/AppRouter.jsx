@@ -1,50 +1,25 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 
-import { auth, db } from "../config/firebase";
 import Header from "../components/Header";
 
-// Public
+// Public pages
 import Home from "../pages/Home";
 import Login from "../pages/auth/Login";
 import Signup from "../pages/auth/Signup";
 
-// Role & onboarding
+// Auth / role flow
 import RoleSelect from "../pages/profile/RoleSelect";
-import CitizenOnboarding from "../pages/onboarding/CitizenOnboarding";
+import RequireAuth from "./RequireAuth";
 
-// App
+// Main app pages
 import Upload from "../pages/Upload";
 import Profile from "../pages/Profile";
 import Admin from "../pages/Admin";
 
+// Onboarding
+import CitizenOnboarding from "../pages/onboarding/CitizenOnboarding";
+
 export default function AppRouter() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [hasProfile, setHasProfile] = useState(false);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-
-      if (u) {
-        const ref = doc(db, "citizen_profiles", u.uid);
-        const snap = await getDoc(ref);
-        setHasProfile(snap.exists());
-      } else {
-        setHasProfile(false);
-      }
-
-      setLoading(false);
-    });
-
-    return () => unsub();
-  }, []);
-
-  if (loading) return null;
-
   return (
     <BrowserRouter>
       <Header />
@@ -52,46 +27,56 @@ export default function AppRouter() {
       <Routes>
         {/* Public */}
         <Route path="/" element={<Home />} />
-        <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />
-        <Route path="/signup" element={!user ? <Signup /> : <Navigate to="/" />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
 
-        {/* Role selection */}
+        {/* Protected */}
         <Route
           path="/roles"
-          element={user ? <RoleSelect /> : <Navigate to="/login" />}
-        />
-
-        {/* Citizen onboarding */}
-        <Route
-          path="/onboarding/citizen"
-          element={user ? <CitizenOnboarding /> : <Navigate to="/login" />}
-        />
-
-        {/* Profile (only after onboarding) */}
-        <Route
-          path="/profile"
           element={
-            user
-              ? hasProfile
-                ? <Profile />
-                : <Navigate to="/roles" />
-              : <Navigate to="/login" />
+            <RequireAuth>
+              <RoleSelect />
+            </RequireAuth>
           }
         />
 
-        {/* Upload */}
+        <Route
+          path="/onboarding/citizen"
+          element={
+            <RequireAuth>
+              <CitizenOnboarding />
+            </RequireAuth>
+          }
+        />
+
         <Route
           path="/upload"
-          element={user ? <Upload /> : <Navigate to="/login" />}
+          element={
+            <RequireAuth>
+              <Upload />
+            </RequireAuth>
+          }
         />
 
-        {/* Admin */}
+        <Route
+          path="/profile"
+          element={
+            <RequireAuth>
+              <Profile />
+            </RequireAuth>
+          }
+        />
+
+        {/* ADMIN */}
         <Route
           path="/admin"
-          element={user ? <Admin /> : <Navigate to="/login" />}
+          element={
+            <RequireAuth>
+              <Admin />
+            </RequireAuth>
+          }
         />
 
-        {/* Fallback */}
         <Route path="*" element={<Home />} />
       </Routes>
     </BrowserRouter>
