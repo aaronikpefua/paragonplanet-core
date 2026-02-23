@@ -18,6 +18,7 @@ import Admin from "../pages/Admin";
 
 // Onboarding
 import CitizenOnboarding from "../pages/onboarding/CitizenOnboarding";
+import PromoterOnboarding from "../pages/onboarding/PromoterOnboarding";
 
 export default function AppRouter() {
   return (
@@ -45,6 +46,15 @@ export default function AppRouter() {
           element={
             <RequireAuth>
               <CitizenOnboarding />
+            </RequireAuth>
+          }
+        />
+
+        <Route
+          path="/onboarding/promoter"
+          element={
+            <RequireAuth>
+              <PromoterOnboarding />
             </RequireAuth>
           }
         />
