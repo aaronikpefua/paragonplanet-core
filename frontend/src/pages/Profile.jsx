@@ -10,10 +10,10 @@ export default function Profile() {
 
   const [profile, setProfile] = useState(null);
   const [role, setRole] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    if (authLoading) return; // wait for auth to resolve
+    if (authLoading) return;
 
     if (!user) {
       navigate("/login");
@@ -30,11 +30,11 @@ export default function Profile() {
         if (promoterSnap.exists()) {
           setProfile(promoterSnap.data());
           setRole("PROMOTER");
-          setLoading(false);
+          setChecking(false);
           return;
         }
 
-        // Then check citizen
+        // Check citizen
         const citizenSnap = await getDoc(
           doc(db, "citizen_profiles", user.uid)
         );
@@ -42,59 +42,45 @@ export default function Profile() {
         if (citizenSnap.exists()) {
           setProfile(citizenSnap.data());
           setRole("CITIZEN");
-          setLoading(false);
+          setChecking(false);
           return;
         }
 
-        // No profile found → send to role selector
+        // No profile exists
         navigate("/roles");
 
-      } catch (error) {
-        console.error(error);
+      } catch (err) {
+        console.error("Profile error:", err);
       } finally {
-        setLoading(false);
+        setChecking(false);
       }
     };
 
     loadProfile();
   }, [user, authLoading, navigate]);
 
-  if (authLoading || loading) {
-    return <p style={{ padding: 20 }}>Loading profile...</p>;
+  if (authLoading || checking) {
+    return <div style={{ padding: 30 }}>Loading profile...</div>;
   }
 
   if (!profile) {
-    return null;
+    return <div style={{ padding: 30 }}>Redirecting...</div>;
   }
 
   return (
-    <div style={{ padding: 20 }}>
+    <div style={{ padding: 30 }}>
       <h2>{role} Profile</h2>
 
-      {role === "PROMOTER" && (
-        <>
-          <p><b>Brand Name:</b> {profile.brandName}</p>
-          <p><b>Real Name:</b> {profile.realName}</p>
-          <p><b>Phone:</b> {profile.phone}</p>
-          <p><b>Country:</b> {profile.country}</p>
-          <p><b>State:</b> {profile.state}</p>
-          <p><b>Declared Capacity:</b> {profile.declaredCapacity}</p>
-          <p><b>Types:</b> {profile.promoterTypes?.join(", ")}</p>
-          <p><b>Practice Areas:</b> {profile.subFields?.join(", ")}</p>
-          <p><b>Status:</b> {profile.status}</p>
-        </>
-      )}
-
-      {role === "CITIZEN" && (
-        <>
-          <p><b>Stage Name:</b> {profile.stageName}</p>
-          <p><b>Real Name:</b> {profile.realName}</p>
-          <p><b>Email:</b> {profile.email}</p>
-          <p><b>Country:</b> {profile.country}</p>
-          <p><b>State:</b> {profile.state}</p>
-          <p><b>Talents:</b> {profile.talents?.join(", ")}</p>
-        </>
-      )}
+      {Object.entries(profile).map(([key, value]) => (
+        <div key={key}>
+          <strong>{key}:</strong>{" "}
+          {Array.isArray(value)
+            ? value.join(", ")
+            : typeof value === "object" && value !== null
+            ? JSON.stringify(value)
+            : String(value)}
+        </div>
+      ))}
     </div>
   );
 }
