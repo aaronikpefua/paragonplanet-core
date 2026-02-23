@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "../../config/firebase";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
@@ -20,6 +20,7 @@ const TALENTS = [
 
 export default function CitizenOnboarding() {
   const navigate = useNavigate();
+  const [invitePromoterId, setInvitePromoterId] = useState(null);
 
   const [form, setForm] = useState({
     stageName: "",
@@ -34,9 +35,14 @@ export default function CitizenOnboarding() {
     tribe: "",
     residence: "",
     talents: [],
-    promoterName: "",
-    promoterLink: "",
   });
+
+  useEffect(() => {
+    const storedInvite = localStorage.getItem("invitePromoterId");
+    if (storedInvite) {
+      setInvitePromoterId(storedInvite);
+    }
+  }, []);
 
   const toggleTalent = (talent) => {
     setForm((prev) => ({
@@ -48,7 +54,7 @@ export default function CitizenOnboarding() {
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault(); // 🚨 THIS WAS MISSING
+    e.preventDefault();
 
     const user = auth.currentUser;
     if (!user) {
@@ -65,12 +71,17 @@ export default function CitizenOnboarding() {
       await setDoc(doc(db, "citizen_profiles", user.uid), {
         uid: user.uid,
         email: user.email,
-        role: "Citizen",
+        role: "CITIZEN",
         ...form,
+        registrationType: invitePromoterId ? "INVITED" : "SELF",
+        baseCitizenShare: invitePromoterId ? 40 : 50,
+        primaryPromoterId: invitePromoterId || null,
         createdAt: serverTimestamp(),
       });
 
-      // ✅ THIS WILL NOW WORK
+      // Clear invite after successful registration
+      localStorage.removeItem("invitePromoterId");
+
       navigate("/profile");
     } catch (err) {
       console.error(err);
@@ -81,6 +92,12 @@ export default function CitizenOnboarding() {
   return (
     <form onSubmit={handleSubmit} style={{ padding: 20 }}>
       <h1>Citizen Registration</h1>
+
+      {invitePromoterId && (
+        <p style={{ color: "green" }}>
+          You are registering via promoter invite.
+        </p>
+      )}
 
       <h3>Basic Information</h3>
 
@@ -128,16 +145,14 @@ export default function CitizenOnboarding() {
       <h3>Talents</h3>
       {TALENTS.map((t) => (
         <label key={t} style={{ marginRight: 10 }}>
-          <input type="checkbox" onChange={() => toggleTalent(t)} /> {t}
+          <input
+            type="checkbox"
+            checked={form.talents.includes(t)}
+            onChange={() => toggleTalent(t)}
+          />{" "}
+          {t}
         </label>
       ))}
-
-      <h3>Promoter (Optional)</h3>
-      <input placeholder="Promoter Name"
-        onChange={(e) => setForm({ ...form, promoterName: e.target.value })} />
-
-      <input placeholder="Promoter Link"
-        onChange={(e) => setForm({ ...form, promoterLink: e.target.value })} />
 
       <br /><br />
       <button type="submit">Continue</button>
