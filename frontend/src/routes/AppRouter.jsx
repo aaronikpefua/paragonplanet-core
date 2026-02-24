@@ -7,6 +7,9 @@ import Home from "../pages/Home";
 import Login from "../pages/auth/Login";
 import Signup from "../pages/auth/Signup";
 
+// Invite handler
+import InviteHandler from "../pages/invite/InviteHandler";
+
 // Auth / role flow
 import RoleSelect from "../pages/profile/RoleSelect";
 import RequireAuth from "./RequireAuth";
@@ -30,6 +33,9 @@ export default function AppRouter() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+
+        {/* Invite Link Route (VERY IMPORTANT) */}
+        <Route path="/invite/:code" element={<InviteHandler />} />
 
         {/* Protected */}
         <Route
@@ -77,7 +83,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* ADMIN */}
+        {/* Admin */}
         <Route
           path="/admin"
           element={
@@ -87,6 +93,7 @@ export default function AppRouter() {
           }
         />
 
+        {/* Fallback */}
         <Route path="*" element={<Home />} />
       </Routes>
     </BrowserRouter>
