@@ -23,21 +23,25 @@ import Admin from "../pages/Admin";
 import CitizenOnboarding from "../pages/onboarding/CitizenOnboarding";
 import PromoterOnboarding from "../pages/onboarding/PromoterOnboarding";
 
+/* ✅ NEW IMPORTS */
+import MerchantOnboarding from "../pages/MerchantOnboarding";
+import UserOnboarding from "../pages/UserOnboarding";
+
 export default function AppRouter() {
   return (
     <BrowserRouter>
       <Header />
 
       <Routes>
-        {/* Public */}
+        {/* ================= PUBLIC ================= */}
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
 
-        {/* Invite Link Route (VERY IMPORTANT) */}
+        {/* Invite Link Route */}
         <Route path="/invite/:code" element={<InviteHandler />} />
 
-        {/* Protected */}
+        {/* ================= PROTECTED ================= */}
         <Route
           path="/roles"
           element={
@@ -47,6 +51,7 @@ export default function AppRouter() {
           }
         />
 
+        {/* Citizen */}
         <Route
           path="/onboarding/citizen"
           element={
@@ -56,11 +61,32 @@ export default function AppRouter() {
           }
         />
 
+        {/* Promoter */}
         <Route
           path="/onboarding/promoter"
           element={
             <RequireAuth>
               <PromoterOnboarding />
+            </RequireAuth>
+          }
+        />
+
+        {/* ✅ NEW MERCHANT ROUTE */}
+        <Route
+          path="/onboarding/merchant"
+          element={
+            <RequireAuth>
+              <MerchantOnboarding />
+            </RequireAuth>
+          }
+        />
+
+        {/* ✅ NEW USER ROUTE */}
+        <Route
+          path="/onboarding/user"
+          element={
+            <RequireAuth>
+              <UserOnboarding />
             </RequireAuth>
           }
         />
@@ -83,7 +109,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* Admin */}
+        {/* ================= ADMIN ================= */}
         <Route
           path="/admin"
           element={
@@ -93,7 +119,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* Fallback */}
+        {/* ================= FALLBACK ================= */}
         <Route path="*" element={<Home />} />
       </Routes>
     </BrowserRouter>
