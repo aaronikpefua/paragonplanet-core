@@ -5,8 +5,13 @@ import {
   getDoc,
   deleteDoc,
   setDoc,
-  serverTimestamp
+  serverTimestamp,
+  collection,
+  query,
+  where,
+  getDocs
 } from "firebase/firestore";
+import { deleteUser } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 
 export default function Profile() {
@@ -15,10 +20,16 @@ export default function Profile() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
+  /* =========================
+     LOAD PROFILE
+  ========================= */
   useEffect(() => {
     const loadProfile = async () => {
       const user = auth.currentUser;
-      if (!user) return;
+      if (!user) {
+        navigate("/login");
+        return;
+      }
 
       const promoterSnap = await getDoc(
         doc(db, "promoter_profiles", user.uid)
@@ -38,16 +49,19 @@ export default function Profile() {
       if (citizenSnap.exists()) {
         setProfile(citizenSnap.data());
         setRole("CITIZEN");
+        setLoading(false);
+        return;
       }
 
-      setLoading(false);
+      // 🔥 NEW USER → redirect to role select
+      navigate("/roles");
     };
 
     loadProfile();
-  }, []);
+  }, [navigate]);
 
   /* =========================
-     GENERATE INVITE LINK
+     GENERATE INVITE
   ========================= */
   const generateInvite = async () => {
     const user = auth.currentUser;
@@ -67,16 +81,41 @@ export default function Profile() {
   };
 
   /* =========================
-     DELETE PROFILE (SOFT)
+     DELETE ACCOUNT + VIDEOS
   ========================= */
   const handleDeleteAccount = async () => {
-    alert(
-      "Account deletion will go through admin process in next phase."
+    const confirmDelete = window.confirm(
+      "Are you sure? This will delete profile and all videos."
     );
+    if (!confirmDelete) return;
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Delete videos
+    const q = query(
+      collection(db, "videos"),
+      where("uid", "==", user.uid)
+    );
+
+    const snapshot = await getDocs(q);
+    for (const docSnap of snapshot.docs) {
+      await deleteDoc(doc(db, "videos", docSnap.id));
+    }
+
+    // Delete profile
+    if (role === "PROMOTER") {
+      await deleteDoc(doc(db, "promoter_profiles", user.uid));
+    } else {
+      await deleteDoc(doc(db, "citizen_profiles", user.uid));
+    }
+
+    await deleteUser(user);
+    navigate("/");
   };
 
   if (loading) return <p style={{ padding: 20 }}>Loading...</p>;
-  if (!profile) return <p style={{ padding: 20 }}>No profile found.</p>;
+  if (!profile) return null;
 
   return (
     <div style={{ padding: 30, maxWidth: 900 }}>
@@ -90,6 +129,7 @@ export default function Profile() {
           marginBottom: 20
         }}
       >
+        {/* ================= PROMOTER ================= */}
         {role === "PROMOTER" && (
           <>
             <p><b>Brand Name:</b> {profile.brandName}</p>
@@ -101,6 +141,7 @@ export default function Profile() {
             <p><b>Declared Capacity:</b> {profile.declaredCapacity}</p>
             <p><b>Types:</b> {profile.promoterTypes?.join(", ")}</p>
             <p><b>Practice Areas:</b> {profile.subFields?.join(", ")}</p>
+            <p><b>Citizens Count:</b> {profile.citizensCount || 0}</p>
 
             {profile.status === "APPROVED" && (
               <button
@@ -110,7 +151,6 @@ export default function Profile() {
                   padding: "8px 14px",
                   background: "black",
                   color: "white",
-                  border: "none",
                   borderRadius: 6
                 }}
               >
@@ -120,22 +160,39 @@ export default function Profile() {
           </>
         )}
 
+        {/* ================= CITIZEN ================= */}
         {role === "CITIZEN" && (
           <>
             <p><b>Stage Name:</b> {profile.stageName}</p>
             <p><b>Real Name:</b> {profile.realName}</p>
+            <p><b>Age:</b> {profile.age}</p>
+            <p><b>Gender:</b> {profile.gender}</p>
+            <p><b>Marital Status:</b> {profile.maritalStatus}</p>
+            <p><b>Profession:</b> {profile.profession}</p>
+            <p><b>Phone:</b> {profile.phone}</p>
             <p><b>Country:</b> {profile.country}</p>
             <p><b>State:</b> {profile.state}</p>
+            <p><b>Tribe:</b> {profile.tribe}</p>
+            <p><b>Residence:</b> {profile.residence}</p>
             <p><b>Talents:</b> {profile.talents?.join(", ")}</p>
-            <p><b>Profession:</b> {profile.profession}</p>
 
             <hr />
 
-            <p><b>Registration Type:</b> {profile.registrationType}</p>
-            <p><b>Base Share:</b> {profile.baseCitizenShare}%</p>
+            <p>
+              <b>Registration Type:</b>{" "}
+              {profile.registrationType || "SELF"}
+            </p>
+
+            <p>
+              <b>Base Share:</b>{" "}
+              {profile.baseCitizenShare || 50}%
+            </p>
 
             {profile.registrationType === "INVITED" && (
-              <p><b>Primary Promoter ID:</b> {profile.primaryPromoterId}</p>
+              <p>
+                <b>Primary Promoter ID:</b>{" "}
+                {profile.primaryPromoterId}
+              </p>
             )}
           </>
         )}
@@ -143,7 +200,12 @@ export default function Profile() {
 
       <button
         onClick={handleDeleteAccount}
-        style={{ background: "red", color: "white", padding: 8 }}
+        style={{
+          background: "red",
+          color: "white",
+          padding: 10,
+          borderRadius: 6
+        }}
       >
         Delete Account
       </button>
