@@ -11,18 +11,17 @@ import {
   where,
   getDocs
 } from "firebase/firestore";
-import { deleteUser } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 
 export default function Profile() {
   const [profile, setProfile] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [promoters, setPromoters] = useState([]);
+  const [showPromoterList, setShowPromoterList] = useState(false);
   const navigate = useNavigate();
 
-  /* =========================
-     LOAD PROFILE
-  ========================= */
+  /* ================= LOAD PROFILE ================= */
   useEffect(() => {
     const loadProfile = async () => {
       const user = auth.currentUser;
@@ -31,10 +30,7 @@ export default function Profile() {
         return;
       }
 
-      const promoterSnap = await getDoc(
-        doc(db, "promoter_profiles", user.uid)
-      );
-
+      const promoterSnap = await getDoc(doc(db, "promoter_profiles", user.uid));
       if (promoterSnap.exists()) {
         setProfile(promoterSnap.data());
         setRole("PROMOTER");
@@ -42,10 +38,7 @@ export default function Profile() {
         return;
       }
 
-      const citizenSnap = await getDoc(
-        doc(db, "citizen_profiles", user.uid)
-      );
-
+      const citizenSnap = await getDoc(doc(db, "citizen_profiles", user.uid));
       if (citizenSnap.exists()) {
         setProfile(citizenSnap.data());
         setRole("CITIZEN");
@@ -53,162 +46,167 @@ export default function Profile() {
         return;
       }
 
-      // 🔥 NEW USER → redirect to role select
       navigate("/roles");
     };
 
     loadProfile();
   }, [navigate]);
 
-  /* =========================
-     GENERATE INVITE
-  ========================= */
-  const generateInvite = async () => {
+  /* ================= DELETE VIDEOS ================= */
+  const deleteMyVideos = async () => {
     const user = auth.currentUser;
-    if (!user) return;
-
-    const code = Math.random().toString(36).substring(2, 10);
-
-    await setDoc(doc(db, "invites", code), {
-      promoterId: user.uid,
-      createdAt: serverTimestamp(),
-      active: true
-    });
-
-    const inviteLink = `${window.location.origin}/invite/${code}`;
-    navigator.clipboard.writeText(inviteLink);
-    alert("Invite link copied:\n" + inviteLink);
-  };
-
-  /* =========================
-     DELETE ACCOUNT + VIDEOS
-  ========================= */
-  const handleDeleteAccount = async () => {
-    const confirmDelete = window.confirm(
-      "Are you sure? This will delete profile and all videos."
-    );
-    if (!confirmDelete) return;
-
-    const user = auth.currentUser;
-    if (!user) return;
-
-    // Delete videos
-    const q = query(
-      collection(db, "videos"),
-      where("uid", "==", user.uid)
-    );
-
+    const q = query(collection(db, "videos"), where("uid", "==", user.uid));
     const snapshot = await getDocs(q);
-    for (const docSnap of snapshot.docs) {
-      await deleteDoc(doc(db, "videos", docSnap.id));
+
+    for (const video of snapshot.docs) {
+      await deleteDoc(doc(db, "videos", video.id));
     }
 
-    // Delete profile
-    if (role === "PROMOTER") {
-      await deleteDoc(doc(db, "promoter_profiles", user.uid));
-    } else {
-      await deleteDoc(doc(db, "citizen_profiles", user.uid));
-    }
-
-    await deleteUser(user);
-    navigate("/");
+    alert("All your videos deleted.");
   };
 
-  if (loading) return <p style={{ padding: 20 }}>Loading...</p>;
+  /* ================= LOAD PROMOTERS ================= */
+  const loadPromoters = async () => {
+    const q = query(
+      collection(db, "promoter_profiles"),
+      where("status", "==", "APPROVED")
+    );
+    const snapshot = await getDocs(q);
+    const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    setPromoters(list);
+    setShowPromoterList(true);
+  };
+
+  if (loading) return <div style={{ padding: 40 }}>Loading...</div>;
   if (!profile) return null;
 
+  /* ================= UI ================= */
   return (
-    <div style={{ padding: 30, maxWidth: 900 }}>
-      <h2>{role} Profile</h2>
+    <div style={{ padding: 40, maxWidth: 1000, margin: "auto" }}>
+      
+      {/* HEADER CARD */}
+      <div style={cardStyle}>
+        <h1 style={{ marginBottom: 5 }}>{role} Profile</h1>
+        <p style={{ color: "#777" }}>
+          {profile.realName}
+        </p>
+      </div>
 
-      <div
-        style={{
-          background: "#f4f4f4",
-          padding: 20,
-          borderRadius: 10,
-          marginBottom: 20
-        }}
-      >
-        {/* ================= PROMOTER ================= */}
-        {role === "PROMOTER" && (
+      {/* MAIN CARD */}
+      <div style={cardStyle}>
+
+        {role === "CITIZEN" && (
           <>
-            <p><b>Brand Name:</b> {profile.brandName}</p>
-            <p><b>Real Name:</b> {profile.realName}</p>
-            <p><b>Phone:</b> {profile.phone}</p>
-            <p><b>Country:</b> {profile.country}</p>
-            <p><b>State:</b> {profile.state}</p>
-            <p><b>Status:</b> {profile.status}</p>
-            <p><b>Declared Capacity:</b> {profile.declaredCapacity}</p>
-            <p><b>Types:</b> {profile.promoterTypes?.join(", ")}</p>
-            <p><b>Practice Areas:</b> {profile.subFields?.join(", ")}</p>
-            <p><b>Citizens Count:</b> {profile.citizensCount || 0}</p>
+            <Info label="Stage Name" value={profile.stageName} />
+            <Info label="Profession" value={profile.profession} />
+            <Info label="Talents" value={profile.talents?.join(", ")} />
+            <Info label="Registration Type" value={profile.registrationType || "SELF"} />
+            <Info label="Base Share" value={`${profile.baseCitizenShare || 50}%`} />
 
-            {profile.status === "APPROVED" && (
-              <button
-                onClick={generateInvite}
-                style={{
-                  marginTop: 15,
-                  padding: "8px 14px",
-                  background: "black",
-                  color: "white",
-                  borderRadius: 6
-                }}
-              >
-                Generate Invite Link
-              </button>
-            )}
+            <ActionRow>
+              <Button onClick={deleteMyVideos}>Delete My Videos</Button>
+              <Button onClick={() => navigate("/wallet")}>Wallet</Button>
+              <Button onClick={() => window.location = `mailto:${auth.currentUser.email}`}>Email</Button>
+              <Button onClick={() => window.open(`https://wa.me/${profile.phone}`)}>WhatsApp</Button>
+              <Button onClick={loadPromoters}>Invite Promoter</Button>
+            </ActionRow>
           </>
         )}
 
-        {/* ================= CITIZEN ================= */}
-        {role === "CITIZEN" && (
+        {role === "PROMOTER" && (
           <>
-            <p><b>Stage Name:</b> {profile.stageName}</p>
-            <p><b>Real Name:</b> {profile.realName}</p>
-            <p><b>Age:</b> {profile.age}</p>
-            <p><b>Gender:</b> {profile.gender}</p>
-            <p><b>Marital Status:</b> {profile.maritalStatus}</p>
-            <p><b>Profession:</b> {profile.profession}</p>
-            <p><b>Phone:</b> {profile.phone}</p>
-            <p><b>Country:</b> {profile.country}</p>
-            <p><b>State:</b> {profile.state}</p>
-            <p><b>Tribe:</b> {profile.tribe}</p>
-            <p><b>Residence:</b> {profile.residence}</p>
-            <p><b>Talents:</b> {profile.talents?.join(", ")}</p>
+            <Info label="Brand Name" value={profile.brandName} />
+            <Info label="Capacity" value={profile.declaredCapacity} />
+            <Info label="Types" value={profile.promoterTypes?.join(", ")} />
+            <Info label="Status" value={profile.status} />
 
-            <hr />
-
-            <p>
-              <b>Registration Type:</b>{" "}
-              {profile.registrationType || "SELF"}
-            </p>
-
-            <p>
-              <b>Base Share:</b>{" "}
-              {profile.baseCitizenShare || 50}%
-            </p>
-
-            {profile.registrationType === "INVITED" && (
-              <p>
-                <b>Primary Promoter ID:</b>{" "}
-                {profile.primaryPromoterId}
-              </p>
-            )}
+            <ActionRow>
+              <Button onClick={() => navigate("/wallet")}>Wallet</Button>
+              <Button onClick={() => window.location = `mailto:${auth.currentUser.email}`}>Email</Button>
+              <Button onClick={() => window.open(`https://wa.me/${profile.phone}`)}>WhatsApp</Button>
+            </ActionRow>
           </>
         )}
       </div>
 
-      <button
-        onClick={handleDeleteAccount}
-        style={{
-          background: "red",
-          color: "white",
-          padding: 10,
-          borderRadius: 6
-        }}
-      >
-        Delete Account
-      </button>
+      {/* PROMOTER LIST MODAL */}
+      {showPromoterList && (
+        <div style={modalStyle}>
+          <div style={modalCard}>
+            <h3>Select Promoter</h3>
+            {promoters.map(p => (
+              <div key={p.id} style={listItem}>
+                {p.brandName} ({p.promoterTypes?.join(", ")})
+              </div>
+            ))}
+            <Button onClick={() => setShowPromoterList(false)}>Close</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+/* ================= COMPONENTS ================= */
+
+const Info = ({ label, value }) => (
+  <div style={{ marginBottom: 15 }}>
+    <strong>{label}:</strong> {value}
+  </div>
+);
+
+const Button = ({ children, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: "10px 16px",
+    background: "#111",
+    color: "white",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer"
+  }}>
+    {children}
+  </button>
+);
+
+const ActionRow = ({ children }) => (
+  <div style={{
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    marginTop: 20
+  }}>
+    {children}
+  </div>
+);
+
+const cardStyle = {
+  background: "white",
+  padding: 25,
+  borderRadius: 14,
+  boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
+  marginBottom: 25
+};
+
+const modalStyle = {
+  position: "fixed",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  background: "rgba(0,0,0,0.5)",
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center"
+};
+
+const modalCard = {
+  background: "white",
+  padding: 30,
+  borderRadius: 12,
+  width: 400
+};
+
+const listItem = {
+  padding: 10,
+  borderBottom: "1px solid #eee"
+};
