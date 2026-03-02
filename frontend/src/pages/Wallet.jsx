@@ -19,6 +19,7 @@ export default function Wallet() {
   const [balance, setBalance] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
+
   const [converting, setConverting] = useState(false);
   const [showDeposit, setShowDeposit] = useState(false);
   const [amount, setAmount] = useState("");
@@ -29,51 +30,40 @@ export default function Wallet() {
 
   const location = useLocation();
 
-  /* =========================
-     LOAD WALLET + TRANSACTIONS
-  ========================= */
+  /* ================= LOAD WALLET ================= */
 
   const loadWallet = async () => {
-    try {
-      const user = auth.currentUser;
-      if (!user) return;
+    const user = auth.currentUser;
+    if (!user) return;
 
-      const walletRef = doc(db, "wallet_accounts", user.uid);
-      const walletSnap = await getDoc(walletRef);
-
-      if (walletSnap.exists()) {
-        setBalance(walletSnap.data());
-      }
-
-      const txQuery = query(
-        collection(db, "ledger_entries"),
-        where("accountId", "==", user.uid),
-        orderBy("createdAt", "desc")
-      );
-
-      const txSnap = await getDocs(txQuery);
-
-      setTransactions(
-        txSnap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
-      );
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+    const walletSnap = await getDoc(doc(db, "wallet_accounts", user.uid));
+    if (walletSnap.exists()) {
+      setBalance(walletSnap.data());
     }
+
+    const txQuery = query(
+      collection(db, "ledger_entries"),
+      where("accountId", "==", user.uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const txSnap = await getDocs(txQuery);
+
+    setTransactions(
+      txSnap.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }))
+    );
+
+    setLoading(false);
   };
 
   useEffect(() => {
     loadWallet();
   }, []);
 
-  /* =========================
-     LISTEN FOR DEPOSIT CONFIRMATION
-     (Using ledger_entries instead of transactions)
-  ========================= */
+  /* ========== LISTEN FOR DEPOSIT CONFIRMATION ========== */
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -87,110 +77,79 @@ export default function Wallet() {
     const q = query(
       collection(db, "ledger_entries"),
       where("accountId", "==", user.uid),
-      where("direction", "==", "credit"),
       orderBy("createdAt", "desc")
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        setProgressStatus("success");
+    const unsubscribe = onSnapshot(q, () => {
+      setProgressStatus("success");
 
-        setTimeout(async () => {
-          await loadWallet();
-          setShowProgress(false);
-          window.history.replaceState({}, document.title, "/wallet");
-        }, 1500);
-      }
+      setTimeout(async () => {
+        await loadWallet();
+        setShowProgress(false);
+        window.history.replaceState({}, document.title, "/wallet");
+      }, 1500);
     });
 
     return () => unsubscribe();
   }, [location.search]);
 
-  /* =========================
-     CONVERSION
-  ========================= */
+  /* ================= CONVERT ================= */
 
   const convertForward = async () => {
-    try {
-      const user = auth.currentUser;
-      if (!user) return;
+    const user = auth.currentUser;
+    if (!user) return;
 
-      setConverting(true);
-      const token = await user.getIdToken();
+    setConverting(true);
+    const token = await user.getIdToken();
 
-      const res = await fetch(`${API_URL}/convert/parag-to-gbazilo`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+    await fetch(`${API_URL}/convert/parag-to-gbazilo`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      await loadWallet();
-    } catch (error) {
-      alert(error.message);
-    } finally {
-      setConverting(false);
-    }
+    await loadWallet();
+    setConverting(false);
   };
 
   const convertReverse = async () => {
-    try {
-      const user = auth.currentUser;
-      if (!user) return;
+    const user = auth.currentUser;
+    if (!user) return;
 
-      setConverting(true);
-      const token = await user.getIdToken();
+    setConverting(true);
+    const token = await user.getIdToken();
 
-      const res = await fetch(`${API_URL}/convert/gbazilo-to-parag`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+    await fetch(`${API_URL}/convert/gbazilo-to-parag`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      await loadWallet();
-    } catch (error) {
-      alert(error.message);
-    } finally {
-      setConverting(false);
-    }
+    await loadWallet();
+    setConverting(false);
   };
 
-  /* =========================
-     DEPOSIT
-  ========================= */
+  /* ================= DEPOSIT ================= */
 
   const handleDeposit = async () => {
     if (!amount || amount < 100) {
       return alert("Minimum deposit is ₦100");
     }
 
-    try {
-      setProcessing(true);
+    const user = auth.currentUser;
+    const token = await user.getIdToken();
 
-      const user = auth.currentUser;
-      const token = await user.getIdToken();
+    setProcessing(true);
 
-      const res = await fetch(`${API_URL}/deposit/initialize`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ amount: Number(amount) }),
-      });
+    const res = await fetch(`${API_URL}/deposit/initialize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ amount: Number(amount) }),
+    });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      window.location.href = data.authorization_url;
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setProcessing(false);
-    }
+    const data = await res.json();
+    window.location.href = data.authorization_url;
   };
 
   if (loading) return <p>Loading wallet...</p>;
@@ -201,6 +160,7 @@ export default function Wallet() {
   return (
     <div style={{ padding: 30, maxWidth: 1000, margin: "auto" }}>
 
+      {/* PROGRESS MODAL */}
       {showProgress && (
         <div style={overlayStyle}>
           <div style={modalStyle}>
@@ -214,31 +174,39 @@ export default function Wallet() {
               <div
                 style={{
                   ...progressBar,
-                  width:
-                    progressStatus === "waiting" ? "70%" : "100%",
+                  width: progressStatus === "waiting" ? "70%" : "100%",
                   background:
-                    progressStatus === "waiting"
-                      ? "#3498db"
-                      : "#2ecc71",
+                    progressStatus === "waiting" ? "#3498db" : "#2ecc71",
                 }}
               />
             </div>
-
-            <p style={{ marginTop: 15 }}>
-              {progressStatus === "waiting"
-                ? "We are confirming your transfer..."
-                : "Your wallet has been credited."}
-            </p>
           </div>
         </div>
       )}
 
+      {/* BALANCE */}
       <div style={balanceStyle}>
         <h2>Wallet Balance</h2>
         <h1>{availableParag} PARAG</h1>
         <h3>{availableGbazilo} GBAZILO</h3>
       </div>
 
+      {/* ACTION BUTTONS */}
+      <div style={{ display: "flex", gap: 15, marginBottom: 20 }}>
+        <button style={btnStyle} onClick={convertForward}>
+          Convert PARAG → GBAZILO
+        </button>
+
+        <button style={btnStyle} onClick={convertReverse}>
+          Convert GBAZILO → PARAG
+        </button>
+
+        <button style={btnStyle} onClick={() => setShowDeposit(true)}>
+          Deposit
+        </button>
+      </div>
+
+      {/* TRANSACTIONS */}
       <h3>Transaction History</h3>
 
       {transactions.map((tx) => {
@@ -261,14 +229,41 @@ export default function Wallet() {
           </div>
         );
       })}
+
+      {/* DEPOSIT MODAL */}
+      {showDeposit && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <h2>Deposit Funds</h2>
+
+            <input
+              type="number"
+              placeholder="Enter amount"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              style={inputStyle}
+            />
+
+            <div style={{ marginTop: 20 }}>
+              <button style={btnStyle} onClick={handleDeposit}>
+                {processing ? "Processing..." : "Proceed to Paystack"}
+              </button>
+
+              <button
+                style={cancelStyle}
+                onClick={() => setShowDeposit(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/* =========================
-   STYLES
-========================= */
-
+/* STYLES */
 const balanceStyle = {
   background: "#111",
   color: "#fff",
@@ -277,25 +272,20 @@ const balanceStyle = {
   marginBottom: 30,
 };
 
-const progressContainer = {
-  width: "100%",
-  height: 10,
-  background: "#ddd",
-  borderRadius: 20,
-  overflow: "hidden",
-  marginTop: 20,
-};
-
-const progressBar = {
-  height: "100%",
-  transition: "all 0.6s ease",
-};
-
 const txStyle = {
   padding: 15,
   borderBottom: "1px solid #eee",
   display: "flex",
   justifyContent: "space-between",
+};
+
+const btnStyle = {
+  padding: "10px 20px",
+  background: "#000",
+  color: "#fff",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
 };
 
 const overlayStyle = {
@@ -315,4 +305,34 @@ const modalStyle = {
   padding: 30,
   borderRadius: 12,
   width: 400,
+};
+
+const progressContainer = {
+  width: "100%",
+  height: 10,
+  background: "#ddd",
+  borderRadius: 20,
+  overflow: "hidden",
+  marginTop: 20,
+};
+
+const progressBar = {
+  height: "100%",
+  transition: "all 0.6s ease",
+};
+
+const inputStyle = {
+  width: "100%",
+  padding: 10,
+  borderRadius: 6,
+  border: "1px solid #ccc",
+};
+
+const cancelStyle = {
+  marginLeft: 10,
+  padding: "10px 20px",
+  background: "#ccc",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
 };
