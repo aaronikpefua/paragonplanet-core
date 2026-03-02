@@ -18,12 +18,11 @@ import RequireAuth from "./RequireAuth";
 import Upload from "../pages/Upload";
 import Profile from "../pages/Profile";
 import Admin from "../pages/Admin";
+import Wallet from "../pages/Wallet"; // ✅ NEW WALLET IMPORT
 
 // Onboarding
 import CitizenOnboarding from "../pages/onboarding/CitizenOnboarding";
 import PromoterOnboarding from "../pages/onboarding/PromoterOnboarding";
-
-/* ✅ NEW IMPORTS */
 import MerchantOnboarding from "../pages/MerchantOnboarding";
 import UserOnboarding from "../pages/UserOnboarding";
 
@@ -37,8 +36,6 @@ export default function AppRouter() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
-
-        {/* Invite Link Route */}
         <Route path="/invite/:code" element={<InviteHandler />} />
 
         {/* ================= PROTECTED ================= */}
@@ -71,7 +68,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* ✅ NEW MERCHANT ROUTE */}
+        {/* Merchant */}
         <Route
           path="/onboarding/merchant"
           element={
@@ -81,7 +78,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* ✅ NEW USER ROUTE */}
+        {/* User */}
         <Route
           path="/onboarding/user"
           element={
@@ -91,6 +88,7 @@ export default function AppRouter() {
           }
         />
 
+        {/* Upload */}
         <Route
           path="/upload"
           element={
@@ -100,11 +98,22 @@ export default function AppRouter() {
           }
         />
 
+        {/* Profile */}
         <Route
           path="/profile"
           element={
             <RequireAuth>
               <Profile />
+            </RequireAuth>
+          }
+        />
+
+        {/* ✅ WALLET ROUTE */}
+        <Route
+          path="/wallet"
+          element={
+            <RequireAuth>
+              <Wallet />
             </RequireAuth>
           }
         />

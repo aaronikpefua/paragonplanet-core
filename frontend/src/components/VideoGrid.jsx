@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { db, auth } from "../config/firebase";
+
+const API_URL =
+  "https://paragonplanet-api-849823064688.us-central1.run.app";
 
 export default function VideoGrid() {
   const [videos, setVideos] = useState([]);
+  const [loadingVoteId, setLoadingVoteId] = useState(null);
 
   useEffect(() => {
     const loadVideos = async () => {
@@ -29,6 +33,57 @@ export default function VideoGrid() {
     loadVideos();
   }, []);
 
+  /* =========================
+     HANDLE VOTE
+  ========================= */
+
+  const handleVote = async (videoId) => {
+    try {
+      const user = auth.currentUser;
+
+      if (!user) {
+        alert("Please login first");
+        return;
+      }
+
+      setLoadingVoteId(videoId);
+
+      const token = await user.getIdToken();
+
+      const response = await fetch(
+        `${API_URL}/vote/${videoId}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Vote failed");
+      }
+
+      // Update vote count instantly in UI
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.id === videoId
+            ? { ...v, votes: (v.votes || 0) + 1 }
+            : v
+        )
+      );
+
+    } catch (error) {
+      console.error("Vote error:", error);
+      alert(error.message);
+    } finally {
+      setLoadingVoteId(null);
+    }
+  };
+
   return (
     <div
       style={{
@@ -49,9 +104,9 @@ export default function VideoGrid() {
           {/* VIDEO PLAYER */}
           {video.videoUrl ? (
             <video
-              src={video.videoUrl}   // ✅ FIXED HERE
+              src={video.videoUrl}
               muted
-              controls              // allow play
+              controls
               playsInline
               style={{
                 width: "100%",
@@ -88,6 +143,11 @@ export default function VideoGrid() {
             </p>
           )}
 
+          {/* VOTE COUNT */}
+          <p style={{ fontSize: 13, fontWeight: "bold" }}>
+            Votes: {video.votes || 0}
+          </p>
+
           {/* ACTION BUTTONS */}
           <div
             style={{
@@ -96,7 +156,15 @@ export default function VideoGrid() {
               marginTop: 8,
             }}
           >
-            <button>❤️ Vote</button>
+            <button
+              onClick={() => handleVote(video.id)}
+              disabled={loadingVoteId === video.id}
+            >
+              {loadingVoteId === video.id
+                ? "Processing..."
+                : "❤️ Vote"}
+            </button>
+
             <button>👀 View</button>
             <button>💬 Comment</button>
           </div>
