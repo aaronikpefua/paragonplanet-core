@@ -6,10 +6,11 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "play:create-products": "node src/scripts/createPlayProducts.js",
+    "admin:set-claim": "node src/scripts/setAdminClaim.js"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.19.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
     "express": "^4.19.2",

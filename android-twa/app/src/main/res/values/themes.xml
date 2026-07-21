@@ -1,0 +1,14 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.ParagonPlanet" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/pp_accent</item>
+        <item name="colorPrimaryVariant">@color/pp_background</item>
+        <item name="colorOnPrimary">@color/pp_text_primary</item>
+        <item name="colorSurface">@color/pp_surface</item>
+        <item name="colorOnSurface">@color/pp_text_primary</item>
+        <item name="android:statusBarColor">@color/pp_background</item>
+        <item name="android:navigationBarColor">@color/pp_background</item>
+        <item name="android:windowBackground">@color/pp_background</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
+    </style>
+</resources>

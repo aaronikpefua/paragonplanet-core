@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.app.natureswayproduction",
+      "sha256_cert_fingerprints": [
+        "07:23:70:17:77:12:57:47:C9:21:13:38:92:CC:2F:27:7B:0A:FE:F6:1A:27:D8:B1:28:16:27:4D:6D:56:8D:FC",
+        "70:1B:17:14:E8:BE:76:46:38:49:EE:33:EF:E3:C5:E3:EF:98:D5:E6:AF:37:E3:EC:D2:43:3B:F6:42:BC:30:45"
+      ]
+    }
+  }
+]

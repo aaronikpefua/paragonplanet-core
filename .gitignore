@@ -6,6 +6,9 @@ yarn-error.log*
 # Env
 .env
 .env.local
+*.secret.local
+*.worker-secret.local
+backend/.video-worker-secret.local
 
 # Firebase / Google
 service-account.json
@@ -16,3 +19,11 @@ service-account.json
 .vscode/
 .vercel
 .env*.local
+
+# Local build tooling
+.tools/*.zip
+
+# Android TWA signing material
+android-twa/android-keystore
+android-twa/*.jks
+android-twa/*.keystore

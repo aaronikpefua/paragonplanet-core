@@ -1,0 +1,621 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ===============================
+       ADMIN CHECK
+    =============================== */
+    function isAdmin() {
+      return request.auth != null
+        && (
+          request.auth.token.admin == true ||
+          request.auth.token.email == "natureswaypro2@gmail.com"
+        );
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function canReadProfile() {
+      return isSignedIn();
+    }
+
+    function canWriteOwnProfile(uid) {
+      return isOwner(uid) || isAdmin();
+    }
+
+/* ===============================
+       VIDEOS
+    =============================== */
+    match /videos/{videoId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && (
+          (
+            request.resource.data.visibility == "home"
+            && request.resource.data.uploadPurpose == "home_video"
+            && exists(/databases/$(database)/documents/citizen_profiles/$(request.auth.uid))
+            && get(/databases/$(database)/documents/citizen_profiles/$(request.auth.uid)).data.status != "banned"
+          )
+          ||
+          (
+            isAdmin()
+            && request.resource.data.visibility == "meet_up"
+            && request.resource.data.uploadPurpose == "meet_up_video"
+            && request.resource.data.uploadedByRole == "admin"
+          )
+        );
+
+      allow update: if request.auth != null
+        && (
+          resource.data.uid == request.auth.uid ||
+          isAdmin() ||
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(["views"])
+        );
+
+      allow delete: if request.auth != null
+        && (
+          resource.data.uid == request.auth.uid ||
+          isAdmin()
+        );
+    }
+
+    /* ===============================
+       CITIZEN PROFILES
+    =============================== */
+    match /citizen_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       USER PROFILES
+    =============================== */
+    match /user_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       PROMOTER PROFILES
+    =============================== */
+    match /promoter_profiles/{uid} {
+      allow create: if isOwner(uid);
+
+      allow get: if canReadProfile();
+
+      allow list: if isSignedIn();
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       MERCHANT PROFILES
+    =============================== */
+    match /merchant_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       BACKER PROFILES
+    =============================== */
+    match /backer_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       SUPERNAL PROFILES
+    =============================== */
+    match /supernal_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       SPONSOR / INVESTOR PROFILES
+    =============================== */
+    match /sponsor_investor_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    match /sponsor_profiles/{uid} {
+      allow read: if canReadProfile();
+
+      allow create: if isOwner(uid);
+
+      allow update, delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       PUBLIC PROFILE DIRECTORY
+       No email, phone, wallet, or private account fields belong here.
+    =============================== */
+    match /public_profiles/{uid} {
+      allow read: if true;
+
+      allow create, update: if canWriteOwnProfile(uid)
+        && request.resource.data.keys().hasOnly([
+          "uid",
+          "role",
+          "displayName",
+          "realName",
+          "stageName",
+          "storeName",
+          "brandName",
+          "profession",
+          "country",
+          "state",
+          "tribe",
+          "status",
+          "reviewStatus",
+          "accountType",
+          "talents",
+          "types",
+          "productTypes",
+          "serviceField",
+          "fields",
+          "primaryPromoterId",
+          "invitedByPromoterId",
+          "createdAt",
+          "updatedAt"
+        ])
+        && request.resource.data.uid == uid;
+
+      allow delete: if canWriteOwnProfile(uid);
+    }
+
+    /* ===============================
+       MERCHANT PRODUCTS
+    =============================== */
+    match /merchant_products/{productId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.merchantId == request.auth.uid;
+
+      allow update, delete: if request.auth != null
+        && (
+          resource.data.merchantId == request.auth.uid ||
+          isAdmin()
+        );
+    }
+
+    /* ===============================
+       MERCHANT PRODUCT COMMENTS
+    =============================== */
+    match /merchant_product_comments/{commentId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       MERCHANT ORDERS
+    =============================== */
+    match /merchant_orders/{orderId} {
+      allow create: if request.auth != null
+        && request.resource.data.buyerId == request.auth.uid;
+
+      allow read: if request.auth != null
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.merchantId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       MERCHANT ORDER MESSAGES
+    =============================== */
+    match /merchant_order_messages/{messageId} {
+      allow create: if request.auth != null
+        && request.resource.data.senderId == request.auth.uid
+        && (
+          request.resource.data.buyerId == request.auth.uid ||
+          request.resource.data.merchantId == request.auth.uid
+        );
+
+      allow read: if request.auth != null
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.merchantId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow update: if request.auth != null
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.merchantId == request.auth.uid
+        )
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["readBy"]);
+
+      allow delete: if isAdmin();
+    }
+
+    /* ===============================
+       MERCHANT ESCROW REQUESTS
+    =============================== */
+    match /merchant_escrow_requests/{requestId} {
+      allow create: if request.auth != null
+        && request.resource.data.buyerId == request.auth.uid;
+
+      allow read: if request.auth != null
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.merchantId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       MERCHANT PAYMENT REQUESTS
+    =============================== */
+    match /merchant_payment_requests/{requestId} {
+      allow create: if request.auth != null
+        && request.resource.data.buyerId == request.auth.uid;
+
+      allow read: if request.auth != null
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.merchantId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       DIRECT MESSAGES
+    =============================== */
+    match /direct_messages/{messageId} {
+      allow read: if request.auth != null
+        && request.auth.uid in resource.data.participantIds;
+
+      allow create: if request.auth != null
+        && request.resource.data.senderId == request.auth.uid
+        && request.auth.uid in request.resource.data.participantIds
+        && request.resource.data.participantIds.size() == 2;
+
+      allow update: if request.auth != null
+        && request.auth.uid in resource.data.participantIds
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["readBy"]);
+
+      allow delete: if isAdmin();
+    }
+
+    /* ===============================
+       BACKER QUESTIONS
+    =============================== */
+    match /backer_questions/{questionId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if request.auth != null
+        && (
+          isAdmin() ||
+          resource.data.ownerId == request.auth.uid ||
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "attemptsCount",
+            "answeredCorrectly",
+            "answeredBy",
+            "answeredByName",
+            "answeredAt",
+            "status",
+            "updatedAt"
+          ])
+        );
+
+      allow delete: if request.auth != null
+        && (
+          resource.data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+    }
+
+    /* ===============================
+       BACKER QUESTION ATTEMPTS
+    =============================== */
+    match /backer_question_attempts/{attemptId} {
+      allow read: if request.auth != null
+        && (
+          resource.data.responderId == request.auth.uid ||
+          resource.data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow create: if request.auth != null
+        && request.resource.data.responderId == request.auth.uid;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       SUPERBOSS CHALLENGES
+    =============================== */
+    match /superboss_challenges/{challengeId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if request.auth != null
+        && (
+          isAdmin() ||
+          resource.data.ownerId == request.auth.uid ||
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "attemptsCount",
+            "answeredCorrectly",
+            "answeredBy",
+            "answeredByName",
+            "answeredAt",
+            "status",
+            "updatedAt"
+          ])
+        );
+
+      allow delete: if request.auth != null
+        && (
+          resource.data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+    }
+
+    /* ===============================
+       SUPERBOSS CHALLENGE ATTEMPTS
+    =============================== */
+    match /superboss_challenge_attempts/{attemptId} {
+      allow read: if request.auth != null
+        && (
+          resource.data.responderId == request.auth.uid ||
+          resource.data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow create: if request.auth != null
+        && request.resource.data.responderId == request.auth.uid;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       VIDEO COMMENTS
+    =============================== */
+    match /video_comments/{commentId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid;
+
+      allow update, delete: if false;
+    }
+
+    /* ===============================
+       VIDEO VIEWS
+    =============================== */
+    match /video_views/{viewId} {
+      allow read: if false;
+
+      allow create: if true;
+
+      allow update, delete: if false;
+    }
+
+    /* ===============================
+       SUPERBOSS PUBLIC TESTIMONIALS
+    =============================== */
+    match /supernal_testimonials/{testimonialId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.voterId == request.auth.uid
+        && request.resource.data.supernalId is string
+        && request.resource.data.supernalId != request.auth.uid
+        && request.resource.data.status == "published"
+        && request.resource.data.relationship in [
+          "students",
+          "tutees",
+          "trainees",
+          "mentees",
+          "followers",
+          "beneficiaries",
+          "communityMembers"
+        ]
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() >= 3
+        && request.resource.data.comment.size() <= 800;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       CREATOR FOLLOWS
+    =============================== */
+    match /creator_follows/{followId} {
+      allow read: if request.auth != null
+        && request.auth.uid == resource.data.followerId;
+
+      allow create: if request.auth != null
+        && request.resource.data.followerId == request.auth.uid;
+
+      allow delete: if request.auth != null
+        && request.auth.uid == resource.data.followerId;
+
+      allow update: if false;
+    }
+
+    /* ===============================
+       SAVED VIDEOS
+    =============================== */
+    match /saved_videos/{saveId} {
+      allow read: if request.auth != null
+        && request.auth.uid == resource.data.uid;
+
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid;
+
+      allow delete: if request.auth != null
+        && request.auth.uid == resource.data.uid;
+
+      allow update: if false;
+    }
+
+    /* ===============================
+       WALLET ACCOUNTS
+    =============================== */
+    match /wallet_accounts/{uid} {
+      allow read: if request.auth != null
+        && (
+          request.auth.uid == uid ||
+          isAdmin()
+        );
+
+      allow create: if request.auth != null
+        && request.auth.uid == uid;
+
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.balances == resource.data.balances
+        && request.resource.data.lockedBalances == resource.data.lockedBalances;
+
+      allow delete: if false;
+    }
+
+    /* ===============================
+       TRANSACTIONS
+    =============================== */
+    match /transactions/{txId} {
+      allow read: if request.auth != null
+        && (
+          request.auth.uid == resource.data.userId ||
+          isAdmin()
+        );
+
+      allow write: if false;
+    }
+
+    /* ===============================
+       LEDGER ENTRIES
+    =============================== */
+    match /ledger_entries/{entryId} {
+      allow read: if request.auth != null
+        && (
+          request.auth.uid == resource.data.accountId ||
+          isAdmin()
+        );
+
+      allow write: if false;
+    }
+
+    /* ===============================
+       PROCESSED PAYMENTS
+    =============================== */
+    match /processed_payments/{ref} {
+      allow read, write: if false;
+    }
+
+    /* ===============================
+       INVITES
+    =============================== */
+    match /invites/{code} {
+      allow read: if true;
+
+      allow create: if request.auth != null;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* ===============================
+       WITHDRAWALS
+    =============================== */
+    match /withdrawals/{id} {
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.userId;
+
+      allow read: if request.auth != null
+        && (
+          request.auth.uid == resource.data.userId ||
+          isAdmin()
+        );
+
+      allow update, delete: if false;
+    }
+
+
+    /* ===============================
+       MEET-UP CALL AND AREA REQUESTS
+    =============================== */
+    match /meetup_call_sessions/{sessionId} {
+      allow read: if request.auth != null
+        && (
+          resource.data.requesterId == request.auth.uid ||
+          resource.data.starId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow create: if request.auth != null
+        && request.resource.data.requesterId == request.auth.uid
+        && request.resource.data.starId is string
+        && request.resource.data.starId != request.auth.uid
+        && request.resource.data.status == "pending";
+
+      allow update: if request.auth != null
+        && (
+          resource.data.starId == request.auth.uid ||
+          isAdmin()
+        )
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "status",
+          "updatedAt",
+          "decidedAt"
+        ])
+        && request.resource.data.status in ["accepted", "declined"];
+
+      allow delete: if isAdmin();
+    }
+
+    /* ===============================
+       DEFAULT DENY
+    =============================== */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

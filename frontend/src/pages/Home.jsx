@@ -3,14 +3,14 @@ import VideoGrid from "../components/VideoGrid";
 
 export default function Home() {
   return (
-    <>
+    <div style={{ height: "100vh", overflow: "hidden" }}>
+      
       {/* CATEGORY FILTER BAR */}
       <CategoryScroller />
 
-      {/* VIDEO GRID */}
-      <main style={{ padding: 20 }}>
-        <VideoGrid />
-      </main>
-    </>
+      {/* VIDEO FEED */}
+      <VideoGrid />
+
+    </div>
   );
 }

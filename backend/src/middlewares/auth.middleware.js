@@ -15,7 +15,9 @@ export async function authenticate(req, res, next) {
     req.user = {
       uid: decodedToken.uid,
       email: decodedToken.email,
-      role: decodedToken.role || "user"
+      phoneNumber: decodedToken.phone_number,
+      role: decodedToken.role || "user",
+      admin: decodedToken.admin === true
     };
 
     next();

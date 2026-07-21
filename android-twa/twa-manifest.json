@@ -1,0 +1,57 @@
+{
+  "packageId": "com.app.natureswayproduction",
+  "host": "paragonplanet.com",
+  "name": "Paragon Planet",
+  "launcherName": "Paragon",
+  "display": "standalone",
+  "themeColor": "#000000",
+  "themeColorDark": "#000000",
+  "navigationColor": "#000000",
+  "navigationColorDark": "#000000",
+  "navigationDividerColor": "#000000",
+  "navigationDividerColorDark": "#000000",
+  "backgroundColor": "#000000",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://www.paragonplanet.com/logo-v2.png",
+  "maskableIconUrl": "https://www.paragonplanet.com/logo-v2.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "C:\\Users\\user\\paragonplanet-core\\android-twa\\android.keystore",
+    "alias": "android"
+  },
+  "appVersionName": "14",
+  "appVersionCode": 14,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://paragonplanet.com/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {
+    "playBilling": {
+      "enabled": true
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://paragonplanet.com/",
+  "minSdkVersion": 21,
+  "orientation": "portrait",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [
+    "www.paragonplanet.com"
+  ],
+  "retainedBundles": [],
+  "protocolHandlers": [],
+  "fileHandlers": [],
+  "launchHandlerClientMode": "",
+  "displayOverride": [
+    "fullscreen",
+    "standalone",
+    "minimal-ui"
+  ],
+  "appVersion": "14"
+}

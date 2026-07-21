@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string-array name="additional_trusted_origins">
+    <item>https://www.paragonplanet.com</item>
+  </string-array>
+  <string-array name="display_override">
+    <item>immersive</item>
+    <item>standalone</item>
+    <item>minimal-ui</item>
+  </string-array>
+  <string name="assetStatements">[{\"relation\":[\"delegate_permission/common.handle_all_urls\"],\"target\":{\"namespace\":\"web\",\"site\":\"https://paragonplanet.com\"}},{\"relation\":[\"delegate_permission/common.handle_all_urls\"],\"target\":{\"namespace\":\"web\",\"site\":\"https://www.paragonplanet.com\"}}]</string>
+  <string name="native_app_name">Paragon Planet</string>
+  <string name="nav_feed">Feed</string>
+  <string name="nav_watch">Watch</string>
+  <string name="nav_wallet">Wallet</string>
+  <string name="nav_profile">Profile</string>
+  <string name="nav_upload">Upload</string>
+  <string name="screen_feed_title">Feed</string>
+  <string name="screen_watch_title">Watch</string>
+  <string name="screen_wallet_title">Wallet</string>
+  <string name="screen_profile_title">Profile</string>
+  <string name="screen_upload_title">Upload</string>
+  <string name="screen_watch_body">Native watch shell is loading the current web watch flow while we migrate playback to Android.</string>
+  <string name="screen_profile_body">Native profile shell is loading the current web profile flow while we migrate account features.</string>
+  <string name="screen_upload_body">Native upload shell is loading the current web upload flow while we migrate creation tools.</string>
+  <string name="feed_section_categories">Categories</string>
+  <string name="feed_section_videos">Trending talent</string>
+  <string name="feed_open_watch">Open watch flow</string>
+  <string name="wallet_balance_label">Wallet foundation</string>
+  <string name="wallet_native_status_idle">Connect Google Play Billing to load wallet packs.</string>
+  <string name="wallet_native_status_loading">Loading Play Billing products…</string>
+  <string name="wallet_native_status_empty">No wallet products were returned for this Android account yet.</string>
+  <string name="wallet_native_status_error">Google Play Billing could not initialize on this device.</string>
+  <string name="wallet_native_status_ready">Google Play Billing is ready. Choose a wallet pack to launch purchase flow.</string>
+  <string name="wallet_native_debug_title">Native billing diagnostics</string>
+  <string name="wallet_refresh_products">Refresh wallet packs</string>
+  <string name="wallet_open_web_wallet">Open web wallet fallback</string>
+  <string name="webview_loading">Loading Paragon Planet…</string>
+</resources>

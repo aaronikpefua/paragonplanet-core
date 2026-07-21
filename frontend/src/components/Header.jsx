@@ -1,19 +1,26 @@
-// src/components/Header.jsx
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "../config/firebase";
 import { useEffect, useState } from "react";
 
-const ADMIN_EMAIL = "natureswaypro2@gmail.com";
-const ADMIN_PHONE = "+2348146626688"; // future OTP-ready
-
 export default function Header({ onToggleMenu }) {
   const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      setIsAdmin(false);
+
+      if (u) {
+        u.getIdTokenResult()
+          .then((token) => {
+            setIsAdmin(token.claims?.admin === true || token.claims?.role === "admin");
+          })
+          .catch(() => setIsAdmin(false));
+      }
     });
     return () => unsub();
   }, []);
@@ -23,39 +30,149 @@ export default function Header({ onToggleMenu }) {
     navigate("/", { replace: true });
   };
 
-  const isAdmin =
-    user &&
-    (user.email === ADMIN_EMAIL ||
-      user.phoneNumber === ADMIN_PHONE);
+  const isVideoRoute =
+    location.pathname === "/" ||
+    location.pathname.startsWith("/watch") ||
+    location.pathname.startsWith("/autoplay");
 
   return (
-    <header style={{ padding: 12, borderBottom: "1px solid #ddd" }}>
-      {/* HOME BUTTON */}
-      <Link to="/" style={{ marginRight: 12 }}>
-        🏠
-      </Link>
+    <header
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: isVideoRoute ? 58 : 60,
+        boxSizing: "border-box",
 
-      {/* LOGO */}
-      <Link to="/">🌍 Paragon Planet</Link>
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 20px 0 8px",
 
-      {/* NAV */}
-      <nav style={{ float: "right", display: "flex", gap: 10 }}>
+        background: isVideoRoute
+          ? "linear-gradient(180deg, rgba(0,0,0,0.72), rgba(0,0,0,0))"
+          : "rgba(0,0,0,0.3)",
+        backdropFilter: isVideoRoute ? "none" : "blur(10px)",
+        WebkitBackdropFilter: isVideoRoute ? "none" : "blur(10px)",
+
+        zIndex: 1000,
+      }}
+    >
+
+      {/* LEFT */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {!isVideoRoute && (
+          <Link to="/" style={{ fontSize: 20, color: "#fff" }}>
+            🏠
+          </Link>
+        )}
+
+        <Link
+          to="/"
+          style={brandLinkStyle}
+          aria-label="Paragon Planet home"
+        >
+          <img src="/logo-v2.png" alt="Paragon Planet" style={brandLogoStyle} />
+          <span style={brandTextStyle}>Paragon Planet</span>
+        </Link>
+      </div>
+
+      {/* RIGHT */}
+      <nav style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+
         {user ? (
           <>
-            <Link to="/upload">Upload</Link>
-            <Link to="/profile">Profile</Link>
+            {/* ⬆️ Upload */}
+            <Link to="/upload" title="Upload">
+              <span style={{ fontSize: 20, color: "#fff" }}>⬆️</span>
+            </Link>
 
-            {isAdmin && <Link to="/admin">Admin</Link>}
+            {/* 👤 Profile */}
+            <Link to="/profile" title="Profile">
+              <span style={{ fontSize: 20, color: "#fff" }}>👤</span>
+            </Link>
 
-            <button onClick={handleSignOut}>Sign out</button>
+            {/* 🛠 Admin */}
+            {isAdmin && (
+              <Link to="/admin" title="Admin">
+                <span style={{ fontSize: 20, color: "#fff" }}>🛠</span>
+              </Link>
+            )}
 
-            {/* MENU BUTTON */}
-            <button onClick={onToggleMenu}>☰</button>
+            {/* 🚪 Logout */}
+            <button
+              onClick={handleSignOut}
+              title="Sign out"
+              style={{
+                fontSize: 18,
+                background: "transparent",
+                border: "none",
+                color: "#fff",
+                cursor: "pointer"
+              }}
+            >
+              🚪
+            </button>
+
           </>
         ) : (
-          <Link to="/login">Sign in</Link>
+          <>
+            <Link
+              to="/login"
+              style={{
+                fontSize: 16,
+                color: "#fff",
+                textDecoration: "none"
+              }}
+            >
+              🔑 Sign in
+            </Link>
+          </>
+        )}
+
+        {/* ☰ Menu - visible to everyone */}
+        {!isVideoRoute && (
+          <button
+            onClick={onToggleMenu}
+            title="Menu"
+            style={{
+              fontSize: 18,
+              background: "transparent",
+              border: "none",
+              color: "#fff",
+              cursor: "pointer"
+            }}
+          >
+            ☰
+          </button>
         )}
       </nav>
     </header>
   );
 }
+
+const brandLinkStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  color: "#fff",
+  textDecoration: "none",
+  minWidth: 0,
+};
+
+const brandLogoStyle = {
+  width: 34,
+  height: 34,
+  borderRadius: 8,
+  objectFit: "cover",
+  objectPosition: "center",
+  display: "block",
+  boxShadow: "0 0 14px rgba(255, 205, 86, 0.45)",
+};
+
+const brandTextStyle = {
+  fontWeight: "bold",
+  color: "#fff",
+  textShadow: "0 1px 8px rgba(0,0,0,0.45)",
+};

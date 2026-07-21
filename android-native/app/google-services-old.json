@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "849823064688",
+    "project_id": "paragonplanet-core",
+    "storage_bucket": "paragonplanet-core.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:849823064688:android:ed9882b2b2bcba81744ab5",
+        "android_client_info": {
+          "package_name": "com.app.natureswayproduction"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "849823064688-bb2ibmfqp1ds80ta5altlitgu3en9osb.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.app.natureswayproduction",
+            "certificate_hash": "4ee7c0a1ec36be839d4a517ff65f8e7548456274"
+          }
+        },
+        {
+          "client_id": "849823064688-lsvjudqeajvabte2gen5nbpf1k7d3h8h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwcn__jrKm0Q6VzDqVY2ENStsfrfMx_28"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "849823064688-4el8pctqegnggqfdi47mb966h4opl0hq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

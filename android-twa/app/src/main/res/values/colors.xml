@@ -1,0 +1,12 @@
+<resources>
+    <color name="shortcut_background">#F5F5F5</color>
+    <color name="pp_background">#050505</color>
+    <color name="pp_surface">#121212</color>
+    <color name="pp_card">#171717</color>
+    <color name="pp_border">#262626</color>
+    <color name="pp_text_primary">#FFFFFF</color>
+    <color name="pp_text_secondary">#B3B3B3</color>
+    <color name="pp_accent">#F59E0B</color>
+    <color name="pp_nav_selected">#F59E0B</color>
+    <color name="pp_nav_unselected">#8B8B8B</color>
+</resources>

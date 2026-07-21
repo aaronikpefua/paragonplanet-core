@@ -19,11 +19,19 @@ export default function InviteHandler() {
         return navigate("/");
       }
 
-      // Save promoterId temporarily
-      localStorage.setItem(
-        "invitePromoterId",
-        snap.data().promoterId
-      );
+      const invite = snap.data();
+
+      if (invite.purpose === "support_invite") {
+        localStorage.setItem("inviteSupportTargetId", invite.supportTargetId || invite.inviterId || "");
+        localStorage.setItem("inviteSupportTargetRole", invite.supportTargetRole || "");
+        localStorage.setItem("inviteSupportTargetName", invite.supportTargetName || "");
+      } else if (invite.promoterId) {
+        localStorage.setItem("invitePromoterId", invite.promoterId);
+      } else {
+        localStorage.removeItem("invitePromoterId");
+      }
+
+      localStorage.setItem("inviteCode", code);
 
       navigate("/signup");
     };

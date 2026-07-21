@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/pp_background">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/screen_wallet_title" android:textColor="@color/pp_text_primary" android:textSize="28sp" android:textStyle="bold" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:background="@drawable/video_card_background" android:orientation="vertical" android:padding="18dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/wallet_balance_label" android:textColor="@color/pp_text_secondary" android:textSize="13sp" />
+            <TextView android:id="@+id/wallet_status_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/wallet_native_status_idle" android:textColor="@color/pp_text_primary" android:textSize="16sp" />
+            <Button android:id="@+id/refresh_products_button" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="@string/wallet_refresh_products" />
+            <Button android:id="@+id/open_web_wallet_button" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/wallet_open_web_wallet" />
+        </LinearLayout>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="Products" android:textColor="@color/pp_text_secondary" android:textSize="14sp" />
+        <LinearLayout android:id="@+id/product_container" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:orientation="vertical" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/wallet_native_debug_title" android:textColor="@color/pp_text_secondary" android:textSize="14sp" />
+        <TextView android:id="@+id/debug_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/video_card_background" android:padding="16dp" android:textColor="@color/pp_text_primary" android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>
