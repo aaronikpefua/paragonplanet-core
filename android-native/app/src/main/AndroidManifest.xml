@@ -11,6 +11,22 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.ParagonPlanetNative">
+        <meta-data
+            android:name="com.facebook.sdk.ApplicationId"
+            android:value="1037482572065163" />
+        <meta-data
+            android:name="com.facebook.sdk.ClientToken"
+            android:value="50779e7722398e1331c3befff9b48507" />
+        <activity
+            android:name="com.facebook.CustomTabActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="fb1037482572065163" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".nativeapp.MainActivity"
             android:exported="true"

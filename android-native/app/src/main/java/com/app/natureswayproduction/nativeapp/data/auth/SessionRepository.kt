@@ -1,18 +1,40 @@
 package com.app.natureswayproduction.nativeapp.data.auth
 
 import android.app.Activity
+import android.content.Intent
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import com.app.natureswayproduction.R
 import com.app.natureswayproduction.nativeapp.data.api.MobileUser
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
+import com.facebook.AccessToken
+import com.facebook.CallbackManager
+import com.facebook.FacebookCallback
+import com.facebook.FacebookException
+import com.facebook.login.LoginManager
+import com.facebook.login.LoginResult
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FacebookAuthProvider
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.OAuthProvider
+import com.google.firebase.auth.AuthCredential
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class SessionRepository(
     private val firebaseAuth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
     private val apiService: ParagonApiService = ParagonApiService(),
 ) {
+    private var pendingFacebookCredential: AuthCredential? = null
+
     suspend fun loadSessionSummary(): SessionSummary {
         val user = firebaseAuth.currentUser
             ?: return SessionSummary(
@@ -50,16 +72,22 @@ class SessionRepository(
     }
 
     suspend fun signInWithGoogle(activity: Activity): SessionSummary {
-        val provider = OAuthProvider.newBuilder("google.com").apply {
-            addCustomParameter("prompt", "select_account")
-        }
+        val googleIdOption = GetGoogleIdOption.Builder()
+            .setServerClientId(activity.getString(R.string.default_web_client_id))
+            .setFilterByAuthorizedAccounts(false)
+            .build()
+        val request = GetCredentialRequest.Builder()
+            .addCredentialOption(googleIdOption)
+            .build()
+        val credential = CredentialManager.create(activity)
+            .getCredential(activity, request)
+            .credential
 
-        val pendingResult = firebaseAuth.pendingAuthResult
-        if (pendingResult != null) {
-            pendingResult.await()
-        } else {
-            firebaseAuth.startActivityForSignInWithProvider(activity, provider.build()).await()
+        check(credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+            "Google Credential Manager returned an unexpected credential type: ${credential.type}"
         }
+        val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+        firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null)).await()
 
         return loadSessionSummary().copy(
             note = "Google account connected successfully."
@@ -67,20 +95,47 @@ class SessionRepository(
     }
 
     suspend fun signInWithFacebook(activity: Activity): SessionSummary {
-        val provider = OAuthProvider.newBuilder("facebook.com").apply {
-            addCustomParameter("auth_type", "reauthenticate")
-            addCustomParameter("prompt", "select_account")
+        val accessToken = FacebookLoginCoordinator.signIn(activity)
+        val facebookCredential = FacebookAuthProvider.getCredential(accessToken.token)
+        val signedInUser = firebaseAuth.currentUser
+
+        if (signedInUser != null) {
+            signedInUser.linkWithCredential(facebookCredential).await()
+            return loadSessionSummary().copy(
+                note = "Facebook account linked successfully. You can now sign in with Google or Facebook."
+            )
         }
 
-        val pendingResult = firebaseAuth.pendingAuthResult
-        if (pendingResult != null) {
-            pendingResult.await()
-        } else {
-            firebaseAuth.startActivityForSignInWithProvider(activity, provider.build()).await()
+        try {
+            firebaseAuth.signInWithCredential(facebookCredential).await()
+        } catch (error: FirebaseAuthUserCollisionException) {
+            if (error.errorCode != "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL") throw error
+
+            pendingFacebookCredential = facebookCredential
+            val signInMethods = error.email
+                ?.takeIf { it.isNotBlank() }
+                ?.let { email ->
+                    runCatching {
+                        firebaseAuth.fetchSignInMethodsForEmail(email).await().signInMethods.orEmpty()
+                    }.getOrDefault(emptyList())
+                }
+                .orEmpty()
+            throw ExistingAccountRequiresFacebookLinkException(signInMethods)
         }
 
         return loadSessionSummary().copy(
             note = "Facebook account connected successfully."
+        )
+    }
+
+    suspend fun linkPendingFacebookCredential(): SessionSummary? {
+        val facebookCredential = pendingFacebookCredential ?: return null
+        val signedInUser = firebaseAuth.currentUser ?: return null
+
+        signedInUser.linkWithCredential(facebookCredential).await()
+        pendingFacebookCredential = null
+        return loadSessionSummary().copy(
+            note = "Facebook account linked successfully. You can now sign in with Google or Facebook."
         )
     }
 
@@ -107,6 +162,7 @@ class SessionRepository(
     }
 
     fun signOut() {
+        pendingFacebookCredential = null
         firebaseAuth.signOut()
     }
 
@@ -158,6 +214,44 @@ class SessionRepository(
         val token = getFreshIdToken() ?: return null
         val backendUser = runCatching { apiService.fetchAuthenticatedUser(token) }.getOrNull() ?: return null
         return backendUser.copy(uid = backendUser.uid.ifBlank { fallbackUid })
+    }
+}
+
+class ExistingAccountRequiresFacebookLinkException(
+    val signInMethods: List<String>,
+) : IllegalStateException("Sign in with the existing account before linking Facebook.")
+
+object FacebookLoginCoordinator {
+    private val callbackManager: CallbackManager = CallbackManager.Factory.create()
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        callbackManager.onActivityResult(requestCode, resultCode, data)
+    }
+
+    suspend fun signIn(activity: Activity): AccessToken = suspendCancellableCoroutine { continuation ->
+        val loginManager = LoginManager.getInstance()
+        loginManager.registerCallback(callbackManager, object : FacebookCallback<LoginResult> {
+            override fun onSuccess(result: LoginResult) {
+                loginManager.unregisterCallback(callbackManager)
+                if (continuation.isActive) continuation.resume(result.accessToken)
+            }
+
+            override fun onCancel() {
+                loginManager.unregisterCallback(callbackManager)
+                if (continuation.isActive) {
+                    continuation.resumeWithException(IllegalStateException("Facebook sign-in was cancelled."))
+                }
+            }
+
+            override fun onError(error: FacebookException) {
+                loginManager.unregisterCallback(callbackManager)
+                if (continuation.isActive) continuation.resumeWithException(error)
+            }
+        })
+        continuation.invokeOnCancellation {
+            loginManager.unregisterCallback(callbackManager)
+        }
+        loginManager.logInWithReadPermissions(activity, listOf("public_profile", "email"))
     }
 }
 

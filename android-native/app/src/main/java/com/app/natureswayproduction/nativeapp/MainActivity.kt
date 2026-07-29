@@ -1,5 +1,6 @@
 package com.app.natureswayproduction.nativeapp
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -13,6 +14,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
+import com.app.natureswayproduction.nativeapp.data.auth.FacebookLoginCoordinator
 import com.app.natureswayproduction.nativeapp.data.billing.BillingRepository
 import com.app.natureswayproduction.nativeapp.feature.auth.AuthViewModel
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedRepository
@@ -82,6 +84,12 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    @Deprecated("Required by the Facebook Android SDK callback flow")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        FacebookLoginCoordinator.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun hideSystemBars() {

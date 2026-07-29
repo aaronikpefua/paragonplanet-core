@@ -6,11 +6,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.app.natureswayproduction.BuildConfig
+import com.app.natureswayproduction.nativeapp.data.auth.ExistingAccountRequiresFacebookLinkException
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
 import com.google.android.gms.common.api.ApiException
+import com.google.firebase.auth.EmailAuthProvider
+import com.google.firebase.auth.FacebookAuthProvider
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -79,7 +83,10 @@ class AuthViewModel(
         }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            runCatching { sessionRepository.signIn(state.emailInput.trim(), state.passwordInput) }
+            runCatching {
+                val session = sessionRepository.signIn(state.emailInput.trim(), state.passwordInput)
+                sessionRepository.linkPendingFacebookCredential() ?: session
+            }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -156,7 +163,10 @@ class AuthViewModel(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            runCatching { sessionRepository.signInWithGoogle(activity) }
+            runCatching {
+                val session = sessionRepository.signInWithGoogle(activity)
+                sessionRepository.linkPendingFacebookCredential() ?: session
+            }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -203,7 +213,16 @@ class AuthViewModel(
                 .onFailure { error ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        errorMessage = providerErrorMessage("Facebook", error),
+                        errorMessage = if (error is ExistingAccountRequiresFacebookLinkException) {
+                            null
+                        } else {
+                            providerErrorMessage("Facebook", error)
+                        },
+                        note = if (error is ExistingAccountRequiresFacebookLinkException) {
+                            facebookLinkInstruction(error)
+                        } else {
+                            _uiState.value.note
+                        },
                     )
                 }
         }
@@ -218,7 +237,10 @@ class AuthViewModel(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            runCatching { sessionRepository.signInWithX(activity) }
+            runCatching {
+                val session = sessionRepository.signInWithX(activity)
+                sessionRepository.linkPendingFacebookCredential() ?: session
+            }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -320,6 +342,26 @@ class AuthViewModel(
 
             else -> "$provider sign-in failed"
         }
+    }
+
+    private fun facebookLinkInstruction(error: ExistingAccountRequiresFacebookLinkException): String {
+        val providerNames = error.signInMethods.mapNotNull { method ->
+            when (method) {
+                GoogleAuthProvider.PROVIDER_ID -> "Google"
+                FacebookAuthProvider.PROVIDER_ID -> "Facebook"
+                EmailAuthProvider.PROVIDER_ID -> "email and password"
+                "twitter.com" -> "X"
+                else -> null
+            }
+        }.distinct()
+
+        val providerText = when (providerNames.size) {
+            0 -> "your existing sign-in method"
+            1 -> providerNames.single()
+            2 -> providerNames.joinToString(" or ")
+            else -> providerNames.dropLast(1).joinToString(", ") + ", or " + providerNames.last()
+        }
+        return "An account already exists for this Facebook email. Sign in with $providerText; Facebook will then be linked to that existing account automatically."
     }
 
     fun deleteAccount() {
