@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.PrintWriter
+import java.io.StringWriter
 
 class AuthViewModel(
     private val sessionRepository: SessionRepository,
@@ -254,6 +256,41 @@ class AuthViewModel(
                     )
                 }
                 .onFailure { error ->
+                    // DEBUG-only detailed logging for X sign-in failures
+                    if (BuildConfig.DEBUG) {
+                        try {
+                            val chain = generateSequence(error) { it.cause }.toList()
+                            val root = chain.lastOrNull() ?: error
+                            val firebaseEx = chain.filterIsInstance<FirebaseAuthException>().firstOrNull()
+                            val apiEx = chain.filterIsInstance<ApiException>().firstOrNull()
+
+                            val sw = StringWriter()
+                            val pw = PrintWriter(sw)
+                            error.printStackTrace(pw)
+
+                            val details = StringBuilder().apply {
+                                append("X sign-in failure (debug diagnostics)\n")
+                                append("Exception class: ${error.javaClass.name}\n")
+                                append("Exception message: ${error.message ?: "<none>"}\n")
+                                append("Root cause class: ${root.javaClass.name}\n")
+                                append("Root cause message: ${root.message ?: "<none>"}\n")
+                                if (firebaseEx != null) {
+                                    append("FirebaseAuthException.errorCode: ${firebaseEx.errorCode}\n")
+                                    append("FirebaseAuthException.localizedMessage: ${firebaseEx.localizedMessage ?: "<none>"}\n")
+                                }
+                                if (apiEx != null) {
+                                    append("ApiException.statusCode: ${apiEx.statusCode}\n")
+                                }
+                                append("Stack trace:\n")
+                                append(sw.toString())
+                            }.toString()
+
+                            Log.e("X_SIGN_IN", details, error)
+                        } catch (logError: Throwable) {
+                            Log.e("X_SIGN_IN", "Failed to produce debug diagnostics for X sign-in", logError)
+                        }
+                    }
+
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         errorMessage = providerErrorMessage("X", error),
