@@ -20,6 +20,7 @@ import com.google.firebase.auth.FacebookAuthProvider
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.OAuthProvider
 import com.google.firebase.auth.AuthCredential
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
@@ -141,6 +142,8 @@ class SessionRepository(
     }
 
     suspend fun signInWithX(activity: Activity): SessionSummary {
+        Log.d("X_SIGN_IN_RUNTIME", "entering signInWithX()")
+
         val provider = OAuthProvider.newBuilder("twitter.com").apply {
             addCustomParameter("force_login", "true")
         }
@@ -148,31 +151,41 @@ class SessionRepository(
         // DEBUG tracing for X sign-in runtime
         try {
             val pendingResult = firebaseAuth.pendingAuthResult
-            Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult before starting signInWithX: ${pendingResult != null}")
+            Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult is null: ${pendingResult == null}")
 
             if (pendingResult != null) {
-                Log.d("X_SIGN_IN_RUNTIME", "Awaiting existing pendingAuthResult")
+                Log.d("X_SIGN_IN_RUNTIME", "before awaiting pendingAuthResult")
                 try {
                     pendingResult.await()
-                    Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult.await() completed successfully")
+                    Log.d("X_SIGN_IN_RUNTIME", "after pendingAuthResult.await()")
                 } catch (awaitEx: Exception) {
                     Log.e("X_SIGN_IN_RUNTIME", "pendingAuthResult.await() threw", awaitEx)
+                    if (awaitEx is FirebaseAuthException) {
+                        Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${awaitEx.errorCode}")
+                    }
                     throw awaitEx
                 }
             } else {
-                Log.d("X_SIGN_IN_RUNTIME", "Calling startActivityForSignInWithProvider")
+                Log.d("X_SIGN_IN_RUNTIME", "before calling startActivityForSignInWithProvider()")
                 try {
                     val task = firebaseAuth.startActivityForSignInWithProvider(activity, provider.build())
-                    Log.d("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider returned Task object: $task")
+                    Log.d("X_SIGN_IN_RUNTIME", "immediately after startActivityForSignInWithProvider(), Task object: $task")
+                    Log.d("X_SIGN_IN_RUNTIME", "before task.await()")
                     try {
                         task.await()
-                        Log.d("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider.await() completed successfully")
+                        Log.d("X_SIGN_IN_RUNTIME", "after task.await()")
                     } catch (taskEx: Exception) {
-                        Log.e("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider.await() threw", taskEx)
+                        Log.e("X_SIGN_IN_RUNTIME", "task.await() threw", taskEx)
+                        if (taskEx is FirebaseAuthException) {
+                            Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${taskEx.errorCode}")
+                        }
                         throw taskEx
                     }
                 } catch (syncEx: Exception) {
                     Log.e("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider threw synchronously", syncEx)
+                    if (syncEx is FirebaseAuthException) {
+                        Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${syncEx.errorCode}")
+                    }
                     throw syncEx
                 }
             }
