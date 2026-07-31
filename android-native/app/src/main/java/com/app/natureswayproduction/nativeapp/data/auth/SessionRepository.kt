@@ -2,6 +2,7 @@ package com.app.natureswayproduction.nativeapp.data.auth
 
 import android.app.Activity
 import android.content.Intent
+import android.util.Log
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -144,11 +145,40 @@ class SessionRepository(
             addCustomParameter("force_login", "true")
         }
 
-        val pendingResult = firebaseAuth.pendingAuthResult
-        if (pendingResult != null) {
-            pendingResult.await()
-        } else {
-            firebaseAuth.startActivityForSignInWithProvider(activity, provider.build()).await()
+        // DEBUG tracing for X sign-in runtime
+        try {
+            val pendingResult = firebaseAuth.pendingAuthResult
+            Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult before starting signInWithX: ${pendingResult != null}")
+
+            if (pendingResult != null) {
+                Log.d("X_SIGN_IN_RUNTIME", "Awaiting existing pendingAuthResult")
+                try {
+                    pendingResult.await()
+                    Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult.await() completed successfully")
+                } catch (awaitEx: Exception) {
+                    Log.e("X_SIGN_IN_RUNTIME", "pendingAuthResult.await() threw", awaitEx)
+                    throw awaitEx
+                }
+            } else {
+                Log.d("X_SIGN_IN_RUNTIME", "Calling startActivityForSignInWithProvider")
+                try {
+                    val task = firebaseAuth.startActivityForSignInWithProvider(activity, provider.build())
+                    Log.d("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider returned Task object: $task")
+                    try {
+                        task.await()
+                        Log.d("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider.await() completed successfully")
+                    } catch (taskEx: Exception) {
+                        Log.e("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider.await() threw", taskEx)
+                        throw taskEx
+                    }
+                } catch (syncEx: Exception) {
+                    Log.e("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider threw synchronously", syncEx)
+                    throw syncEx
+                }
+            }
+        } catch (outer: Exception) {
+            // Keep behaviour unchanged: rethrow so callers handle it the same as before
+            throw outer
         }
 
         return loadSessionSummary().copy(
