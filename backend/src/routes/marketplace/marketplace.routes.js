@@ -83,26 +83,90 @@ router.post(
 );
 
 // ── Delivery history ──────────────────────────────────────────────────────────
-router.get("/delivery/:orderId", authenticate, getOrderDelivery);
+router.get(
+  "/delivery/:orderId",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-delivery-read" }),
+  authenticate,
+  getOrderDelivery
+);
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-router.get("/notifications", authenticate, getUserNotifications);
-router.post("/notifications/:notificationId/read", authenticate, markNotificationRead);
+router.get(
+  "/notifications",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-notifications" }),
+  authenticate,
+  getUserNotifications
+);
+router.post(
+  "/notifications/:notificationId/read",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-notif-read" }),
+  authenticate,
+  markNotificationRead
+);
 
 // ── Marketplace settings (public read) ───────────────────────────────────────
-router.get("/settings", authenticate, getMarketplaceSettings);
+router.get(
+  "/settings",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-settings" }),
+  authenticate,
+  getMarketplaceSettings
+);
 
 // ── Admin-only routes ─────────────────────────────────────────────────────────
-router.post("/admin/settings", authenticate, requireAdmin, updateMarketplaceSettings);
-router.get("/admin/orders", authenticate, requireAdmin, adminListOrders);
-router.get("/admin/disputes", authenticate, requireAdmin, adminListDisputes);
-router.get("/admin/escrow", authenticate, requireAdmin, adminGetEscrowBalance);
-router.get("/admin/admin-wallet", authenticate, requireAdmin, adminGetAdminWallet);
-router.get("/admin/commission-report", authenticate, requireAdmin, adminCommissionReport);
-router.get("/admin/audit-log", authenticate, requireAdmin, adminListAuditLog);
-router.post("/admin/override", authenticate, requireAdmin, adminOverrideOrder);
-router.post("/admin/expire", authenticate, requireAdmin, expireOrder);
-router.post("/admin/auto-settle", authenticate, requireAdmin, autoSettleReviewExpired);
-router.post("/admin/dispute/:orderId/resolve", authenticate, requireAdmin, resolveDispute);
+router.post(
+  "/admin/settings",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-settings" }),
+  authenticate, requireAdmin, updateMarketplaceSettings
+);
+router.get(
+  "/admin/orders",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-orders" }),
+  authenticate, requireAdmin, adminListOrders
+);
+router.get(
+  "/admin/disputes",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-disputes" }),
+  authenticate, requireAdmin, adminListDisputes
+);
+router.get(
+  "/admin/escrow",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-escrow" }),
+  authenticate, requireAdmin, adminGetEscrowBalance
+);
+router.get(
+  "/admin/admin-wallet",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-wallet" }),
+  authenticate, requireAdmin, adminGetAdminWallet
+);
+router.get(
+  "/admin/commission-report",
+  rateLimit({ windowMs: 60 * 1000, limit: 30, keyPrefix: "mp-admin-commission" }),
+  authenticate, requireAdmin, adminCommissionReport
+);
+router.get(
+  "/admin/audit-log",
+  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-audit" }),
+  authenticate, requireAdmin, adminListAuditLog
+);
+router.post(
+  "/admin/override",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-override" }),
+  authenticate, requireAdmin, adminOverrideOrder
+);
+router.post(
+  "/admin/expire",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-expire" }),
+  authenticate, requireAdmin, expireOrder
+);
+router.post(
+  "/admin/auto-settle",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-auto-settle" }),
+  authenticate, requireAdmin, autoSettleReviewExpired
+);
+router.post(
+  "/admin/dispute/:orderId/resolve",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-resolve" }),
+  authenticate, requireAdmin, resolveDispute
+);
 
 export default router;
