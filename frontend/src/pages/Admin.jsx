@@ -5,6 +5,7 @@ import { auth } from "../config/firebase";
 import PromoterApproval from "./admin/PromoterApproval";
 import WithdrawalsAdmin from "./admin/WithdrawalsAdmin";
 import AdminManagementPanel from "./admin/AdminManagementPanel";
+import MarketplaceAdmin from "./admin/MarketplaceAdmin";
 import SharedInbox from "./SharedInbox";
 
 export default function Admin() {
@@ -65,6 +66,13 @@ export default function Admin() {
           style={tabStyle(activeTab === "wallets")}
         >
           Wallet Oversight
+        </button>
+
+        <button
+          onClick={() => setActiveTab("marketplace")}
+          style={tabStyle(activeTab === "marketplace")}
+        >
+          Marketplace
         </button>
 
         <button
@@ -310,6 +318,13 @@ export default function Admin() {
 
           <WithdrawalsAdmin />
 
+        </section>
+      )}
+
+      {activeTab === "marketplace" && (
+        <section>
+          <h3>Marketplace Administration</h3>
+          <MarketplaceAdmin />
         </section>
       )}
 

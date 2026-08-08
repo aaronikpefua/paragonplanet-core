@@ -20,11 +20,19 @@ const STATUS_LABELS = {
   chat_open: "Chatting",
   negotiating: "Negotiating",
   final_offer_sent: "Final Offer Received",
-  paid: "Paid — Awaiting Delivery",
+  buyer_accepted: "Offer Accepted",
+  escrow_funded: "Paid — In Escrow",
+  paid: "Paid — In Escrow",
   delivering: "Delivering",
+  buyer_review: "Awaiting Your Review",
   delivered: "Delivered",
   completed: "Completed",
   cancelled: "Cancelled",
+  expired: "Expired",
+  disputed: "Dispute Opened",
+  admin_review: "Under Admin Review",
+  refunded: "Refunded",
+  closed: "Closed",
 };
 
 function statusLabel(status) {
@@ -51,6 +59,10 @@ export default function BuyerInbox() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
+  const [deliveries, setDeliveries] = useState([]);
+  const [showDisputeForm, setShowDisputeForm] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
+  const [disputeDesc, setDisputeDesc] = useState("");
 
   useEffect(() => {
     const loadBuyerOrders = async () => {
@@ -168,6 +180,27 @@ export default function BuyerInbox() {
           return aTime - bTime;
         })
     );
+
+    // Load deliveries for this order
+    try {
+      const idToken = await user.getIdToken();
+      const deliveryRes = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/delivery/${order.id}`,
+        { headers: { Authorization: "Bearer " + idToken } }
+      );
+      if (deliveryRes.ok) {
+        const data = await deliveryRes.json();
+        setDeliveries(data || []);
+      } else {
+        setDeliveries([]);
+      }
+    } catch {
+      setDeliveries([]);
+    }
+
+    setShowDisputeForm(false);
+    setDisputeReason("");
+    setDisputeDesc("");
   };
 
   const sendReply = async () => {
@@ -251,7 +284,7 @@ export default function BuyerInbox() {
     try {
       const idToken = await user.getIdToken();
       const response = await fetch(
-        `${import.meta.env.VITE_BACKEND_URL || ""}/api/wallet/settle-order`,
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/pay`,
         {
           method: "POST",
           headers: {
@@ -269,13 +302,21 @@ export default function BuyerInbox() {
           navigate("/wallet");
           return;
         }
+        if (response.status === 410) {
+          alert("This offer has expired (48-hour limit). Please request a new offer from the merchant.");
+          setSelectedOrder((prev) => ({ ...prev, status: "expired" }));
+          setOrders((prev) =>
+            prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "expired" } : o))
+          );
+          return;
+        }
         throw new Error(err.message || "Payment failed");
       }
 
-      // Update local state
-      setSelectedOrder((prev) => ({ ...prev, status: "paid", paymentStatus: "paid" }));
+      // Update local state to escrow_funded
+      setSelectedOrder((prev) => ({ ...prev, status: "escrow_funded" }));
       setOrders((prev) =>
-        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "paid" } : o))
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "escrow_funded" } : o))
       );
 
       // Notify merchant via message
@@ -299,7 +340,7 @@ export default function BuyerInbox() {
         createdAt: serverTimestamp(),
       });
 
-      alert("Payment successful! The merchant has been notified to deliver your product.");
+      alert("Payment secured in escrow! The merchant has been notified to deliver your product.");
     } catch (err) {
       console.error("Wallet payment failed:", err);
       alert(`Payment failed: ${err.message}`);
@@ -308,51 +349,87 @@ export default function BuyerInbox() {
     }
   };
 
-  /** Buyer confirms delivery — completes the transaction */
+  /** Buyer confirms delivery — backend auto-settles via escrow */
   const confirmDelivery = async () => {
     const user = auth.currentUser;
     if (!user || !selectedOrder) return;
 
-    if (!window.confirm("Confirm that you have received the digital product and are satisfied?")) {
+    if (!window.confirm("Confirm that you have received the digital product? This will release payment to the merchant.")) {
       return;
     }
 
     setActionLoading(true);
     try {
-      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
-        status: "completed",
-        completedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      const idToken = await user.getIdToken();
+      const response = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/confirm`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({ orderId: selectedOrder.id }),
+        }
+      );
 
-      const senderName = safeDisplayName(user.displayName, "Buyer");
-      await addDoc(collection(db, "merchant_order_messages"), {
-        orderId: selectedOrder.id,
-        productId: selectedOrder.productId,
-        productName: selectedOrder.productName || "Product request",
-        ...buildProductMessagePayload(selectedOrder),
-        buyerId: selectedOrder.buyerId,
-        buyerName: selectedOrder.buyerName || senderName,
-        merchantId: selectedOrder.merchantId,
-        merchantName: selectedOrder.merchantName || "Merchant",
-        amount: selectedOrder.amount || 0,
-        currency: selectedOrder.currency || "PARAG",
-        senderId: user.uid,
-        senderName,
-        text: "✅ Delivery confirmed. Transaction completed.",
-        type: "delivery_confirmation",
-        readBy: [user.uid],
-        createdAt: serverTimestamp(),
-      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || "Confirmation failed");
+      }
 
       setSelectedOrder((prev) => ({ ...prev, status: "completed" }));
       setOrders((prev) =>
         prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "completed" } : o))
       );
-      alert("Thank you! The transaction is now complete.");
+      alert("✅ Delivery confirmed. Payment has been released to the merchant.");
     } catch (err) {
-      console.error("Delivery confirmation failed:", err);
+      console.error("Confirm delivery failed:", err);
       alert(`Could not confirm delivery: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  /** Buyer opens a dispute */
+  const submitDispute = async () => {
+    const user = auth.currentUser;
+    if (!user || !selectedOrder) return;
+
+    if (!disputeReason.trim() || !disputeDesc.trim()) {
+      alert("Please fill in both the reason and description fields.");
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const idToken = await user.getIdToken();
+      const response = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/dispute`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({
+            orderId: selectedOrder.id,
+            reason: disputeReason.trim(),
+            description: disputeDesc.trim(),
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || "Could not open dispute");
+      }
+
+      setSelectedOrder((prev) => ({ ...prev, status: "disputed" }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "disputed" } : o))
+      );
+      setShowDisputeForm(false);
+      setDisputeReason("");
+      setDisputeDesc("");
+      alert("Dispute opened. Admin has been notified. Funds remain in escrow.");
+    } catch (err) {
+      console.error("Open dispute failed:", err);
+      alert(`Could not open dispute: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -367,9 +444,11 @@ export default function BuyerInbox() {
   }
 
   const orderStatus = selectedOrder?.status;
-  const canPay = orderStatus === "final_offer_sent";
-  const canConfirmDelivery = orderStatus === "delivering" || orderStatus === "delivered";
+  const canPay = orderStatus === "final_offer_sent" || orderStatus === "buyer_accepted";
+  const canConfirmDelivery = orderStatus === "delivering" || orderStatus === "buyer_review" || orderStatus === "delivered";
+  const canDispute = orderStatus === "delivering" || orderStatus === "buyer_review";
   const isCompleted = orderStatus === "completed";
+  const isClosed = ["cancelled", "expired", "refunded", "closed"].includes(orderStatus);
 
   return (
     <main style={pageStyle}>
@@ -427,14 +506,14 @@ export default function BuyerInbox() {
                     Final Offer: {selectedOrder.amount} {selectedOrder.currency || "PARAG"}
                   </p>
                   <p style={{ margin: "4px 0 0", fontSize: 13, color: "#52616b" }}>
-                    Accept this offer to pay from your Paragon Planet Wallet.
+                    Accept this offer. Funds will be held securely in escrow until delivery is confirmed.
                   </p>
                   <button
                     onClick={acceptFinalOfferAndPay}
                     disabled={actionLoading}
                     style={primaryBtnStyle}
                   >
-                    {actionLoading ? "Processing…" : `Pay ${selectedOrder.amount} ${selectedOrder.currency || "PARAG"} from Wallet`}
+                    {actionLoading ? "Processing…" : `Pay ${selectedOrder.amount} ${selectedOrder.currency || "PARAG"} into Escrow`}
                   </button>
                 </div>
               )}
@@ -473,19 +552,98 @@ export default function BuyerInbox() {
                 </div>
               )}
 
+              {/* Delivery content from merchant */}
+              {deliveries.length > 0 && (
+                <div style={{ marginTop: 14, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #6ee7b7", borderRadius: 8 }}>
+                  <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#176b4d" }}>📦 Merchant Delivery</p>
+                  {deliveries[0].deliveryNote && (
+                    <p style={{ margin: "0 0 6px", fontSize: 13 }}>{deliveries[0].deliveryNote}</p>
+                  )}
+                  {deliveries[0].links && deliveries[0].links.length > 0 && (
+                    <ul style={{ margin: "4px 0", padding: "0 0 0 18px", fontSize: 13 }}>
+                      {deliveries[0].links.map((link, i) => (
+                        <li key={i}><a href={link} target="_blank" rel="noopener noreferrer" style={{ color: "#176b4d" }}>{link}</a></li>
+                      ))}
+                    </ul>
+                  )}
+                  {deliveries[0].accessCodes && deliveries[0].accessCodes.length > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      <strong style={{ fontSize: 12 }}>Access Codes:</strong>
+                      {deliveries[0].accessCodes.map((code, i) => (
+                        <code key={i} style={{ display: "block", fontSize: 12, background: "#e6f4ea", padding: "2px 6px", borderRadius: 4, marginTop: 2 }}>{code}</code>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {canConfirmDelivery && (
                 <button
                   onClick={confirmDelivery}
                   disabled={actionLoading}
                   style={{ ...primaryBtnStyle, marginTop: 12 }}
                 >
-                  {actionLoading ? "Confirming…" : "Confirm Delivery — Complete Transaction"}
+                  {actionLoading ? "Confirming…" : "Confirm Delivery — Release Payment to Merchant"}
                 </button>
+              )}
+
+              {canDispute && !showDisputeForm && (
+                <button
+                  onClick={() => setShowDisputeForm(true)}
+                  style={{ ...secondaryBtnStyle, marginTop: 10, width: "100%", background: "#b45309" }}
+                >
+                  Open Dispute
+                </button>
+              )}
+
+              {showDisputeForm && (
+                <div style={{ marginTop: 12, padding: "14px 16px", background: "#fff7ed", border: "1px solid #f59e0b", borderRadius: 8 }}>
+                  <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#b45309" }}>⚠️ Open a Dispute</p>
+                  <input
+                    value={disputeReason}
+                    onChange={(e) => setDisputeReason(e.target.value)}
+                    placeholder="Reason (e.g. Not delivered, Wrong product)"
+                    style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, boxSizing: "border-box" }}
+                  />
+                  <textarea
+                    value={disputeDesc}
+                    onChange={(e) => setDisputeDesc(e.target.value)}
+                    placeholder="Describe the issue in detail…"
+                    rows={3}
+                    style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                  />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={submitDispute} disabled={actionLoading} style={{ ...primaryBtnStyle, marginTop: 0, flex: 1, background: "#b45309" }}>
+                      {actionLoading ? "Submitting…" : "Submit Dispute"}
+                    </button>
+                    <button onClick={() => setShowDisputeForm(false)} style={{ ...secondaryBtnStyle, flex: 1 }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {orderStatus === "disputed" && (
+                <p style={{ marginTop: 12, color: "#b45309", fontWeight: 700 }}>
+                  ⚠️ Dispute opened. Admin is reviewing. Funds remain in escrow.
+                </p>
+              )}
+
+              {orderStatus === "admin_review" && (
+                <p style={{ marginTop: 12, color: "#6d28d9", fontWeight: 700 }}>
+                  🔍 Under admin review. You will be notified of the decision.
+                </p>
               )}
 
               {isCompleted && (
                 <p style={{ marginTop: 12, color: "#176b4d", fontWeight: 700 }}>
-                  ✅ Transaction completed.
+                  ✅ Transaction completed. Payment has been released to the merchant.
+                </p>
+              )}
+
+              {isClosed && (
+                <p style={{ marginTop: 12, color: "#52616b", fontWeight: 700 }}>
+                  This order is {orderStatus}.
                 </p>
               )}
             </>
@@ -655,9 +813,11 @@ function buildChatId(uidA, uidB) {
 
 function statusColor(status) {
   if (status === "completed") return "#176b4d";
-  if (status === "final_offer_sent") return "#b45309";
-  if (status === "paid" || status === "delivering" || status === "delivered") return "#1d4ed8";
-  if (status === "cancelled") return "#dc2626";
+  if (status === "final_offer_sent" || status === "buyer_accepted") return "#b45309";
+  if (["escrow_funded", "paid", "delivering", "buyer_review", "delivered"].includes(status)) return "#1d4ed8";
+  if (["disputed", "admin_review"].includes(status)) return "#b45309";
+  if (status === "refunded") return "#6d28d9";
+  if (["cancelled", "expired", "closed"].includes(status)) return "#dc2626";
   return "#52616b";
 }
 

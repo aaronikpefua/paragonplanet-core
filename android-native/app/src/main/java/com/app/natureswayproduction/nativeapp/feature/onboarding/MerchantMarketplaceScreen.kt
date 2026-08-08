@@ -228,14 +228,14 @@ fun MerchantMarketplaceScreen(
                                             }
                                         }
                                     }
-                                    if (order.status == "final_offer_sent") {
+                                    if (order.status == "final_offer_sent" || order.status == "buyer_accepted") {
                                         Card(
                                             colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
                                             shape = RoundedCornerShape(10.dp)
                                         ) {
                                             Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                                 Text("Final Offer: ${order.amount.toInt()} ${order.currency}", fontWeight = FontWeight.ExtraBold)
-                                                Text("Accept to pay from your Paragon Planet Wallet.", color = Color(0xFF5A534A))
+                                                Text("Funds will be held in secure escrow until you confirm delivery.", color = Color(0xFF5A534A))
                                                 Button(
                                                     onClick = {
                                                         scope.launch {
@@ -244,9 +244,9 @@ fun MerchantMarketplaceScreen(
                                                             runCatching { repository.settleOrder(order) }
                                                                 .onSuccess { ok ->
                                                                     if (ok) {
-                                                                        selectedBuyerOrder = order.copy(status = "paid")
-                                                                        buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "paid") else o }
-                                                                        note = "Payment successful! Awaiting delivery."
+                                                                        selectedBuyerOrder = order.copy(status = "escrow_funded")
+                                                                        buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "escrow_funded") else o }
+                                                                        note = "Payment secured in escrow! Awaiting delivery."
                                                                     } else {
                                                                         note = "Payment failed. Check your wallet balance."
                                                                     }
@@ -259,12 +259,12 @@ fun MerchantMarketplaceScreen(
                                                     shape = RoundedCornerShape(8.dp),
                                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
                                                 ) {
-                                                    Text(if (actionLoading) "Processing…" else "Pay ${order.amount.toInt()} ${order.currency} from Wallet")
+                                                    Text(if (actionLoading) "Processing…" else "Pay ${order.amount.toInt()} ${order.currency} into Escrow")
                                                 }
                                             }
                                         }
                                     }
-                                    if (order.status == "delivering" || order.status == "delivered") {
+                                    if (order.status == "delivering" || order.status == "buyer_review" || order.status == "delivered") {
                                         Button(
                                             onClick = {
                                                 scope.launch {
@@ -274,7 +274,7 @@ fun MerchantMarketplaceScreen(
                                                         .onSuccess {
                                                             selectedBuyerOrder = order.copy(status = "completed")
                                                             buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "completed") else o }
-                                                            note = "Transaction completed. Thank you!"
+                                                            note = "✅ Delivery confirmed. Payment released to merchant."
                                                         }
                                                         .onFailure { err -> note = err.message ?: "Could not confirm delivery." }
                                                     actionLoading = false
@@ -285,11 +285,45 @@ fun MerchantMarketplaceScreen(
                                             shape = RoundedCornerShape(8.dp),
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
                                         ) {
-                                            Text(if (actionLoading) "Confirming…" else "Confirm Delivery — Complete Transaction")
+                                            Text(if (actionLoading) "Confirming…" else "Confirm Delivery — Release Payment")
+                                        }
+                                        Spacer(Modifier.height(6.dp))
+                                        Button(
+                                            onClick = {
+                                                scope.launch {
+                                                    actionLoading = true
+                                                    note = null
+                                                    runCatching {
+                                                        repository.openDispute(order, "Product issue", "I have an issue with this delivery.")
+                                                    }
+                                                        .onSuccess {
+                                                            selectedBuyerOrder = order.copy(status = "disputed")
+                                                            buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "disputed") else o }
+                                                            note = "Dispute opened. Admin has been notified."
+                                                        }
+                                                        .onFailure { err -> note = err.message ?: "Could not open dispute." }
+                                                    actionLoading = false
+                                                }
+                                            },
+                                            enabled = !actionLoading,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB45309), contentColor = Color.White)
+                                        ) {
+                                            Text("Open Dispute")
                                         }
                                     }
+                                    if (order.status == "disputed") {
+                                        Text("⚠️ Dispute opened. Admin is reviewing. Funds remain in escrow.", color = Color(0xFFB45309), fontWeight = FontWeight.Bold)
+                                    }
+                                    if (order.status == "admin_review") {
+                                        Text("🔍 Under admin review. You will be notified of the decision.", color = Color(0xFF6D28D9), fontWeight = FontWeight.Bold)
+                                    }
                                     if (order.status == "completed") {
-                                        Text("✅ Transaction completed.", color = Color(0xFF176B4D), fontWeight = FontWeight.Bold)
+                                        Text("✅ Transaction completed. Payment has been released to the merchant.", color = Color(0xFF176B4D), fontWeight = FontWeight.Bold)
+                                    }
+                                    if (order.status in listOf("cancelled", "expired", "refunded", "closed")) {
+                                        Text("Order is ${marketplaceStatusLabel(order.status)}.", color = Color(0xFF52616B), fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -625,33 +659,16 @@ private class MerchantMarketplaceRepository(
 
     suspend fun confirmDelivery(order: MarketplaceOrderItem) = withContext(Dispatchers.IO) {
         val user = auth.currentUser ?: throw IllegalStateException("Login first.")
-        val orderId = order.id.ifBlank { return@withContext }
+        val idToken = user.getIdToken(false).await().token
+            ?: throw IllegalStateException("Could not obtain auth token.")
+        apiService.confirmMarketplaceDelivery(idToken = idToken, orderId = order.id)
+    }
 
-        firestore.collection("merchant_orders").document(orderId).update(
-            mapOf(
-                "status" to "completed",
-                "completedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp(),
-            )
-        ).await()
-
-        firestore.collection("merchant_order_messages").add(
-            mapOf(
-                "orderId" to orderId,
-                "productId" to order.productId,
-                "productName" to order.productName,
-                "buyerId" to order.buyerId,
-                "buyerName" to order.buyerName,
-                "merchantId" to order.merchantId,
-                "merchantName" to order.merchantName,
-                "senderId" to user.uid,
-                "senderName" to (user.displayName ?: user.email ?: "Buyer"),
-                "text" to "✅ Delivery confirmed. Transaction completed.",
-                "type" to "delivery_confirmation",
-                "readBy" to listOf(user.uid),
-                "createdAt" to FieldValue.serverTimestamp(),
-            )
-        ).await()
+    suspend fun openDispute(order: MarketplaceOrderItem, reason: String, description: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: throw IllegalStateException("Login first.")
+        val idToken = user.getIdToken(false).await().token
+            ?: throw IllegalStateException("Could not obtain auth token.")
+        apiService.openMarketplaceDispute(idToken = idToken, orderId = order.id, reason = reason, description = description)
     }
 }
 
@@ -819,18 +836,26 @@ private fun marketplaceStatusLabel(status: String): String = when (status) {
     "chat_open" -> "Chatting"
     "negotiating" -> "Negotiating"
     "final_offer_sent" -> "Final Offer Received"
-    "paid" -> "Paid — Awaiting Delivery"
+    "buyer_accepted" -> "Offer Accepted"
+    "escrow_funded", "paid" -> "Paid – In Escrow"
     "delivering" -> "Delivering"
+    "buyer_review" -> "Awaiting Your Review"
     "delivered" -> "Delivered"
     "completed" -> "Completed"
     "cancelled" -> "Cancelled"
+    "expired" -> "Expired"
+    "disputed" -> "Dispute Opened"
+    "admin_review" -> "Under Admin Review"
+    "refunded" -> "Refunded"
+    "closed" -> "Closed"
     else -> status.ifBlank { "—" }
 }
 
 private fun marketplaceStatusColor(status: String): Color = when (status) {
     "completed" -> Color(0xFF176B4D)
-    "final_offer_sent" -> Color(0xFFB45309)
-    "paid", "delivering", "delivered" -> Color(0xFF1D4ED8)
-    "cancelled" -> Color(0xFFDC2626)
+    "final_offer_sent", "buyer_accepted" -> Color(0xFFB45309)
+    "escrow_funded", "paid", "delivering", "buyer_review", "delivered" -> Color(0xFF1D4ED8)
+    "disputed", "admin_review" -> Color(0xFFB45309)
+    "cancelled", "expired", "refunded", "closed" -> Color(0xFFDC2626)
     else -> Color(0xFF52616B)
 }

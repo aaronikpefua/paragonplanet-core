@@ -219,6 +219,10 @@ export default function MerchantOnboarding() {
   const [replyText, setReplyText] = useState("");
   const [finalOfferAmount, setFinalOfferAmount] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [deliveryNote, setDeliveryNote] = useState("");
+  const [deliveryLinks, setDeliveryLinks] = useState("");
+  const [deliveryCodes, setDeliveryCodes] = useState("");
+  const [showDeliveryForm, setShowDeliveryForm] = useState(false);
   const [profileExists, setProfileExists] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -756,41 +760,45 @@ export default function MerchantOnboarding() {
 
   const markAsDelivered = async () => {
     if (!user || !selectedOrder) return;
-    if (!window.confirm("Mark this order as delivered? The buyer will be asked to confirm.")) return;
+    if (!window.confirm("Submit delivery? You can include download links, access codes, and notes for the buyer.")) return;
 
     setActionLoading(true);
     try {
-      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
-        status: "delivering",
-        deliveredAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      const idToken = await user.getIdToken();
+      const links = deliveryLinks.split("\n").map((l) => l.trim()).filter(Boolean);
+      const accessCodes = deliveryCodes.split("\n").map((c) => c.trim()).filter(Boolean);
 
-      const senderName = profile.realName || user.email || "Merchant";
-      const productPayload = buildProductMessagePayload(selectedOrder);
-      await addDoc(collection(db, "merchant_order_messages"), {
-        orderId: selectedOrder.id,
-        productId: selectedOrder.productId,
-        productName: selectedOrder.productName || "Product request",
-        ...productPayload,
-        buyerId: selectedOrder.buyerId,
-        merchantId: selectedOrder.merchantId,
-        senderId: user.uid,
-        senderName,
-        text: "📦 Product delivered. Please confirm receipt in your Buyer Inbox to complete the transaction.",
-        type: "delivery_notice",
-        readBy: [user.uid],
-        createdAt: serverTimestamp(),
-      });
+      const response = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/deliver`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({
+            orderId: selectedOrder.id,
+            deliveryNote: deliveryNote.trim(),
+            links,
+            accessCodes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || "Delivery submission failed");
+      }
 
       setSelectedOrder((prev) => ({ ...prev, status: "delivering" }));
       setOrders((prev) =>
         prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "delivering" } : o))
       );
-      alert("Delivery marked. Waiting for buyer confirmation.");
+      setShowDeliveryForm(false);
+      setDeliveryNote("");
+      setDeliveryLinks("");
+      setDeliveryCodes("");
+      alert("Delivery submitted. Waiting for buyer confirmation.");
     } catch (err) {
       console.error("Mark as delivered failed:", err);
-      alert(`Could not update delivery status: ${err.message}`);
+      alert(`Could not submit delivery: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -1136,19 +1144,77 @@ export default function MerchantOnboarding() {
                     </div>
                   )}
 
-                  {selectedOrder.status === "paid" && (
-                    <button
-                      onClick={markAsDelivered}
-                      disabled={actionLoading}
-                      style={{ ...primaryBtnStyle, marginTop: 12 }}
-                    >
-                      {actionLoading ? "Updating…" : "Mark as Delivered"}
-                    </button>
-                  )}
+                  {selectedOrder.status === "paid" || selectedOrder.status === "escrow_funded" ? (
+                    showDeliveryForm ? (
+                      <div style={{ marginTop: 12, padding: "14px 16px", background: "#f0fdf4", border: "1px solid #6ee7b7", borderRadius: 8 }}>
+                        <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#176b4d" }}>📦 Submit Delivery</p>
+                        <textarea
+                          value={deliveryNote}
+                          onChange={(e) => setDeliveryNote(e.target.value)}
+                          placeholder="Delivery note for the buyer…"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <textarea
+                          value={deliveryLinks}
+                          onChange={(e) => setDeliveryLinks(e.target.value)}
+                          placeholder="Download links / URLs (one per line)"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <textarea
+                          value={deliveryCodes}
+                          onChange={(e) => setDeliveryCodes(e.target.value)}
+                          placeholder="Access codes / license keys (one per line)"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button onClick={markAsDelivered} disabled={actionLoading} style={{ ...primaryBtnStyle, flex: 1, marginTop: 0 }}>
+                            {actionLoading ? "Submitting…" : "Submit Delivery"}
+                          </button>
+                          <button onClick={() => setShowDeliveryForm(false)} style={{ ...secondaryBtnStyle, flex: 1 }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowDeliveryForm(true)}
+                        style={{ ...primaryBtnStyle, marginTop: 12 }}
+                      >
+                        Deliver Product
+                      </button>
+                    )
+                  ) : null}
 
                   {selectedOrder.status === "completed" && (
                     <p style={{ marginTop: 12, color: "#176b4d", fontWeight: 700 }}>
-                      ✅ Transaction completed.
+                      ✅ Transaction completed. Payment has been released to your wallet.
+                    </p>
+                  )}
+
+                  {selectedOrder.status === "disputed" && (
+                    <MerchantDisputeResponse
+                      order={selectedOrder}
+                      onResponded={() => {
+                        setSelectedOrder((prev) => ({ ...prev, status: "admin_review" }));
+                        setOrders((prev) =>
+                          prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "admin_review" } : o))
+                        );
+                      }}
+                    />
+                  )}
+
+                  {selectedOrder.status === "admin_review" && (
+                    <p style={{ marginTop: 12, color: "#6d28d9", fontWeight: 700 }}>
+                      🔍 Under admin review. You will be notified of the decision.
+                    </p>
+                  )}
+
+                  {["cancelled", "expired", "refunded", "closed"].includes(selectedOrder.status) && (
+                    <p style={{ marginTop: 12, color: "#dc2626", fontWeight: 700 }}>
+                      Order is {merchantStatusLabel(selectedOrder.status)}.
                     </p>
                   )}
                 </>
@@ -1650,11 +1716,19 @@ const MERCHANT_STATUS_LABELS = {
   chat_open: "Chatting",
   negotiating: "Negotiating",
   final_offer_sent: "Awaiting Buyer Payment",
+  buyer_accepted: "Buyer Accepted — Awaiting Payment",
+  escrow_funded: "Paid (Escrow) — Ready to Deliver",
   paid: "Paid — Ready to Deliver",
   delivering: "Delivering",
+  buyer_review: "Awaiting Buyer Review",
   delivered: "Delivered",
   completed: "Completed",
   cancelled: "Cancelled",
+  expired: "Expired",
+  disputed: "Disputed",
+  admin_review: "Admin Review",
+  refunded: "Refunded",
+  closed: "Closed",
 };
 
 function merchantStatusLabel(status) {
@@ -1663,9 +1737,58 @@ function merchantStatusLabel(status) {
 
 function merchantStatusColor(status) {
   if (status === "completed") return "#176b4d";
-  if (status === "final_offer_sent") return "#b45309";
-  if (status === "paid") return "#1d4ed8";
-  if (status === "delivering" || status === "delivered") return "#6d28d9";
-  if (status === "cancelled") return "#dc2626";
+  if (["final_offer_sent", "buyer_accepted"].includes(status)) return "#b45309";
+  if (["escrow_funded", "paid"].includes(status)) return "#1d4ed8";
+  if (["delivering", "buyer_review", "delivered"].includes(status)) return "#6d28d9";
+  if (["disputed", "admin_review"].includes(status)) return "#b45309";
+  if (["cancelled", "expired", "closed", "refunded"].includes(status)) return "#dc2626";
   return "#52616b";
+}
+
+function MerchantDisputeResponse({ order, onResponded }) {
+  const [response, setResponse] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    const user = auth.currentUser;
+    if (!user || !response.trim()) { alert("Please describe your response."); return; }
+    setSubmitting(true);
+    try {
+      const idToken = await user.getIdToken();
+      const res = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/dispute/${order.id}/respond`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({ response: response.trim() }),
+        }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Could not submit response");
+      }
+      alert("Response submitted. Admin is now reviewing.");
+      onResponded();
+    } catch (err) {
+      alert(`Could not submit: ${err.message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: "14px 16px", background: "#fff7ed", border: "1px solid #f59e0b", borderRadius: 8 }}>
+      <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#b45309" }}>⚠️ Dispute Filed — Submit Your Response</p>
+      <textarea
+        value={response}
+        onChange={(e) => setResponse(e.target.value)}
+        placeholder="Describe your side of the dispute in detail…"
+        rows={4}
+        style={{ display: "block", width: "100%", padding: "8px 10px", border: "1px solid #c9c0b2", borderRadius: 6, marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+      />
+      <button onClick={submit} disabled={submitting} style={{ padding: "10px 18px", background: "#b45309", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700 }}>
+        {submitting ? "Submitting…" : "Submit Dispute Response"}
+      </button>
+    </div>
+  );
 }

@@ -227,13 +227,107 @@ class ParagonApiService {
         orderId: String,
     ): Boolean = withContext(Dispatchers.IO) {
         val response = request(
-            path = "/api/wallet/settle-order",
+            path = "/api/marketplace/pay",
             method = "POST",
             authorization = "******",
             jsonBody = JSONObject().put("orderId", orderId).toString()
         )
         val json = JSONObject(response)
         json.optBoolean("success", false)
+    }
+
+    suspend fun submitMarketplaceDelivery(
+        idToken: String,
+        orderId: String,
+        deliveryNote: String = "",
+        links: List<String> = emptyList(),
+        accessCodes: List<String> = emptyList(),
+    ): Boolean = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("orderId", orderId)
+            put("deliveryNote", deliveryNote)
+            val linksArr = JSONArray(); links.forEach { linksArr.put(it) }; put("links", linksArr)
+            val codesArr = JSONArray(); accessCodes.forEach { codesArr.put(it) }; put("accessCodes", codesArr)
+        }
+        val response = request(
+            path = "/api/marketplace/deliver",
+            method = "POST",
+            authorization = "******",
+            jsonBody = body.toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
+    suspend fun confirmMarketplaceDelivery(
+        idToken: String,
+        orderId: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/marketplace/confirm",
+            method = "POST",
+            authorization = "******",
+            jsonBody = JSONObject().put("orderId", orderId).toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
+    suspend fun cancelMarketplaceOrder(
+        idToken: String,
+        orderId: String,
+        reason: String = "",
+    ): Boolean = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/marketplace/cancel",
+            method = "POST",
+            authorization = "******",
+            jsonBody = JSONObject().put("orderId", orderId).put("reason", reason).toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
+    suspend fun openMarketplaceDispute(
+        idToken: String,
+        orderId: String,
+        reason: String,
+        description: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/marketplace/dispute",
+            method = "POST",
+            authorization = "******",
+            jsonBody = JSONObject()
+                .put("orderId", orderId)
+                .put("reason", reason)
+                .put("description", description)
+                .toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
+    suspend fun getMarketplaceNotifications(idToken: String): List<MarketplaceNotification> = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/marketplace/notifications",
+            method = "GET",
+            authorization = "******"
+        )
+        val array = JSONArray(response)
+        buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                add(MarketplaceNotification(
+                    id = obj.optString("id"),
+                    type = obj.optString("type"),
+                    title = obj.optString("title"),
+                    body = obj.optString("body"),
+                    orderId = obj.optString("orderId"),
+                    read = obj.optBoolean("read", false),
+                ))
+            }
+        }
     }
 
     suspend fun listBanks(

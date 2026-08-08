@@ -1,6 +1,7 @@
 import videoRoutes from "./video/routes/video.routes.js";
 import authRoutes from "./auth/auth.routes.js";
 import walletRoutes from "./routes/wallet/wallet.routes.js";
+import marketplaceRoutes from "./routes/marketplace/marketplace.routes.js";
 import googlePlayBillingRoutes from "./routes/googlePlayBilling.routes.js";
 import express from "express";
 import cors from "cors";
@@ -82,6 +83,7 @@ app.post("/bank/resolve", verifyAppCheckOrAuthenticatedUser, authenticate, resol
 app.post("/withdraw/request", verifyAppCheckOrAuthenticatedUser, authenticate, requestWithdraw);
 app.get("/api/video/list", listVideos);
 app.use("/api/wallet", verifyAppCheckOrAuthenticatedUser, walletRoutes);
+app.use("/api/marketplace", verifyAppCheckOrAuthenticatedUser, marketplaceRoutes);
 app.use("/api/google-play-billing", verifyAppCheckOrAuthenticatedUser, googlePlayBillingRoutes);
 app.use("/api/auth", verifyAppCheckOrTrustedTester, authRoutes);
 app.use("/api/video", verifyAppCheck, videoRoutes);

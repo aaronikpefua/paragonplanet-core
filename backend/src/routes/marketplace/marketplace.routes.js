@@ -1,0 +1,104 @@
+import { Router } from "express";
+import { authenticate } from "../../middlewares/auth.middleware.js";
+import { requireAdmin } from "../../middlewares/admin.middleware.js";
+import { rateLimit } from "../../middlewares/rateLimit.middleware.js";
+import {
+  // Escrow / transaction flow
+  fundEscrow,
+  submitDelivery,
+  confirmDeliveryAndSettle,
+  cancelOrder,
+  expireOrder,
+  autoSettleReviewExpired,
+  // Disputes
+  openDispute,
+  respondToDispute,
+  resolveDispute,
+  // Delivery
+  getOrderDelivery,
+  // Settings
+  getMarketplaceSettings,
+  updateMarketplaceSettings,
+  // Notifications
+  getUserNotifications,
+  markNotificationRead,
+  // Admin dashboard
+  adminListOrders,
+  adminListDisputes,
+  adminGetEscrowBalance,
+  adminGetAdminWallet,
+  adminCommissionReport,
+  adminListAuditLog,
+  adminOverrideOrder,
+} from "../../controllers/marketplace.controller.js";
+
+const router = Router();
+
+// ── Buyer / Merchant transaction flow ─────────────────────────────────────────
+router.post(
+  "/pay",
+  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-pay" }),
+  authenticate,
+  fundEscrow
+);
+
+router.post(
+  "/deliver",
+  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-deliver" }),
+  authenticate,
+  submitDelivery
+);
+
+router.post(
+  "/confirm",
+  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-confirm" }),
+  authenticate,
+  confirmDeliveryAndSettle
+);
+
+router.post(
+  "/cancel",
+  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-cancel" }),
+  authenticate,
+  cancelOrder
+);
+
+// ── Disputes ──────────────────────────────────────────────────────────────────
+router.post(
+  "/dispute",
+  rateLimit({ windowMs: 60 * 1000, limit: 5, keyPrefix: "mp-dispute" }),
+  authenticate,
+  openDispute
+);
+
+router.post(
+  "/dispute/:orderId/respond",
+  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-dispute-respond" }),
+  authenticate,
+  respondToDispute
+);
+
+// ── Delivery history ──────────────────────────────────────────────────────────
+router.get("/delivery/:orderId", authenticate, getOrderDelivery);
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+router.get("/notifications", authenticate, getUserNotifications);
+router.post("/notifications/:notificationId/read", authenticate, markNotificationRead);
+
+// ── Marketplace settings (public read) ───────────────────────────────────────
+router.get("/settings", authenticate, getMarketplaceSettings);
+
+// ── Admin-only routes ─────────────────────────────────────────────────────────
+router.post("/admin/settings", authenticate, requireAdmin, updateMarketplaceSettings);
+router.get("/admin/orders", authenticate, requireAdmin, adminListOrders);
+router.get("/admin/disputes", authenticate, requireAdmin, adminListDisputes);
+router.get("/admin/escrow", authenticate, requireAdmin, adminGetEscrowBalance);
+router.get("/admin/admin-wallet", authenticate, requireAdmin, adminGetAdminWallet);
+router.get("/admin/commission-report", authenticate, requireAdmin, adminCommissionReport);
+router.get("/admin/audit-log", authenticate, requireAdmin, adminListAuditLog);
+router.post("/admin/override", authenticate, requireAdmin, adminOverrideOrder);
+router.post("/admin/expire", authenticate, requireAdmin, expireOrder);
+router.post("/admin/auto-settle", authenticate, requireAdmin, autoSettleReviewExpired);
+router.post("/admin/dispute/:orderId/resolve", authenticate, requireAdmin, resolveDispute);
+
+export default router;
