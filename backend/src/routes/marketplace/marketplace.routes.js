@@ -30,6 +30,7 @@ import {
   adminCommissionReport,
   adminListAuditLog,
   adminOverrideOrder,
+  adminAutomationSummary,
 } from "../../controllers/marketplace.controller.js";
 
 const router = Router();
@@ -167,6 +168,12 @@ router.post(
   "/admin/dispute/:orderId/resolve",
   rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, resolveDispute
+);
+
+router.get(
+  "/admin/automation-summary",
+  rateLimit({ windowMs: 60 * 1000, max: 30 }),
+  authenticate, requireAdmin, adminAutomationSummary
 );
 
 export default router;

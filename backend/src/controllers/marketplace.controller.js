@@ -1,5 +1,5 @@
 /**
- * Marketplace Controller – Milestone 2
+ * Marketplace Controller – Milestone 2 (Automation Layer)
  * Escrow, Settlement, Disputes, Commission, Audit Trail, Notifications
  *
  * Firestore collections:
@@ -13,6 +13,13 @@
  *  marketplace_notifications– user notifications
  *  wallet_accounts          – buyer/merchant/admin wallets
  *  ledger_entries           – double-entry ledger
+ *
+ * Automation fields added per order:
+ *  deliveryDeadlineAt       – 7 days after escrow_funded
+ *  buyerReviewDeadlineAt    – 72 h after delivery submitted
+ *  escrowAutoReleaseAt      – 72 h after delivery (same as buyer review)
+ *  merchantResponseDeadlineAt – 48 h after dispute opened (set on dispute doc)
+ *  disputeEvidenceDeadlineAt  – 48 h after dispute opened (set on dispute doc)
  */
 
 import { createLedgerEntry } from "../models/ledger.model.js";
@@ -20,7 +27,33 @@ import { isAdminUser } from "../lib/adminAccess.js";
 import admin from "../config/firebase.js";
 import { v4 as uuidv4 } from "uuid";
 
-// ─── Firestore collection helpers ───────────────────────────────────────────
+// ─── Shared services ─────────────────────────────────────────────────────────
+import { writeAudit, writeSystemAudit } from "../services/marketplace/AuditService.js";
+import { pushNotification, pushNotifications } from "../services/marketplace/NotificationService.js";
+import {
+  deliveryDeadline,
+  buyerReviewDeadline,
+  escrowAutoReleaseDeadline,
+  disputeEvidenceDeadline,
+  merchantResponseDeadline,
+  isPast,
+  DELIVERY_REMINDER_MS,
+  BUYER_REVIEW_REMINDER_MS,
+  DISPUTE_REMINDER_MS,
+  ESCROW_RELEASE_REMINDER_MS,
+  REMINDER_DELIVERY_24H,
+  REMINDER_BUYER_REVIEW_12H,
+  REMINDER_DISPUTE_6H,
+  REMINDER_ESCROW_RELEASE_6H,
+} from "../services/marketplace/DeadlineService.js";
+import {
+  settleOrder,
+  refundBuyer,
+  expireOrderAtomically,
+  resolveDisputeEscrow,
+} from "../services/marketplace/EscrowService.js";
+
+// ─── Firestore collection helpers ────────────────────────────────────────────
 const db = () => admin.firestore();
 const orders = () => db().collection("merchant_orders");
 const orderMessages = () => db().collection("merchant_order_messages");
@@ -31,7 +64,6 @@ const ledgerEntries = () => db().collection("ledger_entries");
 const settingsDoc = () => db().collection("marketplace_settings").doc("global");
 const deliveries = () => db().collection("marketplace_deliveries");
 const disputes = () => db().collection("marketplace_disputes");
-const auditLog = () => db().collection("marketplace_audit_log");
 const notifications = () => db().collection("marketplace_notifications");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -78,30 +110,6 @@ async function getSettings() {
   return { commissionPct: DEFAULT_COMMISSION_PCT };
 }
 
-async function writeAudit({ orderId, action, userId, extra = {}, ip = null }) {
-  await auditLog().add({
-    auditId: uuidv4(),
-    orderId,
-    action,
-    userId,
-    ip: ip || null,
-    extra,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-}
-
-async function pushNotification({ recipientId, type, title, body, orderId }) {
-  await notifications().add({
-    recipientId,
-    type,
-    title,
-    body,
-    orderId,
-    read: false,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-}
-
 function writeLedger(transaction, entry, userId) {
   transaction.set(ledgerEntries().doc(entry.ledgerId), {
     accountId: userId,
@@ -115,7 +123,7 @@ function writeLedger(transaction, entry, userId) {
   });
 }
 
-// ─── PART 5 – Get/Update marketplace settings ───────────────────────────────
+// ─── PART 5 – Get/Update marketplace settings ────────────────────────────────
 
 export async function getMarketplaceSettings(req, res) {
   try {
@@ -160,7 +168,7 @@ export async function updateMarketplaceSettings(req, res) {
   }
 }
 
-// ─── PART 1 – Fund Escrow (buyer pays) ──────────────────────────────────────
+// ─── PART 1 – Fund Escrow (buyer pays) ───────────────────────────────────────
 
 export async function fundEscrow(req, res) {
   const buyerId = req.user.uid;
@@ -236,6 +244,9 @@ export async function fundEscrow(req, res) {
       reference: orderId,
     });
 
+    // Compute deadline timestamps before entering the transaction
+    const deliveryDeadlineTs = admin.firestore.Timestamp.fromDate(deliveryDeadline());
+
     await db().runTransaction(async (transaction) => {
       const buyerSnap = await transaction.get(buyerWalletRef);
       if (!buyerSnap.exists) throw new Error("Buyer wallet not found");
@@ -270,12 +281,13 @@ export async function fundEscrow(req, res) {
         { merge: true }
       );
 
-      // Update order
+      // Update order + set delivery deadline
       transaction.update(orderRef, {
         status: "escrow_funded",
         escrowAmount: amount,
         escrowCurrency: currency,
         escrowFundedAt: admin.firestore.FieldValue.serverTimestamp(),
+        deliveryDeadlineAt: deliveryDeadlineTs,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -286,27 +298,29 @@ export async function fundEscrow(req, res) {
     await writeAudit({ orderId, action: "escrow_funded", userId: buyerId, ip, extra: { amount, currency } });
 
     // Notifications
-    await pushNotification({
-      recipientId: order.merchantId,
-      type: "escrow_funded",
-      title: "Payment received – funds in escrow",
-      body: `${amount} ${currency} is held in escrow for order ${orderId}. Please deliver the product.`,
-      orderId,
-    });
-    await pushNotification({
-      recipientId: buyerId,
-      type: "escrow_funded",
-      title: "Payment held in escrow",
-      body: `Your payment of ${amount} ${currency} is secured in escrow. The merchant will deliver soon.`,
-      orderId,
-    });
+    await pushNotifications([
+      {
+        recipientId: order.merchantId,
+        type: "escrow_funded",
+        title: "Payment received – funds in escrow",
+        body: `${amount} ${currency} is held in escrow for order ${orderId}. Please deliver within 7 days.`,
+        orderId,
+      },
+      {
+        recipientId: buyerId,
+        type: "escrow_funded",
+        title: "Payment held in escrow",
+        body: `Your payment of ${amount} ${currency} is secured in escrow. The merchant will deliver soon.`,
+        orderId,
+      },
+    ]);
 
     // Order message
     await orderMessages().add({
       orderId,
       senderId: "SYSTEM",
       senderName: "Paragon Platform",
-      text: `💰 Escrow funded: ${amount} ${currency} is secured. Merchant, please deliver the product.`,
+      text: `💰 Escrow funded: ${amount} ${currency} is secured. Merchant, please deliver the product within 7 days.`,
       type: "system",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -321,7 +335,7 @@ export async function fundEscrow(req, res) {
   }
 }
 
-// ─── PART 8 – Merchant submits delivery ────────────────────────────────────
+// ─── PART 8 – Merchant submits delivery ──────────────────────────────────────
 
 export async function submitDelivery(req, res) {
   const merchantId = req.user.uid;
@@ -352,6 +366,10 @@ export async function submitDelivery(req, res) {
     const deliveryId = uuidv4();
     const now = admin.firestore.FieldValue.serverTimestamp();
 
+    // Compute deadline timestamps before entering the transaction
+    const reviewDeadlineTs = admin.firestore.Timestamp.fromDate(buyerReviewDeadline());
+    const autoReleaseTs = admin.firestore.Timestamp.fromDate(escrowAutoReleaseDeadline());
+
     await db().runTransaction(async (tx) => {
       tx.set(deliveries().doc(deliveryId), {
         deliveryId,
@@ -367,6 +385,8 @@ export async function submitDelivery(req, res) {
       tx.update(orderRef, {
         status: "delivering",
         deliveredAt: now,
+        buyerReviewDeadlineAt: reviewDeadlineTs,
+        escrowAutoReleaseAt: autoReleaseTs,
         updatedAt: now,
       });
 
@@ -374,7 +394,7 @@ export async function submitDelivery(req, res) {
         orderId,
         senderId: "SYSTEM",
         senderName: "Paragon Platform",
-        text: `📦 Merchant has submitted delivery. Please review and confirm receipt within 3 days.`,
+        text: `📦 Merchant has submitted delivery. Please review and confirm receipt within 72 hours.`,
         type: "system",
         deliveryId,
         createdAt: now,
@@ -387,7 +407,7 @@ export async function submitDelivery(req, res) {
       recipientId: order.buyerId,
       type: "delivery_submitted",
       title: "Your order has been delivered",
-      body: "Please review and confirm delivery within 3 days to release payment to the merchant.",
+      body: "Please review and confirm delivery within 72 hours to release payment to the merchant.",
       orderId,
     });
 
@@ -398,7 +418,7 @@ export async function submitDelivery(req, res) {
   }
 }
 
-// ─── PART 4 – Buyer confirms delivery → auto-settle ─────────────────────────
+// ─── PART 4 – Buyer confirms delivery → auto-settle ──────────────────────────
 
 export async function confirmDeliveryAndSettle(req, res) {
   const buyerId = req.user.uid;
@@ -437,139 +457,48 @@ export async function confirmDeliveryAndSettle(req, res) {
     }
 
     const { commissionPct } = await getSettings();
-    const commissionAmount = Math.round(((amount * commissionPct) / 100) * 1e6) / 1e6;
-    const merchantAmount = Math.round((amount - commissionAmount) * 1e6) / 1e6;
 
-    const escrowRef = escrowDoc();
-    const merchantWalletRef = walletRef(order.merchantId);
-    const adminWalletRef = adminWalletDoc();
-
-    const escrowDebitEntry = createLedgerEntry({
-      walletId: ESCROW_ID,
-      type: "DEBIT",
-      amount,
-      currency,
-      reason: `Settlement release for order ${orderId}`,
-      reference: orderId,
-    });
-
-    const commissionEntry = createLedgerEntry({
-      walletId: ADMIN_WALLET_ID,
-      type: "CREDIT",
-      amount: commissionAmount,
-      currency,
-      reason: `Commission (${commissionPct}%) for order ${orderId}`,
-      reference: orderId,
-    });
-
-    const merchantEntry = createLedgerEntry({
-      walletId: order.merchantId,
-      type: "CREDIT",
-      amount: merchantAmount,
-      currency,
-      reason: `Marketplace receipt for order ${orderId}`,
-      reference: orderId,
-    });
-
-    await db().runTransaction(async (transaction) => {
-      const escrowSnap = await transaction.get(escrowRef);
-      const escrowBalances = escrowSnap.exists ? (escrowSnap.data()?.balances || {}) : {};
-      const escrowAvailable = Number(escrowBalances[currency.toLowerCase()] || 0);
-
-      if (escrowAvailable < amount) {
-        const err = new Error("Escrow balance insufficient");
-        err.code = "ESCROW_INSUFFICIENT";
-        throw err;
-      }
-
-      // Debit escrow
-      transaction.set(
-        escrowRef,
-        {
-          balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(-amount) },
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // Credit merchant (after commission)
-      transaction.set(
-        merchantWalletRef,
-        {
-          balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(merchantAmount) },
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // Credit admin wallet (commission)
-      transaction.set(
-        adminWalletRef,
-        {
-          walletId: ADMIN_WALLET_ID,
-          role: "admin",
-          balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(commissionAmount) },
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // Update order
-      transaction.update(orderRef, {
-        status: "completed",
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        settlementAmount: merchantAmount,
-        commissionAmount,
-        commissionPct,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Ledger entries
-      writeLedger(transaction, escrowDebitEntry, ESCROW_ID);
-      writeLedger(transaction, commissionEntry, ADMIN_WALLET_ID);
-      writeLedger(transaction, merchantEntry, order.merchantId);
-
-      // System message
-      transaction.set(orderMessages().doc(), {
-        orderId,
-        senderId: "SYSTEM",
-        senderName: "Paragon Platform",
-        text: `✅ Order completed. ${merchantAmount} ${currency} released to merchant. Commission: ${commissionAmount} ${currency} (${commissionPct}%).`,
-        type: "system",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    });
+    // Delegate the atomic settlement transaction to EscrowService
+    const result = await settleOrder({ orderId, order, commissionPct });
 
     await writeAudit({
       orderId,
       action: "order_completed",
       userId: buyerId,
       ip,
-      extra: { amount, merchantAmount, commissionAmount, commissionPct, currency },
+      extra: {
+        amount: result.amount,
+        merchantAmount: result.merchantAmount,
+        commissionAmount: result.commissionAmount,
+        commissionPct: result.commissionPct,
+        currency: result.currency,
+      },
     });
 
-    await pushNotification({
-      recipientId: order.merchantId,
-      type: "order_completed",
-      title: "Payment released to your wallet",
-      body: `${merchantAmount} ${currency} has been credited to your wallet. Order ${orderId} is complete.`,
-      orderId,
-    });
-    await pushNotification({
-      recipientId: buyerId,
-      type: "order_completed",
-      title: "Order completed",
-      body: "Thank you for your purchase. The merchant has been paid.",
-      orderId,
-    });
+    await pushNotifications([
+      {
+        recipientId: order.merchantId,
+        type: "order_completed",
+        title: "Payment released to your wallet",
+        body: `${result.merchantAmount} ${result.currency} has been credited to your wallet. Order ${orderId} is complete.`,
+        orderId,
+      },
+      {
+        recipientId: buyerId,
+        type: "order_completed",
+        title: "Order completed",
+        body: "Thank you for your purchase. The merchant has been paid.",
+        orderId,
+      },
+    ]);
 
     return res.status(200).json({
       success: true,
       orderId,
       status: "completed",
-      merchantAmount,
-      commissionAmount,
-      commissionPct,
+      merchantAmount: result.merchantAmount,
+      commissionAmount: result.commissionAmount,
+      commissionPct: result.commissionPct,
     });
   } catch (err) {
     if (err.code === "ESCROW_INSUFFICIENT") {
@@ -580,7 +509,7 @@ export async function confirmDeliveryAndSettle(req, res) {
   }
 }
 
-// ─── PART 7 – Open dispute (buyer) ──────────────────────────────────────────
+// ─── PART 7 – Open dispute (buyer) ───────────────────────────────────────────
 
 export async function openDispute(req, res) {
   const buyerId = req.user.uid;
@@ -611,6 +540,10 @@ export async function openDispute(req, res) {
     const disputeId = uuidv4();
     const now = admin.firestore.FieldValue.serverTimestamp();
 
+    // Compute deadline timestamps before entering the transaction
+    const evidenceDeadlineTs = admin.firestore.Timestamp.fromDate(disputeEvidenceDeadline());
+    const responseDeadlineTs = admin.firestore.Timestamp.fromDate(merchantResponseDeadline());
+
     await db().runTransaction(async (tx) => {
       tx.set(disputes().doc(disputeId), {
         disputeId,
@@ -627,6 +560,9 @@ export async function openDispute(req, res) {
         adminDecision: null,
         adminDecidedAt: null,
         adminDecidedBy: null,
+        // Automation deadline fields
+        disputeEvidenceDeadlineAt: evidenceDeadlineTs,
+        merchantResponseDeadlineAt: responseDeadlineTs,
         createdAt: now,
         updatedAt: now,
       });
@@ -635,6 +571,7 @@ export async function openDispute(req, res) {
         status: "disputed",
         disputeId,
         disputeOpenedAt: now,
+        merchantResponseDeadlineAt: responseDeadlineTs,
         updatedAt: now,
       });
 
@@ -651,22 +588,22 @@ export async function openDispute(req, res) {
 
     await writeAudit({ orderId, action: "dispute_opened", userId: buyerId, ip, extra: { disputeId, reason } });
 
-    await pushNotification({
-      recipientId: order.merchantId,
-      type: "dispute_opened",
-      title: "Dispute opened on your order",
-      body: `A dispute has been filed for order ${orderId}. Please submit your response.`,
-      orderId,
-    });
-
-    // Notify admins (generic admin notification)
-    await pushNotification({
-      recipientId: "ADMIN",
-      type: "dispute_opened",
-      title: "New marketplace dispute",
-      body: `Dispute filed for order ${orderId}. Buyer: ${buyerId}. Merchant: ${order.merchantId}.`,
-      orderId,
-    });
+    await pushNotifications([
+      {
+        recipientId: order.merchantId,
+        type: "dispute_opened",
+        title: "Dispute opened on your order",
+        body: `A dispute has been filed for order ${orderId}. You have 48 hours to submit your response.`,
+        orderId,
+      },
+      {
+        recipientId: "ADMIN",
+        type: "dispute_opened",
+        title: "New marketplace dispute",
+        body: `Dispute filed for order ${orderId}. Buyer: ${buyerId}. Merchant: ${order.merchantId}.`,
+        orderId,
+      },
+    ]);
 
     return res.status(201).json({ success: true, disputeId, orderId, status: "disputed" });
   } catch (err) {
@@ -675,7 +612,7 @@ export async function openDispute(req, res) {
   }
 }
 
-// ─── PART 7 – Merchant submits dispute response ──────────────────────────────
+// ─── PART 7 – Merchant submits dispute response ───────────────────────────────
 
 export async function respondToDispute(req, res) {
   const merchantId = req.user.uid;
@@ -731,20 +668,22 @@ export async function respondToDispute(req, res) {
 
     await writeAudit({ orderId, action: "dispute_merchant_responded", userId: merchantId, ip });
 
-    await pushNotification({
-      recipientId: order.buyerId,
-      type: "dispute_update",
-      title: "Merchant responded to dispute",
-      body: `The merchant has submitted their response for order ${orderId}. Admin is now reviewing.`,
-      orderId,
-    });
-    await pushNotification({
-      recipientId: "ADMIN",
-      type: "dispute_ready_for_review",
-      title: "Dispute ready for admin review",
-      body: `Order ${orderId}: Both parties have responded. Please resolve the dispute.`,
-      orderId,
-    });
+    await pushNotifications([
+      {
+        recipientId: order.buyerId,
+        type: "dispute_update",
+        title: "Merchant responded to dispute",
+        body: `The merchant has submitted their response for order ${orderId}. Admin is now reviewing.`,
+        orderId,
+      },
+      {
+        recipientId: "ADMIN",
+        type: "dispute_ready_for_review",
+        title: "Dispute ready for admin review",
+        body: `Order ${orderId}: Both parties have responded. Please resolve the dispute.`,
+        orderId,
+      },
+    ]);
 
     return res.status(200).json({ success: true, orderId, status: "admin_review" });
   } catch (err) {
@@ -753,7 +692,7 @@ export async function respondToDispute(req, res) {
   }
 }
 
-// ─── PART 7 – Admin resolves dispute ────────────────────────────────────────
+// ─── PART 7 – Admin resolves dispute ─────────────────────────────────────────
 
 export async function resolveDispute(req, res) {
   if (!isAdminUser(req.user)) {
@@ -763,8 +702,6 @@ export async function resolveDispute(req, res) {
   const adminId = req.user.uid;
   const { orderId } = req.params;
   const { decision, notes = "" } = req.body;
-  // decision: "buyer_wins" | "merchant_wins" | "partial_refund"
-  // partialBuyerPct: number (only for partial_refund)
   const { partialBuyerPct } = req.body;
   const ip = req.ip || null;
 
@@ -791,149 +728,17 @@ export async function resolveDispute(req, res) {
       return res.status(409).json({ message: "Order is not under dispute" });
     }
 
-    const escrowAmount = Number(order.escrowAmount || order.amount || 0);
-    const currency = (order.escrowCurrency || order.currency || "PARAG").toUpperCase();
-
     const { commissionPct } = await getSettings();
 
-    let buyerRefund = 0;
-    let merchantPay = 0;
-    let commissionAmount = 0;
-    let finalStatus = "closed";
-
-    if (decision === "buyer_wins") {
-      buyerRefund = escrowAmount;
-      finalStatus = "refunded";
-    } else if (decision === "merchant_wins") {
-      commissionAmount = Math.round(((escrowAmount * commissionPct) / 100) * 1e6) / 1e6;
-      merchantPay = Math.round((escrowAmount - commissionAmount) * 1e6) / 1e6;
-      finalStatus = "completed";
-    } else {
-      // partial_refund
-      const buyerPct = Number(partialBuyerPct);
-      buyerRefund = Math.round(((escrowAmount * buyerPct) / 100) * 1e6) / 1e6;
-      const remaining = Math.round((escrowAmount - buyerRefund) * 1e6) / 1e6;
-      commissionAmount = Math.round(((remaining * commissionPct) / 100) * 1e6) / 1e6;
-      merchantPay = Math.round((remaining - commissionAmount) * 1e6) / 1e6;
-      finalStatus = "closed";
-    }
-
-    const escrowRef = escrowDoc();
-    const adminWalletRef = adminWalletDoc();
-    const now = admin.firestore.FieldValue.serverTimestamp();
-
-    await db().runTransaction(async (tx) => {
-      // Always debit the full escrow amount
-      tx.set(
-        escrowRef,
-        {
-          balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(-escrowAmount) },
-          updatedAt: now,
-        },
-        { merge: true }
-      );
-
-      if (buyerRefund > 0) {
-        tx.set(
-          walletRef(order.buyerId),
-          {
-            balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(buyerRefund) },
-            updatedAt: now,
-          },
-          { merge: true }
-        );
-        const e = createLedgerEntry({
-          walletId: order.buyerId,
-          type: "CREDIT",
-          amount: buyerRefund,
-          currency,
-          reason: `Dispute refund (${decision}) for order ${orderId}`,
-          reference: orderId,
-        });
-        writeLedger(tx, e, order.buyerId);
-      }
-
-      if (merchantPay > 0) {
-        tx.set(
-          walletRef(order.merchantId),
-          {
-            balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(merchantPay) },
-            updatedAt: now,
-          },
-          { merge: true }
-        );
-        const e = createLedgerEntry({
-          walletId: order.merchantId,
-          type: "CREDIT",
-          amount: merchantPay,
-          currency,
-          reason: `Dispute settlement (${decision}) for order ${orderId}`,
-          reference: orderId,
-        });
-        writeLedger(tx, e, order.merchantId);
-      }
-
-      if (commissionAmount > 0) {
-        tx.set(
-          adminWalletRef,
-          {
-            walletId: ADMIN_WALLET_ID,
-            role: "admin",
-            balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(commissionAmount) },
-            updatedAt: now,
-          },
-          { merge: true }
-        );
-        const e = createLedgerEntry({
-          walletId: ADMIN_WALLET_ID,
-          type: "CREDIT",
-          amount: commissionAmount,
-          currency,
-          reason: `Commission (${commissionPct}%) on dispute settlement for order ${orderId}`,
-          reference: orderId,
-        });
-        writeLedger(tx, e, ADMIN_WALLET_ID);
-      }
-
-      // Escrow debit ledger
-      const escrowDebit = createLedgerEntry({
-        walletId: ESCROW_ID,
-        type: "DEBIT",
-        amount: escrowAmount,
-        currency,
-        reason: `Dispute resolution (${decision}) for order ${orderId}`,
-        reference: orderId,
-      });
-      writeLedger(tx, escrowDebit, ESCROW_ID);
-
-      tx.update(orderRef, {
-        status: finalStatus,
-        disputeDecision: decision,
-        disputeResolvedAt: now,
-        disputeResolvedBy: adminId,
-        disputeNotes: notes,
-        updatedAt: now,
-      });
-
-      if (order.disputeId) {
-        tx.update(disputes().doc(order.disputeId), {
-          adminDecision: decision,
-          adminNotes: notes,
-          adminDecidedAt: now,
-          adminDecidedBy: adminId,
-          status: "resolved",
-          updatedAt: now,
-        });
-      }
-
-      tx.set(orderMessages().doc(), {
-        orderId,
-        senderId: "SYSTEM",
-        senderName: "Paragon Platform",
-        text: `⚖️ Admin has resolved the dispute. Decision: ${decision}. ${notes ? "Notes: " + notes : ""}`,
-        type: "system",
-        createdAt: now,
-      });
+    // Delegate the full dispute resolution transaction to EscrowService
+    const result = await resolveDisputeEscrow({
+      orderId,
+      order,
+      commissionPct,
+      decision,
+      partialBuyerPct,
+      notes,
+      adminId,
     });
 
     await writeAudit({
@@ -941,32 +746,40 @@ export async function resolveDispute(req, res) {
       action: "dispute_resolved",
       userId: adminId,
       ip,
-      extra: { decision, buyerRefund, merchantPay, commissionAmount, notes },
+      extra: {
+        decision,
+        buyerRefund: result.buyerRefund,
+        merchantPay: result.merchantPay,
+        commissionAmount: result.commissionAmount,
+        notes,
+      },
     });
 
-    await pushNotification({
-      recipientId: order.buyerId,
-      type: "dispute_resolved",
-      title: "Dispute resolved",
-      body: `Decision: ${decision}. ${buyerRefund > 0 ? `${buyerRefund} ${currency} refunded to your wallet.` : ""}`,
-      orderId,
-    });
-    await pushNotification({
-      recipientId: order.merchantId,
-      type: "dispute_resolved",
-      title: "Dispute resolved",
-      body: `Decision: ${decision}. ${merchantPay > 0 ? `${merchantPay} ${currency} released to your wallet.` : ""}`,
-      orderId,
-    });
+    await pushNotifications([
+      {
+        recipientId: order.buyerId,
+        type: "dispute_resolved",
+        title: "Dispute resolved",
+        body: `Decision: ${decision}. ${result.buyerRefund > 0 ? `${result.buyerRefund} ${result.currency} refunded to your wallet.` : ""}`,
+        orderId,
+      },
+      {
+        recipientId: order.merchantId,
+        type: "dispute_resolved",
+        title: "Dispute resolved",
+        body: `Decision: ${decision}. ${result.merchantPay > 0 ? `${result.merchantPay} ${result.currency} released to your wallet.` : ""}`,
+        orderId,
+      },
+    ]);
 
     return res.status(200).json({
       success: true,
       orderId,
-      status: finalStatus,
+      status: result.finalStatus,
       decision,
-      buyerRefund,
-      merchantPay,
-      commissionAmount,
+      buyerRefund: result.buyerRefund,
+      merchantPay: result.merchantPay,
+      commissionAmount: result.commissionAmount,
     });
   } catch (err) {
     console.error("resolveDispute failed:", err);
@@ -1083,7 +896,7 @@ export async function cancelOrder(req, res) {
   }
 }
 
-// ─── Expire order (admin / system) ───────────────────────────────────────────
+// ─── Expire order (admin / system) ────────────────────────────────────────────
 
 export async function expireOrder(req, res) {
   if (!isAdminUser(req.user)) {
@@ -1102,27 +915,8 @@ export async function expireOrder(req, res) {
     if (!orderSnap.exists) return res.status(404).json({ message: "Order not found" });
     const order = orderSnap.data();
 
-    const now = admin.firestore.FieldValue.serverTimestamp();
-
-    await db().runTransaction(async (tx) => {
-      // Refund buyer if escrow was funded
-      const amount = Number(order.escrowAmount || 0);
-      const currency = (order.escrowCurrency || "PARAG").toUpperCase();
-      if (amount > 0 && order.status === "escrow_funded") {
-        tx.set(escrowDoc(), { balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(-amount) }, updatedAt: now }, { merge: true });
-        tx.set(walletRef(order.buyerId), { balances: { [currency.toLowerCase()]: admin.firestore.FieldValue.increment(amount) }, updatedAt: now }, { merge: true });
-        const re = createLedgerEntry({ walletId: order.buyerId, type: "CREDIT", amount, currency, reason: `Expiry refund for order ${orderId}`, reference: orderId });
-        const ed = createLedgerEntry({ walletId: ESCROW_ID, type: "DEBIT", amount, currency, reason: `Expiry escrow release for order ${orderId}`, reference: orderId });
-        writeLedger(tx, re, order.buyerId);
-        writeLedger(tx, ed, ESCROW_ID);
-      }
-
-      tx.update(orderRef, { status: "expired", expiredAt: now, expireReason: reason, updatedAt: now });
-      tx.set(orderMessages().doc(), {
-        orderId, senderId: "SYSTEM", senderName: "Paragon Platform",
-        text: `⏱️ Order expired: ${reason}.`, type: "system", createdAt: now,
-      });
-    });
+    // Delegate to EscrowService which handles refund + order status atomically
+    await expireOrderAtomically({ orderId, order, reason });
 
     await writeAudit({ orderId, action: "order_expired", userId: req.user.uid, ip, extra: { reason } });
 
@@ -1133,7 +927,7 @@ export async function expireOrder(req, res) {
   }
 }
 
-// ─── Admin manual override ────────────────────────────────────────────────────
+// ─── Admin manual override ─────────────────────────────────────────────────────
 
 export async function adminOverrideOrder(req, res) {
   if (!isAdminUser(req.user)) {
@@ -1197,7 +991,7 @@ export async function adminOverrideOrder(req, res) {
   }
 }
 
-// ─── Automatic settlement (buyer_review timeout) ──────────────────────────────
+// ─── Automatic settlement (buyer_review timeout) ───────────────────────────────
 
 export async function autoSettleReviewExpired(req, res) {
   if (!isAdminUser(req.user)) {
@@ -1213,17 +1007,21 @@ export async function autoSettleReviewExpired(req, res) {
     if (!orderSnap.exists) return res.status(404).json({ message: "Order not found" });
     const order = orderSnap.data();
 
-    if (order.status !== "buyer_review") {
-      return res.status(409).json({ message: "Order is not in buyer_review status" });
+    if (order.status !== "buyer_review" && order.status !== "delivering") {
+      return res.status(409).json({ message: "Order is not in buyer_review or delivering status" });
     }
 
-    // Check 3-day window
-    const deliveredAt = order.deliveredAt?.toMillis?.() ?? 0;
-    if (Date.now() - deliveredAt < 3 * 24 * 60 * 60 * 1000) {
-      return res.status(409).json({ message: "3-day review window has not expired yet" });
+    // Check that the review window has expired
+    const reviewDeadline = order.buyerReviewDeadlineAt || order.escrowAutoReleaseAt;
+    if (reviewDeadline && !isPast(reviewDeadline)) {
+      // Fall back to legacy 3-day check
+      const deliveredAt = order.deliveredAt?.toMillis?.() ?? 0;
+      if (Date.now() - deliveredAt < 3 * 24 * 60 * 60 * 1000) {
+        return res.status(409).json({ message: "Review window has not expired yet" });
+      }
     }
 
-    // Reuse confirmDeliveryAndSettle logic by creating a synthetic req
+    // Reuse confirmDeliveryAndSettle logic via synthetic req
     const syntheticReq = {
       user: { uid: order.buyerId },
       body: { orderId },
@@ -1237,7 +1035,7 @@ export async function autoSettleReviewExpired(req, res) {
   }
 }
 
-// ─── PART 11 – Admin dashboard reads ─────────────────────────────────────────
+// ─── PART 11 – Admin dashboard reads ──────────────────────────────────────────
 
 export async function adminListOrders(req, res) {
   if (!isAdminUser(req.user)) {
@@ -1332,8 +1130,8 @@ export async function adminListAuditLog(req, res) {
 
   try {
     const { orderId, limit: limitParam = 100 } = req.query;
-    let q = auditLog().orderBy("createdAt", "desc").limit(Number(limitParam));
-    if (orderId) q = auditLog().where("orderId", "==", orderId).orderBy("createdAt", "desc").limit(Number(limitParam));
+    let q = db().collection("marketplace_audit_log").orderBy("createdAt", "desc").limit(Number(limitParam));
+    if (orderId) q = db().collection("marketplace_audit_log").where("orderId", "==", orderId).orderBy("createdAt", "desc").limit(Number(limitParam));
 
     const snap = await q.get();
     return res.json(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
@@ -1396,5 +1194,117 @@ export async function markNotificationRead(req, res) {
   } catch (err) {
     console.error("markNotificationRead failed:", err);
     return res.status(500).json({ message: "Could not mark notification" });
+  }
+}
+
+// ─── PART 12 – Admin Automation Dashboard ─────────────────────────────────────
+//
+// GET /marketplace/admin/automation-summary
+//
+// Returns a real-time snapshot of every order and dispute that needs attention:
+//   - Pending deliveries (merchant must deliver before deliveryDeadlineAt)
+//   - Buyer review expiring soon (buyerReviewDeadlineAt approaching)
+//   - Open disputes (needs admin or merchant action)
+//   - Escrow auto-release approaching
+//   - Recently expired / auto-settled orders (last 24 h)
+
+export async function adminAutomationSummary(req, res) {
+  if (!isAdminUser(req.user)) {
+    return res.status(403).json({ message: "Admin permission required" });
+  }
+
+  try {
+    const now = admin.firestore.Timestamp.now();
+    const in24h = admin.firestore.Timestamp.fromMillis(Date.now() + 24 * 60 * 60 * 1000);
+    const in12h = admin.firestore.Timestamp.fromMillis(Date.now() + 12 * 60 * 60 * 1000);
+    const in6h  = admin.firestore.Timestamp.fromMillis(Date.now() + 6 * 60 * 60 * 1000);
+    const ago24h = admin.firestore.Timestamp.fromMillis(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [
+      pendingDeliverySnap,
+      buyerReviewExpiringSnap,
+      openDisputesSnap,
+      escrowAutoReleaseSnap,
+      recentlyExpiredSnap,
+      recentlyAutoSettledSnap,
+      escrowSnap,
+    ] = await Promise.all([
+      // Orders that merchant has not delivered yet and deadline is approaching (next 24 h)
+      orders()
+        .where("status", "==", "escrow_funded")
+        .where("deliveryDeadlineAt", "<=", in24h)
+        .orderBy("deliveryDeadlineAt", "asc")
+        .limit(50)
+        .get(),
+
+      // Deliveries where buyer review expires in the next 12 h
+      orders()
+        .where("status", "==", "delivering")
+        .where("buyerReviewDeadlineAt", "<=", in12h)
+        .orderBy("buyerReviewDeadlineAt", "asc")
+        .limit(50)
+        .get(),
+
+      // All open / merchant_responded disputes
+      disputes()
+        .where("status", "in", ["open", "merchant_responded"])
+        .orderBy("createdAt", "asc")
+        .limit(50)
+        .get(),
+
+      // Escrow auto-release approaching in 6 h
+      orders()
+        .where("status", "==", "delivering")
+        .where("escrowAutoReleaseAt", "<=", in6h)
+        .orderBy("escrowAutoReleaseAt", "asc")
+        .limit(50)
+        .get(),
+
+      // Orders expired in the last 24 h
+      orders()
+        .where("status", "==", "expired")
+        .where("expiredAt", ">=", ago24h)
+        .orderBy("expiredAt", "desc")
+        .limit(20)
+        .get(),
+
+      // Orders auto-settled in the last 24 h
+      orders()
+        .where("status", "==", "completed")
+        .where("completedAt", ">=", ago24h)
+        .orderBy("completedAt", "desc")
+        .limit(20)
+        .get(),
+
+      // Current escrow balance
+      escrowDoc().get(),
+    ]);
+
+    const pick = (snap) =>
+      snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    const escrowData = escrowSnap.exists ? escrowSnap.data() : {};
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      escrowBalance: escrowData.balances || { parag: 0, gbazilo: 0 },
+      pendingDeliveries: pick(pendingDeliverySnap),
+      buyerReviewExpiring: pick(buyerReviewExpiringSnap),
+      openDisputes: pick(openDisputesSnap),
+      escrowAutoReleaseApproaching: pick(escrowAutoReleaseSnap),
+      recentlyExpired: pick(recentlyExpiredSnap),
+      recentlyAutoSettled: pick(recentlyAutoSettledSnap),
+      counts: {
+        pendingDeliveries: pendingDeliverySnap.size,
+        buyerReviewExpiring: buyerReviewExpiringSnap.size,
+        openDisputes: openDisputesSnap.size,
+        escrowAutoReleaseApproaching: escrowAutoReleaseSnap.size,
+        recentlyExpired: recentlyExpiredSnap.size,
+        recentlyAutoSettled: recentlyAutoSettledSnap.size,
+      },
+    });
+  } catch (err) {
+    console.error("adminAutomationSummary failed:", err);
+    return res.status(500).json({ message: "Could not generate automation summary" });
   }
 }
