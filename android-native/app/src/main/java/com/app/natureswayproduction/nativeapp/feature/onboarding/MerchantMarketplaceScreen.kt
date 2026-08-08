@@ -672,7 +672,8 @@ private class MerchantMarketplaceRepository(
     }
 }
 
-
+@Composable
+private fun MerchantMarketplaceAboutContent() {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
