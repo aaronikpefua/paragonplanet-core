@@ -293,6 +293,86 @@ class MerchantCenterRepository(
         }
     }
 
+    suspend fun sendFinalOffer(order: MerchantOrderItem, amount: Double, senderName: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val orderId = order.id.ifBlank { return@withContext }
+
+        val payload = mapOf(
+            "productMediaUrl" to order.productMediaUrl,
+            "productStreamUrl" to order.productStreamUrl,
+            "productOriginalUrl" to order.productOriginalUrl,
+            "productThumbnailUrl" to order.productThumbnailUrl,
+            "productMediaType" to order.productMediaType,
+        )
+
+        firestore.collection("merchant_orders").document(orderId).update(
+            mapOf(
+                "status" to "final_offer_sent",
+                "amount" to amount,
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+
+        firestore.collection("merchant_order_messages").document().set(
+            mapOf(
+                "orderId" to orderId,
+                "productId" to order.productId,
+                "productName" to order.productName,
+                "buyerId" to order.buyerId,
+                "buyerName" to order.buyerName.ifBlank { "Buyer" },
+                "merchantId" to order.merchantId,
+                "senderId" to user.uid,
+                "senderName" to senderName.ifBlank { "Merchant" },
+                "text" to "📋 Final Offer: ${amount} ${order.currency}. Please accept and pay from your wallet to proceed.",
+                "type" to "final_offer",
+                "readBy" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+            ) + payload
+        ).await()
+    }
+
+    suspend fun markAsDelivered(
+        order: MerchantOrderItem,
+        senderName: String,
+        deliveryNote: String = "",
+        links: List<String> = emptyList(),
+        accessCodes: List<String> = emptyList(),
+    ) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val orderId = order.id.ifBlank { return@withContext }
+        val idToken = user.getIdToken(false).await()?.token ?: return@withContext
+        apiService.submitMarketplaceDelivery(
+            idToken = idToken,
+            orderId = orderId,
+            deliveryNote = deliveryNote,
+            links = links,
+            accessCodes = accessCodes,
+        )
+    }
+
+    suspend fun confirmDelivery(order: MerchantOrderItem) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val idToken = user.getIdToken(false).await()?.token ?: return@withContext
+        apiService.confirmMarketplaceDelivery(idToken = idToken, orderId = order.id)
+    }
+
+    suspend fun openDispute(order: MerchantOrderItem, reason: String, description: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val idToken = user.getIdToken(false).await()?.token ?: return@withContext
+        apiService.openMarketplaceDispute(
+            idToken = idToken,
+            orderId = order.id,
+            reason = reason,
+            description = description,
+        )
+    }
+
+    suspend fun cancelOrder(order: MerchantOrderItem, reason: String = "") = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val idToken = user.getIdToken(false).await()?.token ?: return@withContext
+        apiService.cancelMarketplaceOrder(idToken = idToken, orderId = order.id, reason = reason)
+    }
+
     suspend fun deleteMerchantAccount() = withContext(Dispatchers.IO) {
         val user = auth.currentUser ?: return@withContext
         firestore.collection("merchant_profiles").document(user.uid).delete().await()

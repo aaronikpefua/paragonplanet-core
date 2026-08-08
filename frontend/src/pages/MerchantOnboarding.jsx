@@ -217,6 +217,12 @@ export default function MerchantOnboarding() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderMessages, setOrderMessages] = useState([]);
   const [replyText, setReplyText] = useState("");
+  const [finalOfferAmount, setFinalOfferAmount] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [deliveryNote, setDeliveryNote] = useState("");
+  const [deliveryLinks, setDeliveryLinks] = useState("");
+  const [deliveryCodes, setDeliveryCodes] = useState("");
+  const [showDeliveryForm, setShowDeliveryForm] = useState(false);
   const [profileExists, setProfileExists] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -605,7 +611,20 @@ export default function MerchantOnboarding() {
   const openOrder = async (order) => {
     if (!user) return;
 
-    setSelectedOrder(order);
+    // Refresh order from Firestore to get latest status
+    try {
+      const orderSnap = await getDoc(doc(db, "merchant_orders", order.id));
+      if (orderSnap.exists()) {
+        setSelectedOrder({ id: orderSnap.id, ...orderSnap.data() });
+        setFinalOfferAmount(String(orderSnap.data()?.amount || order.amount || ""));
+      } else {
+        setSelectedOrder(order);
+        setFinalOfferAmount(String(order.amount || ""));
+      }
+    } catch {
+      setSelectedOrder(order);
+      setFinalOfferAmount(String(order.amount || ""));
+    }
 
     const messageQuery = query(
       collection(db, "merchant_order_messages"),
@@ -690,6 +709,99 @@ export default function MerchantOnboarding() {
       },
     ]);
     setReplyText("");
+  };
+
+  const sendFinalOffer = async () => {
+    if (!user || !selectedOrder) return;
+    const amount = Number(finalOfferAmount);
+    if (!amount || amount <= 0) {
+      alert("Enter a valid final offer amount.");
+      return;
+    }
+    if (!window.confirm(`Send a final offer of ${amount} ${selectedOrder.currency || "PARAG"} to the buyer?`)) return;
+
+    setActionLoading(true);
+    try {
+      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
+        status: "final_offer_sent",
+        amount,
+        updatedAt: serverTimestamp(),
+      });
+
+      const senderName = profile.realName || user.email || "Merchant";
+      const productPayload = buildProductMessagePayload(selectedOrder);
+      await addDoc(collection(db, "merchant_order_messages"), {
+        orderId: selectedOrder.id,
+        productId: selectedOrder.productId,
+        productName: selectedOrder.productName || "Product request",
+        ...productPayload,
+        buyerId: selectedOrder.buyerId,
+        merchantId: selectedOrder.merchantId,
+        senderId: user.uid,
+        senderName,
+        text: `📋 Final Offer: ${amount} ${selectedOrder.currency || "PARAG"}. Please accept and pay from your wallet to proceed.`,
+        type: "final_offer",
+        readBy: [user.uid],
+        createdAt: serverTimestamp(),
+      });
+
+      setSelectedOrder((prev) => ({ ...prev, status: "final_offer_sent", amount }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "final_offer_sent", amount } : o))
+      );
+      alert("Final offer sent to buyer.");
+    } catch (err) {
+      console.error("Send final offer failed:", err);
+      alert(`Could not send final offer: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const markAsDelivered = async () => {
+    if (!user || !selectedOrder) return;
+    if (!window.confirm("Submit delivery? You can include download links, access codes, and notes for the buyer.")) return;
+
+    setActionLoading(true);
+    try {
+      const idToken = await user.getIdToken();
+      const links = deliveryLinks.split("\n").map((l) => l.trim()).filter(Boolean);
+      const accessCodes = deliveryCodes.split("\n").map((c) => c.trim()).filter(Boolean);
+
+      const response = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/deliver`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({
+            orderId: selectedOrder.id,
+            deliveryNote: deliveryNote.trim(),
+            links,
+            accessCodes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || "Delivery submission failed");
+      }
+
+      setSelectedOrder((prev) => ({ ...prev, status: "delivering" }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "delivering" } : o))
+      );
+      setShowDeliveryForm(false);
+      setDeliveryNote("");
+      setDeliveryLinks("");
+      setDeliveryCodes("");
+      alert("Delivery submitted. Waiting for buyer confirmation.");
+    } catch (err) {
+      console.error("Mark as delivered failed:", err);
+      alert(`Could not submit delivery: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   return (
@@ -957,17 +1069,23 @@ export default function MerchantOnboarding() {
                   <strong>{order.productName}</strong>
                   <span>{order.buyerName}</span>
                   <span>{order.amount} {order.currency}</span>
-                  <span>{order.escrowStatus || order.status}</span>
+                  <span style={{ color: merchantStatusColor(order.status) }}>{merchantStatusLabel(order.status)}</span>
                 </button>
               ))}
             </div>
 
-            <div style={chatPanelStyle}>
+        <div style={chatPanelStyle}>
               {selectedOrder ? (
                 <>
                   <p style={eyebrowStyle}>Private chat</p>
                   <h3>{selectedOrder.productName}</h3>
-                  <p style={mutedStyle}>Buyer: {selectedOrder.buyerName}</p>
+                  <p style={mutedStyle}>
+                    Buyer: {selectedOrder.buyerName}
+                    {" · "}
+                    <span style={{ fontWeight: 700, color: merchantStatusColor(selectedOrder.status) }}>
+                      {merchantStatusLabel(selectedOrder.status)}
+                    </span>
+                  </p>
 
                   <div style={messagesStyle}>
                     {orderMessages.length === 0 ? (
@@ -989,17 +1107,116 @@ export default function MerchantOnboarding() {
                     )}
                   </div>
 
-                  <div style={replyRowStyle}>
-                    <input
-                      value={replyText}
-                      onChange={(e) => setReplyText(e.target.value)}
-                      placeholder="Reply to buyer"
-                      style={inputStyle}
+                  {selectedOrder.status !== "completed" && (
+                    <div style={replyRowStyle}>
+                      <input
+                        value={replyText}
+                        onChange={(e) => setReplyText(e.target.value)}
+                        placeholder="Reply to buyer"
+                        style={inputStyle}
+                      />
+                      <button onClick={sendMerchantReply} style={secondaryBtnStyle}>
+                        Send
+                      </button>
+                    </div>
+                  )}
+
+                  {(selectedOrder.status === "chat_open" ||
+                    selectedOrder.status === "negotiating" ||
+                    selectedOrder.status === "final_offer_sent") && (
+                    <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="number"
+                        min="0"
+                        value={finalOfferAmount}
+                        onChange={(e) => setFinalOfferAmount(e.target.value)}
+                        placeholder="Final offer amount"
+                        style={{ ...inputStyle, maxWidth: 160 }}
+                      />
+                      <span style={{ fontSize: 13, color: "#52616b" }}>{selectedOrder.currency || "PARAG"}</span>
+                      <button
+                        onClick={sendFinalOffer}
+                        disabled={actionLoading}
+                        style={primaryBtnStyle}
+                      >
+                        {actionLoading ? "Sending…" : "Send Final Offer"}
+                      </button>
+                    </div>
+                  )}
+
+                  {selectedOrder.status === "paid" || selectedOrder.status === "escrow_funded" ? (
+                    showDeliveryForm ? (
+                      <div style={{ marginTop: 12, padding: "14px 16px", background: "#f0fdf4", border: "1px solid #6ee7b7", borderRadius: 8 }}>
+                        <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#176b4d" }}>📦 Submit Delivery</p>
+                        <textarea
+                          value={deliveryNote}
+                          onChange={(e) => setDeliveryNote(e.target.value)}
+                          placeholder="Delivery note for the buyer…"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <textarea
+                          value={deliveryLinks}
+                          onChange={(e) => setDeliveryLinks(e.target.value)}
+                          placeholder="Download links / URLs (one per line)"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <textarea
+                          value={deliveryCodes}
+                          onChange={(e) => setDeliveryCodes(e.target.value)}
+                          placeholder="Access codes / license keys (one per line)"
+                          rows={2}
+                          style={{ ...inputStyle, display: "block", width: "100%", marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+                        />
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button onClick={markAsDelivered} disabled={actionLoading} style={{ ...primaryBtnStyle, flex: 1, marginTop: 0 }}>
+                            {actionLoading ? "Submitting…" : "Submit Delivery"}
+                          </button>
+                          <button onClick={() => setShowDeliveryForm(false)} style={{ ...secondaryBtnStyle, flex: 1 }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowDeliveryForm(true)}
+                        style={{ ...primaryBtnStyle, marginTop: 12 }}
+                      >
+                        Deliver Product
+                      </button>
+                    )
+                  ) : null}
+
+                  {selectedOrder.status === "completed" && (
+                    <p style={{ marginTop: 12, color: "#176b4d", fontWeight: 700 }}>
+                      ✅ Transaction completed. Payment has been released to your wallet.
+                    </p>
+                  )}
+
+                  {selectedOrder.status === "disputed" && (
+                    <MerchantDisputeResponse
+                      order={selectedOrder}
+                      onResponded={() => {
+                        setSelectedOrder((prev) => ({ ...prev, status: "admin_review" }));
+                        setOrders((prev) =>
+                          prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "admin_review" } : o))
+                        );
+                      }}
                     />
-                    <button onClick={sendMerchantReply} style={secondaryBtnStyle}>
-                      Send
-                    </button>
-                  </div>
+                  )}
+
+                  {selectedOrder.status === "admin_review" && (
+                    <p style={{ marginTop: 12, color: "#6d28d9", fontWeight: 700 }}>
+                      🔍 Under admin review. You will be notified of the decision.
+                    </p>
+                  )}
+
+                  {["cancelled", "expired", "refunded", "closed"].includes(selectedOrder.status) && (
+                    <p style={{ marginTop: 12, color: "#dc2626", fontWeight: 700 }}>
+                      Order is {merchantStatusLabel(selectedOrder.status)}.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p style={mutedStyle}>Select a buyer request to chat.</p>
@@ -1494,3 +1711,84 @@ function getMessageProduct(message) {
   };
 }
 
+
+const MERCHANT_STATUS_LABELS = {
+  chat_open: "Chatting",
+  negotiating: "Negotiating",
+  final_offer_sent: "Awaiting Buyer Payment",
+  buyer_accepted: "Buyer Accepted — Awaiting Payment",
+  escrow_funded: "Paid (Escrow) — Ready to Deliver",
+  paid: "Paid — Ready to Deliver",
+  delivering: "Delivering",
+  buyer_review: "Awaiting Buyer Review",
+  delivered: "Delivered",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  expired: "Expired",
+  disputed: "Disputed",
+  admin_review: "Admin Review",
+  refunded: "Refunded",
+  closed: "Closed",
+};
+
+function merchantStatusLabel(status) {
+  return MERCHANT_STATUS_LABELS[status] || status || "—";
+}
+
+function merchantStatusColor(status) {
+  if (status === "completed") return "#176b4d";
+  if (["final_offer_sent", "buyer_accepted"].includes(status)) return "#b45309";
+  if (["escrow_funded", "paid"].includes(status)) return "#1d4ed8";
+  if (["delivering", "buyer_review", "delivered"].includes(status)) return "#6d28d9";
+  if (["disputed", "admin_review"].includes(status)) return "#b45309";
+  if (["cancelled", "expired", "closed", "refunded"].includes(status)) return "#dc2626";
+  return "#52616b";
+}
+
+function MerchantDisputeResponse({ order, onResponded }) {
+  const [response, setResponse] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    const user = auth.currentUser;
+    if (!user || !response.trim()) { alert("Please describe your response."); return; }
+    setSubmitting(true);
+    try {
+      const idToken = await user.getIdToken();
+      const res = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/marketplace/dispute/${order.id}/respond`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + idToken },
+          body: JSON.stringify({ response: response.trim() }),
+        }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Could not submit response");
+      }
+      alert("Response submitted. Admin is now reviewing.");
+      onResponded();
+    } catch (err) {
+      alert(`Could not submit: ${err.message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: "14px 16px", background: "#fff7ed", border: "1px solid #f59e0b", borderRadius: 8 }}>
+      <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#b45309" }}>⚠️ Dispute Filed — Submit Your Response</p>
+      <textarea
+        value={response}
+        onChange={(e) => setResponse(e.target.value)}
+        placeholder="Describe your side of the dispute in detail…"
+        rows={4}
+        style={{ display: "block", width: "100%", padding: "8px 10px", border: "1px solid #c9c0b2", borderRadius: 6, marginBottom: 8, resize: "vertical", boxSizing: "border-box" }}
+      />
+      <button onClick={submit} disabled={submitting} style={{ padding: "10px 18px", background: "#b45309", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700 }}>
+        {submitting ? "Submitting…" : "Submit Dispute Response"}
+      </button>
+    </div>
+  );
+}

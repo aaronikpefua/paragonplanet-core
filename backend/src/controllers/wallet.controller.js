@@ -119,6 +119,16 @@ export async function creditWallet(req, res) {
 }
 
 /**
+ * @deprecated Use POST /api/marketplace/pay instead.
+ * This endpoint now delegates to the escrow-based marketplace flow.
+ */
+export async function settleMarketplaceOrder(req, res) {
+  // Import and call the new escrow-based handler to avoid direct settlement
+  const { fundEscrow } = await import("./marketplace.controller.js");
+  return fundEscrow(req, res);
+}
+
+/**
  * Get wallet balance
  */
 export async function getWalletBalance(req, res) {

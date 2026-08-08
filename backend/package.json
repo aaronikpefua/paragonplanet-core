@@ -8,13 +8,18 @@
     "dev": "node src/index.js",
     "start": "node src/index.js",
     "play:create-products": "node src/scripts/createPlayProducts.js",
-    "admin:set-claim": "node src/scripts/setAdminClaim.js"
+    "admin:set-claim": "node src/scripts/setAdminClaim.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
     "firebase-admin": "^12.0.0",
     "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
   }
 }

@@ -243,3 +243,12 @@ data class WalletDepositVerifyResult(
 data class WalletWithdrawalResult(
     val ok: Boolean,
 )
+
+data class MarketplaceNotification(
+    val id: String = "",
+    val type: String = "",
+    val title: String = "",
+    val body: String = "",
+    val orderId: String = "",
+    val read: Boolean = false,
+)
