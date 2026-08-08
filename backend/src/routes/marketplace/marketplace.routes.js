@@ -34,6 +34,10 @@ import {
 
 const router = Router();
 
+// Apply a base rate limit to all marketplace routes (300 req/min per user).
+// Individual financial routes have stricter limits applied per-route below.
+router.use(rateLimit({ windowMs: 60 * 1000, limit: 300, keyPrefix: "mp-base" }));
+
 // ── Buyer / Merchant transaction flow ─────────────────────────────────────────
 router.post(
   "/pay",
