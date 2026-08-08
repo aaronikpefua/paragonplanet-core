@@ -1,7 +1,7 @@
 import { Router } from "express";
+import { rateLimit } from "express-rate-limit";
 import { authenticate } from "../../middlewares/auth.middleware.js";
 import { requireAdmin } from "../../middlewares/admin.middleware.js";
-import { rateLimit } from "../../middlewares/rateLimit.middleware.js";
 import {
   // Escrow / transaction flow
   fundEscrow,
@@ -36,33 +36,33 @@ const router = Router();
 
 // Apply a base rate limit to all marketplace routes (300 req/min per user).
 // Individual financial routes have stricter limits applied per-route below.
-router.use(rateLimit({ windowMs: 60 * 1000, limit: 300, keyPrefix: "mp-base" }));
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 // ── Buyer / Merchant transaction flow ─────────────────────────────────────────
 router.post(
   "/pay",
-  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-pay" }),
+  rateLimit({ windowMs: 60 * 1000, max: 10 }),
   authenticate,
   fundEscrow
 );
 
 router.post(
   "/deliver",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-deliver" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate,
   submitDelivery
 );
 
 router.post(
   "/confirm",
-  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-confirm" }),
+  rateLimit({ windowMs: 60 * 1000, max: 10 }),
   authenticate,
   confirmDeliveryAndSettle
 );
 
 router.post(
   "/cancel",
-  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-cancel" }),
+  rateLimit({ windowMs: 60 * 1000, max: 10 }),
   authenticate,
   cancelOrder
 );
@@ -70,14 +70,14 @@ router.post(
 // ── Disputes ──────────────────────────────────────────────────────────────────
 router.post(
   "/dispute",
-  rateLimit({ windowMs: 60 * 1000, limit: 5, keyPrefix: "mp-dispute" }),
+  rateLimit({ windowMs: 60 * 1000, max: 5 }),
   authenticate,
   openDispute
 );
 
 router.post(
   "/dispute/:orderId/respond",
-  rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "mp-dispute-respond" }),
+  rateLimit({ windowMs: 60 * 1000, max: 10 }),
   authenticate,
   respondToDispute
 );
@@ -85,7 +85,7 @@ router.post(
 // ── Delivery history ──────────────────────────────────────────────────────────
 router.get(
   "/delivery/:orderId",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-delivery-read" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate,
   getOrderDelivery
 );
@@ -93,13 +93,13 @@ router.get(
 // ── Notifications ─────────────────────────────────────────────────────────────
 router.get(
   "/notifications",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-notifications" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate,
   getUserNotifications
 );
 router.post(
   "/notifications/:notificationId/read",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-notif-read" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate,
   markNotificationRead
 );
@@ -107,7 +107,7 @@ router.post(
 // ── Marketplace settings (public read) ───────────────────────────────────────
 router.get(
   "/settings",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-settings" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate,
   getMarketplaceSettings
 );
@@ -115,57 +115,57 @@ router.get(
 // ── Admin-only routes ─────────────────────────────────────────────────────────
 router.post(
   "/admin/settings",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-settings" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, updateMarketplaceSettings
 );
 router.get(
   "/admin/orders",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-orders" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate, requireAdmin, adminListOrders
 );
 router.get(
   "/admin/disputes",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-disputes" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate, requireAdmin, adminListDisputes
 );
 router.get(
   "/admin/escrow",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-escrow" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate, requireAdmin, adminGetEscrowBalance
 );
 router.get(
   "/admin/admin-wallet",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-wallet" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate, requireAdmin, adminGetAdminWallet
 );
 router.get(
   "/admin/commission-report",
-  rateLimit({ windowMs: 60 * 1000, limit: 30, keyPrefix: "mp-admin-commission" }),
+  rateLimit({ windowMs: 60 * 1000, max: 30 }),
   authenticate, requireAdmin, adminCommissionReport
 );
 router.get(
   "/admin/audit-log",
-  rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "mp-admin-audit" }),
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
   authenticate, requireAdmin, adminListAuditLog
 );
 router.post(
   "/admin/override",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-override" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, adminOverrideOrder
 );
 router.post(
   "/admin/expire",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-expire" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, expireOrder
 );
 router.post(
   "/admin/auto-settle",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-auto-settle" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, autoSettleReviewExpired
 );
 router.post(
   "/admin/dispute/:orderId/resolve",
-  rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "mp-admin-resolve" }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   authenticate, requireAdmin, resolveDispute
 );
 
