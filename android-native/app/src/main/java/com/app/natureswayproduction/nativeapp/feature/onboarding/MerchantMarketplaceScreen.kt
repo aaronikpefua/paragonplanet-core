@@ -39,6 +39,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.app.natureswayproduction.nativeapp.ui.theme.ParagonGold
+import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -70,6 +71,7 @@ fun MerchantMarketplaceScreen(
     var selectedBuyerOrder by remember { mutableStateOf<MarketplaceOrderItem?>(null) }
     var buyerOrderMessages by remember { mutableStateOf(emptyList<MarketplaceOrderMessageItem>()) }
     var expandedPreviewProductId by remember { mutableStateOf<String?>(null) }
+    var actionLoading by remember { mutableStateOf(false) }
     suspend fun reload() {
         isLoading = true
         error = null
@@ -209,6 +211,11 @@ fun MerchantMarketplaceScreen(
                                 ) {
                                     Text(order.productName, fontWeight = FontWeight.ExtraBold)
                                     Text("Merchant: ${order.merchantName}", color = Color(0xFF5A534A))
+                                    Text(
+                                        marketplaceStatusLabel(order.status),
+                                        color = marketplaceStatusColor(order.status),
+                                        fontWeight = FontWeight.Bold
+                                    )
                                     if (buyerOrderMessages.isEmpty()) {
                                         Text("No messages yet.", color = Color(0xFF5A534A))
                                     } else {
@@ -220,6 +227,69 @@ fun MerchantMarketplaceScreen(
                                                 }
                                             }
                                         }
+                                    }
+                                    if (order.status == "final_offer_sent") {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text("Final Offer: ${order.amount.toInt()} ${order.currency}", fontWeight = FontWeight.ExtraBold)
+                                                Text("Accept to pay from your Paragon Planet Wallet.", color = Color(0xFF5A534A))
+                                                Button(
+                                                    onClick = {
+                                                        scope.launch {
+                                                            actionLoading = true
+                                                            note = null
+                                                            runCatching { repository.settleOrder(order) }
+                                                                .onSuccess { ok ->
+                                                                    if (ok) {
+                                                                        selectedBuyerOrder = order.copy(status = "paid")
+                                                                        buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "paid") else o }
+                                                                        note = "Payment successful! Awaiting delivery."
+                                                                    } else {
+                                                                        note = "Payment failed. Check your wallet balance."
+                                                                    }
+                                                                }
+                                                                .onFailure { err -> note = err.message ?: "Payment failed." }
+                                                            actionLoading = false
+                                                        }
+                                                    },
+                                                    enabled = !actionLoading,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
+                                                ) {
+                                                    Text(if (actionLoading) "Processing…" else "Pay ${order.amount.toInt()} ${order.currency} from Wallet")
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (order.status == "delivering" || order.status == "delivered") {
+                                        Button(
+                                            onClick = {
+                                                scope.launch {
+                                                    actionLoading = true
+                                                    note = null
+                                                    runCatching { repository.confirmDelivery(order) }
+                                                        .onSuccess {
+                                                            selectedBuyerOrder = order.copy(status = "completed")
+                                                            buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "completed") else o }
+                                                            note = "Transaction completed. Thank you!"
+                                                        }
+                                                        .onFailure { err -> note = err.message ?: "Could not confirm delivery." }
+                                                    actionLoading = false
+                                                }
+                                            },
+                                            enabled = !actionLoading,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
+                                        ) {
+                                            Text(if (actionLoading) "Confirming…" else "Confirm Delivery — Complete Transaction")
+                                        }
+                                    }
+                                    if (order.status == "completed") {
+                                        Text("✅ Transaction completed.", color = Color(0xFF176B4D), fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -367,6 +437,7 @@ fun MerchantMarketplaceScreen(
 private class MerchantMarketplaceRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
+    private val apiService: ParagonApiService = ParagonApiService(),
 ) {
     suspend fun loadProducts(): MarketplaceLoadResult = withContext(Dispatchers.IO) {
         val currentUid = auth.currentUser?.uid
@@ -509,6 +580,11 @@ private class MerchantMarketplaceRepository(
                     merchantName = data["merchantName"] as? String ?: "Merchant",
                     amount = (data["amount"] as? Number)?.toDouble() ?: 0.0,
                     currency = data["currency"] as? String ?: "PARAG",
+                    status = data["status"] as? String ?: "chat_open",
+                    productMediaUrl = data["productMediaUrl"] as? String ?: "",
+                    productStreamUrl = data["productStreamUrl"] as? String ?: "",
+                    productOriginalUrl = data["productOriginalUrl"] as? String ?: "",
+                    productMediaType = data["productMediaType"] as? String ?: "",
                 )
             }
             .sortedByDescending { it.id }
@@ -540,10 +616,46 @@ private class MerchantMarketplaceRepository(
             )
         ).await()
     }
+    suspend fun settleOrder(order: MarketplaceOrderItem): Boolean = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: throw IllegalStateException("Login first.")
+        val idToken = user.getIdToken(false).await().token
+            ?: throw IllegalStateException("Could not obtain auth token.")
+        apiService.settleMarketplaceOrder(idToken = idToken, orderId = order.id)
+    }
+
+    suspend fun confirmDelivery(order: MarketplaceOrderItem) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: throw IllegalStateException("Login first.")
+        val orderId = order.id.ifBlank { return@withContext }
+
+        firestore.collection("merchant_orders").document(orderId).update(
+            mapOf(
+                "status" to "completed",
+                "completedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+
+        firestore.collection("merchant_order_messages").add(
+            mapOf(
+                "orderId" to orderId,
+                "productId" to order.productId,
+                "productName" to order.productName,
+                "buyerId" to order.buyerId,
+                "buyerName" to order.buyerName,
+                "merchantId" to order.merchantId,
+                "merchantName" to order.merchantName,
+                "senderId" to user.uid,
+                "senderName" to (user.displayName ?: user.email ?: "Buyer"),
+                "text" to "✅ Delivery confirmed. Transaction completed.",
+                "type" to "delivery_confirmation",
+                "readBy" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+    }
 }
 
-@Composable
-private fun MerchantMarketplaceAboutContent() {
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -627,6 +739,11 @@ data class MarketplaceOrderItem(
     val merchantName: String,
     val amount: Double,
     val currency: String,
+    val status: String = "chat_open",
+    val productMediaUrl: String = "",
+    val productStreamUrl: String = "",
+    val productOriginalUrl: String = "",
+    val productMediaType: String = "",
 )
 
 data class MarketplaceOrderMessageItem(
@@ -697,3 +814,23 @@ private fun websiteFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedContainerColor = Color.White,
 )
 
+
+private fun marketplaceStatusLabel(status: String): String = when (status) {
+    "chat_open" -> "Chatting"
+    "negotiating" -> "Negotiating"
+    "final_offer_sent" -> "Final Offer Received"
+    "paid" -> "Paid — Awaiting Delivery"
+    "delivering" -> "Delivering"
+    "delivered" -> "Delivered"
+    "completed" -> "Completed"
+    "cancelled" -> "Cancelled"
+    else -> status.ifBlank { "—" }
+}
+
+private fun marketplaceStatusColor(status: String): Color = when (status) {
+    "completed" -> Color(0xFF176B4D)
+    "final_offer_sent" -> Color(0xFFB45309)
+    "paid", "delivering", "delivered" -> Color(0xFF1D4ED8)
+    "cancelled" -> Color(0xFFDC2626)
+    else -> Color(0xFF52616B)
+}

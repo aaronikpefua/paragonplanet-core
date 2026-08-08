@@ -293,6 +293,82 @@ class MerchantCenterRepository(
         }
     }
 
+    suspend fun sendFinalOffer(order: MerchantOrderItem, amount: Double, senderName: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val orderId = order.id.ifBlank { return@withContext }
+
+        val payload = mapOf(
+            "productMediaUrl" to order.productMediaUrl,
+            "productStreamUrl" to order.productStreamUrl,
+            "productOriginalUrl" to order.productOriginalUrl,
+            "productThumbnailUrl" to order.productThumbnailUrl,
+            "productMediaType" to order.productMediaType,
+        )
+
+        firestore.collection("merchant_orders").document(orderId).update(
+            mapOf(
+                "status" to "final_offer_sent",
+                "amount" to amount,
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+
+        firestore.collection("merchant_order_messages").document().set(
+            mapOf(
+                "orderId" to orderId,
+                "productId" to order.productId,
+                "productName" to order.productName,
+                "buyerId" to order.buyerId,
+                "buyerName" to order.buyerName.ifBlank { "Buyer" },
+                "merchantId" to order.merchantId,
+                "senderId" to user.uid,
+                "senderName" to senderName.ifBlank { "Merchant" },
+                "text" to "📋 Final Offer: ${amount} ${order.currency}. Please accept and pay from your wallet to proceed.",
+                "type" to "final_offer",
+                "readBy" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+            ) + payload
+        ).await()
+    }
+
+    suspend fun markAsDelivered(order: MerchantOrderItem, senderName: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: return@withContext
+        val orderId = order.id.ifBlank { return@withContext }
+
+        val payload = mapOf(
+            "productMediaUrl" to order.productMediaUrl,
+            "productStreamUrl" to order.productStreamUrl,
+            "productOriginalUrl" to order.productOriginalUrl,
+            "productThumbnailUrl" to order.productThumbnailUrl,
+            "productMediaType" to order.productMediaType,
+        )
+
+        firestore.collection("merchant_orders").document(orderId).update(
+            mapOf(
+                "status" to "delivering",
+                "deliveredAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+
+        firestore.collection("merchant_order_messages").document().set(
+            mapOf(
+                "orderId" to orderId,
+                "productId" to order.productId,
+                "productName" to order.productName,
+                "buyerId" to order.buyerId,
+                "buyerName" to order.buyerName.ifBlank { "Buyer" },
+                "merchantId" to order.merchantId,
+                "senderId" to user.uid,
+                "senderName" to senderName.ifBlank { "Merchant" },
+                "text" to "📦 Product delivered. Please confirm receipt in your Buyer Inbox to complete the transaction.",
+                "type" to "delivery_notice",
+                "readBy" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+            ) + payload
+        ).await()
+    }
+
     suspend fun deleteMerchantAccount() = withContext(Dispatchers.IO) {
         val user = auth.currentUser ?: return@withContext
         firestore.collection("merchant_profiles").document(user.uid).delete().await()

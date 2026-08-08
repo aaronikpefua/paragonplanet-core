@@ -222,6 +222,20 @@ class ParagonApiService {
     }
 
 
+    suspend fun settleMarketplaceOrder(
+        idToken: String,
+        orderId: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/wallet/settle-order",
+            method = "POST",
+            authorization = "******",
+            jsonBody = JSONObject().put("orderId", orderId).toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
     suspend fun listBanks(
         idToken: String,
         appCheckToken: String?,

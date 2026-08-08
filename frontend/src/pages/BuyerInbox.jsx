@@ -16,6 +16,21 @@ import {
 import { auth, db } from "../config/firebase";
 import MerchantProductMedia from "../components/MerchantProductMedia";
 
+const STATUS_LABELS = {
+  chat_open: "Chatting",
+  negotiating: "Negotiating",
+  final_offer_sent: "Final Offer Received",
+  paid: "Paid — Awaiting Delivery",
+  delivering: "Delivering",
+  delivered: "Delivered",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+function statusLabel(status) {
+  return STATUS_LABELS[status] || status || "—";
+}
+
 function isEmailLike(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 }
@@ -34,6 +49,7 @@ export default function BuyerInbox() {
   const [messages, setMessages] = useState([]);
   const [replyText, setReplyText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -80,7 +96,6 @@ export default function BuyerInbox() {
             amount: data.amount || 0,
             currency: data.currency || "PARAG",
             status: "chat_open",
-            escrowStatus: "not_requested",
             createdAt: data.createdAt,
           };
         });
@@ -114,7 +129,17 @@ export default function BuyerInbox() {
     const user = auth.currentUser;
     if (!user) return;
 
-    setSelectedOrder(order);
+    // Refresh order from Firestore to get latest status
+    try {
+      const orderSnap = await getDoc(doc(db, "merchant_orders", order.id));
+      if (orderSnap.exists()) {
+        setSelectedOrder({ id: orderSnap.id, ...orderSnap.data() });
+      } else {
+        setSelectedOrder(order);
+      }
+    } catch {
+      setSelectedOrder(order);
+    }
 
     const messageQuery = query(
       collection(db, "merchant_order_messages"),
@@ -170,6 +195,7 @@ export default function BuyerInbox() {
       createdAt: serverTimestamp(),
     });
 
+    // Mirror to unified inbox
     try {
       await addDoc(collection(db, "direct_messages"), {
         chatId: buildChatId(selectedOrder.buyerId, selectedOrder.merchantId),
@@ -206,35 +232,130 @@ export default function BuyerInbox() {
     setReplyText("");
   };
 
-  const requestEscrowTransfer = async () => {
+  /** Buyer accepts final offer and pays from PARAG wallet */
+  const acceptFinalOfferAndPay = async () => {
     const user = auth.currentUser;
     if (!user || !selectedOrder) return;
 
-    const buyerWallet = await getDoc(doc(db, "wallet_accounts", user.uid));
-    const buyerParag = buyerWallet.data()?.balances?.parag || 0;
     const amount = Number(selectedOrder.amount || 0);
-
-    if (buyerParag < amount) {
-      alert("Insufficient PARAG balance. Deposit or convert in your wallet first.");
-      navigate("/wallet");
+    if (amount <= 0) {
+      alert("Invalid order amount. Please contact the merchant.");
       return;
     }
 
-    await addDoc(collection(db, "merchant_escrow_requests"), {
-      orderId: selectedOrder.id,
-      productId: selectedOrder.productId,
-      productName: selectedOrder.productName || "Product request",
-      buyerId: selectedOrder.buyerId,
-      merchantId: selectedOrder.merchantId,
-      amount,
-      currency: selectedOrder.currency || "PARAG",
-      status: "pending_admin_approval",
-      releaseStatus: "waiting_buyer_satisfaction",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    if (!window.confirm(`Pay ${amount} ${selectedOrder.currency || "PARAG"} from your wallet to accept this final offer?`)) {
+      return;
+    }
 
-    alert("Escrow request sent to admin.");
+    setActionLoading(true);
+    try {
+      const idToken = await user.getIdToken();
+      const response = await fetch(
+        `${import.meta.env.VITE_BACKEND_URL || ""}/api/wallet/settle-order`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + idToken,
+          },
+          body: JSON.stringify({ orderId: selectedOrder.id }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        if (response.status === 402) {
+          alert("Insufficient PARAG balance. Please deposit or convert in your wallet first.");
+          navigate("/wallet");
+          return;
+        }
+        throw new Error(err.message || "Payment failed");
+      }
+
+      // Update local state
+      setSelectedOrder((prev) => ({ ...prev, status: "paid", paymentStatus: "paid" }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "paid" } : o))
+      );
+
+      // Notify merchant via message
+      const senderName = safeDisplayName(user.displayName, "Buyer");
+      await addDoc(collection(db, "merchant_order_messages"), {
+        orderId: selectedOrder.id,
+        productId: selectedOrder.productId,
+        productName: selectedOrder.productName || "Product request",
+        ...buildProductMessagePayload(selectedOrder),
+        buyerId: selectedOrder.buyerId,
+        buyerName: selectedOrder.buyerName || senderName,
+        merchantId: selectedOrder.merchantId,
+        merchantName: selectedOrder.merchantName || "Merchant",
+        amount: selectedOrder.amount || 0,
+        currency: selectedOrder.currency || "PARAG",
+        senderId: user.uid,
+        senderName,
+        text: `✅ Payment of ${amount} ${selectedOrder.currency || "PARAG"} sent. Awaiting your delivery.`,
+        type: "payment_confirmation",
+        readBy: [user.uid],
+        createdAt: serverTimestamp(),
+      });
+
+      alert("Payment successful! The merchant has been notified to deliver your product.");
+    } catch (err) {
+      console.error("Wallet payment failed:", err);
+      alert(`Payment failed: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  /** Buyer confirms delivery — completes the transaction */
+  const confirmDelivery = async () => {
+    const user = auth.currentUser;
+    if (!user || !selectedOrder) return;
+
+    if (!window.confirm("Confirm that you have received the digital product and are satisfied?")) {
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
+        status: "completed",
+        completedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      const senderName = safeDisplayName(user.displayName, "Buyer");
+      await addDoc(collection(db, "merchant_order_messages"), {
+        orderId: selectedOrder.id,
+        productId: selectedOrder.productId,
+        productName: selectedOrder.productName || "Product request",
+        ...buildProductMessagePayload(selectedOrder),
+        buyerId: selectedOrder.buyerId,
+        buyerName: selectedOrder.buyerName || senderName,
+        merchantId: selectedOrder.merchantId,
+        merchantName: selectedOrder.merchantName || "Merchant",
+        amount: selectedOrder.amount || 0,
+        currency: selectedOrder.currency || "PARAG",
+        senderId: user.uid,
+        senderName,
+        text: "✅ Delivery confirmed. Transaction completed.",
+        type: "delivery_confirmation",
+        readBy: [user.uid],
+        createdAt: serverTimestamp(),
+      });
+
+      setSelectedOrder((prev) => ({ ...prev, status: "completed" }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "completed" } : o))
+      );
+      alert("Thank you! The transaction is now complete.");
+    } catch (err) {
+      console.error("Delivery confirmation failed:", err);
+      alert(`Could not confirm delivery: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   if (loading) {
@@ -245,13 +366,18 @@ export default function BuyerInbox() {
     return <main style={pageStyle}>Buyer inbox could not load. {error}</main>;
   }
 
+  const orderStatus = selectedOrder?.status;
+  const canPay = orderStatus === "final_offer_sent";
+  const canConfirmDelivery = orderStatus === "delivering" || orderStatus === "delivered";
+  const isCompleted = orderStatus === "completed";
+
   return (
     <main style={pageStyle}>
       <section style={headerStyle}>
         <div>
           <p style={eyebrowStyle}>Buyer inbox</p>
           <h1 style={titleStyle}>Merchant Conversations</h1>
-          <p style={mutedStyle}>Track replies, continue deals, and request admin escrow.</p>
+          <p style={mutedStyle}>Track replies, continue deals, and pay with your PARAG wallet.</p>
         </div>
         <button onClick={() => navigate("/marketplace")} style={secondaryBtnStyle}>
           Marketplace
@@ -265,11 +391,18 @@ export default function BuyerInbox() {
             <p style={mutedStyle}>No merchant conversations yet.</p>
           ) : (
             orders.map((order) => (
-              <button key={order.id} onClick={() => openOrder(order)} style={requestItemStyle}>
+              <button
+                key={order.id}
+                onClick={() => openOrder(order)}
+                style={{
+                  ...requestItemStyle,
+                  borderLeft: selectedOrder?.id === order.id ? "3px solid #176b4d" : "1px solid #e2d8c8",
+                }}
+              >
                 <strong>{order.productName}</strong>
                 <span>{order.merchantName}</span>
                 <span>{order.amount} {order.currency}</span>
-                <span>{order.escrowStatus || order.status}</span>
+                <span style={{ color: statusColor(order.status) }}>{statusLabel(order.status)}</span>
               </button>
             ))
           )}
@@ -280,7 +413,31 @@ export default function BuyerInbox() {
             <>
               <p style={eyebrowStyle}>Private chat</p>
               <h2>{selectedOrder.productName}</h2>
-              <p style={mutedStyle}>Merchant: {selectedOrder.merchantName}</p>
+              <p style={mutedStyle}>
+                Merchant: {selectedOrder.merchantName}
+                {" · "}
+                <span style={{ color: statusColor(orderStatus), fontWeight: 700 }}>
+                  {statusLabel(orderStatus)}
+                </span>
+              </p>
+
+              {canPay && (
+                <div style={offerBannerStyle}>
+                  <p style={{ margin: 0, fontWeight: 700 }}>
+                    Final Offer: {selectedOrder.amount} {selectedOrder.currency || "PARAG"}
+                  </p>
+                  <p style={{ margin: "4px 0 0", fontSize: 13, color: "#52616b" }}>
+                    Accept this offer to pay from your Paragon Planet Wallet.
+                  </p>
+                  <button
+                    onClick={acceptFinalOfferAndPay}
+                    disabled={actionLoading}
+                    style={primaryBtnStyle}
+                  >
+                    {actionLoading ? "Processing…" : `Pay ${selectedOrder.amount} ${selectedOrder.currency || "PARAG"} from Wallet`}
+                  </button>
+                </div>
+              )}
 
               <div style={messagesStyle}>
                 {messages.length === 0 ? (
@@ -302,21 +459,35 @@ export default function BuyerInbox() {
                 )}
               </div>
 
-              <div style={replyRowStyle}>
-                <input
-                  value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
-                  placeholder="Reply to merchant"
-                  style={inputStyle}
-                />
-                <button onClick={sendReply} style={secondaryBtnStyle}>
-                  Send
-                </button>
-              </div>
+              {!isCompleted && (
+                <div style={replyRowStyle}>
+                  <input
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder="Reply to merchant"
+                    style={inputStyle}
+                  />
+                  <button onClick={sendReply} style={secondaryBtnStyle}>
+                    Send
+                  </button>
+                </div>
+              )}
 
-              <button onClick={requestEscrowTransfer} style={primaryBtnStyle}>
-                Request Admin Escrow Transfer
-              </button>
+              {canConfirmDelivery && (
+                <button
+                  onClick={confirmDelivery}
+                  disabled={actionLoading}
+                  style={{ ...primaryBtnStyle, marginTop: 12 }}
+                >
+                  {actionLoading ? "Confirming…" : "Confirm Delivery — Complete Transaction"}
+                </button>
+              )}
+
+              {isCompleted && (
+                <p style={{ marginTop: 12, color: "#176b4d", fontWeight: 700 }}>
+                  ✅ Transaction completed.
+                </p>
+              )}
             </>
           ) : (
             <p style={mutedStyle}>Select a conversation.</p>
@@ -326,6 +497,14 @@ export default function BuyerInbox() {
     </main>
   );
 }
+
+const offerBannerStyle = {
+  padding: "14px 16px",
+  background: "#f0fdf4",
+  border: "1px solid #6ee7b7",
+  borderRadius: 8,
+  marginBottom: 12,
+};
 
 const pageStyle = {
   minHeight: "100vh",
@@ -472,6 +651,14 @@ async function markOrderMessagesAsRead(currentUid, docs) {
 
 function buildChatId(uidA, uidB) {
   return [uidA, uidB].sort().join("__");
+}
+
+function statusColor(status) {
+  if (status === "completed") return "#176b4d";
+  if (status === "final_offer_sent") return "#b45309";
+  if (status === "paid" || status === "delivering" || status === "delivered") return "#1d4ed8";
+  if (status === "cancelled") return "#dc2626";
+  return "#52616b";
 }
 
 function buildProductMessagePayload(order) {

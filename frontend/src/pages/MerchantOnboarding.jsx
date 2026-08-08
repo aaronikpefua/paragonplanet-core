@@ -217,6 +217,8 @@ export default function MerchantOnboarding() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderMessages, setOrderMessages] = useState([]);
   const [replyText, setReplyText] = useState("");
+  const [finalOfferAmount, setFinalOfferAmount] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
   const [profileExists, setProfileExists] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -605,7 +607,20 @@ export default function MerchantOnboarding() {
   const openOrder = async (order) => {
     if (!user) return;
 
-    setSelectedOrder(order);
+    // Refresh order from Firestore to get latest status
+    try {
+      const orderSnap = await getDoc(doc(db, "merchant_orders", order.id));
+      if (orderSnap.exists()) {
+        setSelectedOrder({ id: orderSnap.id, ...orderSnap.data() });
+        setFinalOfferAmount(String(orderSnap.data()?.amount || order.amount || ""));
+      } else {
+        setSelectedOrder(order);
+        setFinalOfferAmount(String(order.amount || ""));
+      }
+    } catch {
+      setSelectedOrder(order);
+      setFinalOfferAmount(String(order.amount || ""));
+    }
 
     const messageQuery = query(
       collection(db, "merchant_order_messages"),
@@ -690,6 +705,95 @@ export default function MerchantOnboarding() {
       },
     ]);
     setReplyText("");
+  };
+
+  const sendFinalOffer = async () => {
+    if (!user || !selectedOrder) return;
+    const amount = Number(finalOfferAmount);
+    if (!amount || amount <= 0) {
+      alert("Enter a valid final offer amount.");
+      return;
+    }
+    if (!window.confirm(`Send a final offer of ${amount} ${selectedOrder.currency || "PARAG"} to the buyer?`)) return;
+
+    setActionLoading(true);
+    try {
+      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
+        status: "final_offer_sent",
+        amount,
+        updatedAt: serverTimestamp(),
+      });
+
+      const senderName = profile.realName || user.email || "Merchant";
+      const productPayload = buildProductMessagePayload(selectedOrder);
+      await addDoc(collection(db, "merchant_order_messages"), {
+        orderId: selectedOrder.id,
+        productId: selectedOrder.productId,
+        productName: selectedOrder.productName || "Product request",
+        ...productPayload,
+        buyerId: selectedOrder.buyerId,
+        merchantId: selectedOrder.merchantId,
+        senderId: user.uid,
+        senderName,
+        text: `📋 Final Offer: ${amount} ${selectedOrder.currency || "PARAG"}. Please accept and pay from your wallet to proceed.`,
+        type: "final_offer",
+        readBy: [user.uid],
+        createdAt: serverTimestamp(),
+      });
+
+      setSelectedOrder((prev) => ({ ...prev, status: "final_offer_sent", amount }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "final_offer_sent", amount } : o))
+      );
+      alert("Final offer sent to buyer.");
+    } catch (err) {
+      console.error("Send final offer failed:", err);
+      alert(`Could not send final offer: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const markAsDelivered = async () => {
+    if (!user || !selectedOrder) return;
+    if (!window.confirm("Mark this order as delivered? The buyer will be asked to confirm.")) return;
+
+    setActionLoading(true);
+    try {
+      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
+        status: "delivering",
+        deliveredAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      const senderName = profile.realName || user.email || "Merchant";
+      const productPayload = buildProductMessagePayload(selectedOrder);
+      await addDoc(collection(db, "merchant_order_messages"), {
+        orderId: selectedOrder.id,
+        productId: selectedOrder.productId,
+        productName: selectedOrder.productName || "Product request",
+        ...productPayload,
+        buyerId: selectedOrder.buyerId,
+        merchantId: selectedOrder.merchantId,
+        senderId: user.uid,
+        senderName,
+        text: "📦 Product delivered. Please confirm receipt in your Buyer Inbox to complete the transaction.",
+        type: "delivery_notice",
+        readBy: [user.uid],
+        createdAt: serverTimestamp(),
+      });
+
+      setSelectedOrder((prev) => ({ ...prev, status: "delivering" }));
+      setOrders((prev) =>
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "delivering" } : o))
+      );
+      alert("Delivery marked. Waiting for buyer confirmation.");
+    } catch (err) {
+      console.error("Mark as delivered failed:", err);
+      alert(`Could not update delivery status: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   return (
@@ -957,17 +1061,23 @@ export default function MerchantOnboarding() {
                   <strong>{order.productName}</strong>
                   <span>{order.buyerName}</span>
                   <span>{order.amount} {order.currency}</span>
-                  <span>{order.escrowStatus || order.status}</span>
+                  <span style={{ color: merchantStatusColor(order.status) }}>{merchantStatusLabel(order.status)}</span>
                 </button>
               ))}
             </div>
 
-            <div style={chatPanelStyle}>
+        <div style={chatPanelStyle}>
               {selectedOrder ? (
                 <>
                   <p style={eyebrowStyle}>Private chat</p>
                   <h3>{selectedOrder.productName}</h3>
-                  <p style={mutedStyle}>Buyer: {selectedOrder.buyerName}</p>
+                  <p style={mutedStyle}>
+                    Buyer: {selectedOrder.buyerName}
+                    {" · "}
+                    <span style={{ fontWeight: 700, color: merchantStatusColor(selectedOrder.status) }}>
+                      {merchantStatusLabel(selectedOrder.status)}
+                    </span>
+                  </p>
 
                   <div style={messagesStyle}>
                     {orderMessages.length === 0 ? (
@@ -989,17 +1099,58 @@ export default function MerchantOnboarding() {
                     )}
                   </div>
 
-                  <div style={replyRowStyle}>
-                    <input
-                      value={replyText}
-                      onChange={(e) => setReplyText(e.target.value)}
-                      placeholder="Reply to buyer"
-                      style={inputStyle}
-                    />
-                    <button onClick={sendMerchantReply} style={secondaryBtnStyle}>
-                      Send
+                  {selectedOrder.status !== "completed" && (
+                    <div style={replyRowStyle}>
+                      <input
+                        value={replyText}
+                        onChange={(e) => setReplyText(e.target.value)}
+                        placeholder="Reply to buyer"
+                        style={inputStyle}
+                      />
+                      <button onClick={sendMerchantReply} style={secondaryBtnStyle}>
+                        Send
+                      </button>
+                    </div>
+                  )}
+
+                  {(selectedOrder.status === "chat_open" ||
+                    selectedOrder.status === "negotiating" ||
+                    selectedOrder.status === "final_offer_sent") && (
+                    <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="number"
+                        min="0"
+                        value={finalOfferAmount}
+                        onChange={(e) => setFinalOfferAmount(e.target.value)}
+                        placeholder="Final offer amount"
+                        style={{ ...inputStyle, maxWidth: 160 }}
+                      />
+                      <span style={{ fontSize: 13, color: "#52616b" }}>{selectedOrder.currency || "PARAG"}</span>
+                      <button
+                        onClick={sendFinalOffer}
+                        disabled={actionLoading}
+                        style={primaryBtnStyle}
+                      >
+                        {actionLoading ? "Sending…" : "Send Final Offer"}
+                      </button>
+                    </div>
+                  )}
+
+                  {selectedOrder.status === "paid" && (
+                    <button
+                      onClick={markAsDelivered}
+                      disabled={actionLoading}
+                      style={{ ...primaryBtnStyle, marginTop: 12 }}
+                    >
+                      {actionLoading ? "Updating…" : "Mark as Delivered"}
                     </button>
-                  </div>
+                  )}
+
+                  {selectedOrder.status === "completed" && (
+                    <p style={{ marginTop: 12, color: "#176b4d", fontWeight: 700 }}>
+                      ✅ Transaction completed.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p style={mutedStyle}>Select a buyer request to chat.</p>
@@ -1494,3 +1645,27 @@ function getMessageProduct(message) {
   };
 }
 
+
+const MERCHANT_STATUS_LABELS = {
+  chat_open: "Chatting",
+  negotiating: "Negotiating",
+  final_offer_sent: "Awaiting Buyer Payment",
+  paid: "Paid — Ready to Deliver",
+  delivering: "Delivering",
+  delivered: "Delivered",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+function merchantStatusLabel(status) {
+  return MERCHANT_STATUS_LABELS[status] || status || "—";
+}
+
+function merchantStatusColor(status) {
+  if (status === "completed") return "#176b4d";
+  if (status === "final_offer_sent") return "#b45309";
+  if (status === "paid") return "#1d4ed8";
+  if (status === "delivering" || status === "delivered") return "#6d28d9";
+  if (status === "cancelled") return "#dc2626";
+  return "#52616b";
+}
