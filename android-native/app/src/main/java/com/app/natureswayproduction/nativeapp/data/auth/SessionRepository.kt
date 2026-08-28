@@ -2,7 +2,11 @@ package com.app.natureswayproduction.nativeapp.data.auth
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.util.Log
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.browser.customtabs.CustomTabsService
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -22,11 +26,17 @@ import com.google.firebase.auth.OAuthProvider
 import com.google.firebase.auth.AuthCredential
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.PhoneAuthCredential
+import com.google.firebase.auth.PhoneAuthOptions
+import com.google.firebase.auth.PhoneAuthProvider
+import com.google.firebase.auth.TwitterAuthProvider
+import com.google.firebase.FirebaseException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -36,6 +46,7 @@ class SessionRepository(
     private val apiService: ParagonApiService = ParagonApiService(),
 ) {
     private var pendingFacebookCredential: AuthCredential? = null
+    private var pendingXCredential: AuthCredential? = null
 
     suspend fun loadSessionSummary(): SessionSummary {
         val user = firebaseAuth.currentUser
@@ -141,61 +152,134 @@ class SessionRepository(
         )
     }
 
+    suspend fun completePendingProviderSignIn(): SessionSummary? {
+        val pendingResult = firebaseAuth.pendingAuthResult ?: return null
+        pendingResult.await()
+        return loadSessionSummary().copy(
+            note = "Provider sign-in completed successfully."
+        )
+    }
+
     suspend fun signInWithX(activity: Activity): SessionSummary {
         Log.d("X_SIGN_IN_RUNTIME", "entering signInWithX()")
 
-        val provider = OAuthProvider.newBuilder("twitter.com").apply {
-            addCustomParameter("force_login", "true")
+        val start = apiService.startNativeXAuth()
+        check(start.authUrl.isNotBlank()) { "X sign-in did not return an authorization URL." }
+
+        launchTrustedCustomTab(activity, Uri.parse(start.authUrl))
+        val callback = NativeXAuthCoordinator.awaitCallback(start.state)
+        val credential = TwitterAuthProvider.getCredential(callback.token, callback.secret)
+        val signedInUser = firebaseAuth.currentUser
+
+        if (signedInUser != null) {
+            signedInUser.linkWithCredential(credential).await()
+            return loadSessionSummary().copy(
+                note = "X account linked successfully. You can now sign in with X."
+            )
         }
 
-        // DEBUG tracing for X sign-in runtime
         try {
-            val pendingResult = firebaseAuth.pendingAuthResult
-            Log.d("X_SIGN_IN_RUNTIME", "pendingAuthResult is null: ${pendingResult == null}")
+            firebaseAuth.signInWithCredential(credential).await()
+        } catch (error: FirebaseAuthUserCollisionException) {
+            if (error.errorCode != "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL") throw error
 
-            if (pendingResult != null) {
-                Log.d("X_SIGN_IN_RUNTIME", "before awaiting pendingAuthResult")
-                try {
-                    pendingResult.await()
-                    Log.d("X_SIGN_IN_RUNTIME", "after pendingAuthResult.await()")
-                } catch (awaitEx: Exception) {
-                    Log.e("X_SIGN_IN_RUNTIME", "pendingAuthResult.await() threw", awaitEx)
-                    if (awaitEx is FirebaseAuthException) {
-                        Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${awaitEx.errorCode}")
-                    }
-                    throw awaitEx
+            pendingXCredential = credential
+            val signInMethods = error.email
+                ?.takeIf { it.isNotBlank() }
+                ?.let { email ->
+                    runCatching {
+                        firebaseAuth.fetchSignInMethodsForEmail(email).await().signInMethods.orEmpty()
+                    }.getOrDefault(emptyList())
                 }
-            } else {
-                Log.d("X_SIGN_IN_RUNTIME", "before calling startActivityForSignInWithProvider()")
-                try {
-                    val task = firebaseAuth.startActivityForSignInWithProvider(activity, provider.build())
-                    Log.d("X_SIGN_IN_RUNTIME", "immediately after startActivityForSignInWithProvider(), Task object: $task")
-                    Log.d("X_SIGN_IN_RUNTIME", "before task.await()")
-                    try {
-                        task.await()
-                        Log.d("X_SIGN_IN_RUNTIME", "after task.await()")
-                    } catch (taskEx: Exception) {
-                        Log.e("X_SIGN_IN_RUNTIME", "task.await() threw", taskEx)
-                        if (taskEx is FirebaseAuthException) {
-                            Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${taskEx.errorCode}")
-                        }
-                        throw taskEx
-                    }
-                } catch (syncEx: Exception) {
-                    Log.e("X_SIGN_IN_RUNTIME", "startActivityForSignInWithProvider threw synchronously", syncEx)
-                    if (syncEx is FirebaseAuthException) {
-                        Log.d("X_SIGN_IN_RUNTIME", "FirebaseAuthException.errorCode: ${syncEx.errorCode}")
-                    }
-                    throw syncEx
-                }
-            }
-        } catch (outer: Exception) {
-            // Keep behaviour unchanged: rethrow so callers handle it the same as before
-            throw outer
+                .orEmpty()
+            throw ExistingAccountRequiresXLinkException(signInMethods)
         }
 
         return loadSessionSummary().copy(
             note = "X account connected successfully."
+        )
+    }
+
+    suspend fun linkPendingXCredential(): SessionSummary? {
+        val xCredential = pendingXCredential ?: return null
+        val signedInUser = firebaseAuth.currentUser ?: return null
+
+        signedInUser.linkWithCredential(xCredential).await()
+        pendingXCredential = null
+        return loadSessionSummary().copy(
+            note = "X account linked successfully. You can now sign in with X."
+        )
+    }
+
+    suspend fun signInWithApple(activity: Activity): SessionSummary {
+        val provider = OAuthProvider.newBuilder("apple.com").apply {
+            scopes = listOf("email", "name")
+        }
+
+        val pendingResult = firebaseAuth.pendingAuthResult
+        if (pendingResult != null) {
+            pendingResult.await()
+        } else {
+            firebaseAuth.startActivityForSignInWithProvider(activity, provider.build()).await()
+        }
+
+        return loadSessionSummary().copy(
+            note = "Apple account connected successfully."
+        )
+    }
+
+    suspend fun sendPhoneOtp(activity: Activity, phoneNumber: String): String =
+        suspendCancellableCoroutine { continuation ->
+            val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
+                override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+                    if (!continuation.isActive) return
+
+                    firebaseAuth.signInWithCredential(credential)
+                        .addOnSuccessListener {
+                            continuation.resume(AUTO_VERIFIED_PHONE_SESSION)
+                        }
+                        .addOnFailureListener { error ->
+                            continuation.resumeWithException(error)
+                        }
+                }
+
+                override fun onVerificationFailed(error: FirebaseException) {
+                    if (continuation.isActive) {
+                        continuation.resumeWithException(error)
+                    }
+                }
+
+                override fun onCodeSent(
+                    verificationId: String,
+                    token: PhoneAuthProvider.ForceResendingToken,
+                ) {
+                    if (continuation.isActive) {
+                        continuation.resume(verificationId)
+                    }
+                }
+            }
+
+            val options = PhoneAuthOptions.newBuilder(firebaseAuth)
+                .setPhoneNumber(phoneNumber.trim())
+                .setTimeout(60L, TimeUnit.SECONDS)
+                .setActivity(activity)
+                .setCallbacks(callbacks)
+                .build()
+
+            PhoneAuthProvider.verifyPhoneNumber(options)
+        }
+
+    suspend fun verifyPhoneOtp(verificationId: String, otp: String): SessionSummary {
+        if (verificationId == AUTO_VERIFIED_PHONE_SESSION) {
+            return loadSessionSummary().copy(
+                note = "Phone number verified successfully."
+            )
+        }
+
+        val credential = PhoneAuthProvider.getCredential(verificationId, otp.trim())
+        firebaseAuth.signInWithCredential(credential).await()
+        return loadSessionSummary().copy(
+            note = "Phone number verified successfully."
         )
     }
 
@@ -258,11 +342,49 @@ class SessionRepository(
         val backendUser = runCatching { apiService.fetchAuthenticatedUser(token) }.getOrNull() ?: return null
         return backendUser.copy(uid = backendUser.uid.ifBlank { fallbackUid })
     }
+
+    private fun launchTrustedCustomTab(activity: Activity, uri: Uri) {
+        val packageName = activity.packageManager.findTrustedCustomTabsPackage()
+            ?: throw IllegalStateException("No trusted browser with Custom Tabs support is available for X sign-in.")
+
+        CustomTabsIntent.Builder()
+            .setShowTitle(true)
+            .build()
+            .apply {
+                intent.setPackage(packageName)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
+                launchUrl(activity, uri)
+            }
+    }
+
+    private fun PackageManager.findTrustedCustomTabsPackage(): String? {
+        val serviceIntent = Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION)
+        val packages = queryIntentServices(serviceIntent, 0)
+            .mapNotNull { it.serviceInfo?.packageName }
+            .distinct()
+
+        val preferredPackages = listOf(
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "com.chrome.canary",
+            "com.brave.browser",
+            "com.sec.android.app.sbrowser",
+            "com.microsoft.emmx",
+            "org.mozilla.firefox",
+        )
+
+        return preferredPackages.firstOrNull { it in packages }
+    }
 }
 
 class ExistingAccountRequiresFacebookLinkException(
     val signInMethods: List<String>,
 ) : IllegalStateException("Sign in with the existing account before linking Facebook.")
+
+class ExistingAccountRequiresXLinkException(
+    val signInMethods: List<String>,
+) : IllegalStateException("Sign in with the existing account before linking X.")
 
 object FacebookLoginCoordinator {
     private val callbackManager: CallbackManager = CallbackManager.Factory.create()
@@ -305,3 +427,5 @@ data class SessionSummary(
     val uid: String?,
     val note: String,
 )
+
+private const val AUTO_VERIFIED_PHONE_SESSION = "__paragon_auto_verified_phone_session__"

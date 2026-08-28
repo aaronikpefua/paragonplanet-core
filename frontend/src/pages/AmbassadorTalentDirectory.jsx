@@ -104,10 +104,9 @@ export default function AmbassadorTalentDirectory() {
       <section style={heroStyle}>
         <div>
           <p style={eyebrowStyle}>Paragon Ambassadors</p>
-          <h1 style={titleStyle}>Paragon Ambassadors</h1>
-          <p style={subtitleStyle}>The Talent Ambassadors</p>
+          <h1 style={titleStyle}>Paragon Talent Ambassadors</h1>
           <p style={mutedStyle}>
-            Choose a talent category to see Ambassadors on that line and how many citizens came through each Ambassador.
+            Select a Talent Ambassador category to view its entertainers, or introduce your favorite Talent Ambassador. Watch the performances of their entertainers, share your comments, express your views, and vote for your favorite entertainers to help them qualify as Paragon Planet Citizens.
           </p>
         </div>
         <div style={buttonRowStyle}>

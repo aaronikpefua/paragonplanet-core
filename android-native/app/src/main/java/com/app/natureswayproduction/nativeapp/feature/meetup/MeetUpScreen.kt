@@ -56,15 +56,17 @@ fun MeetUpScreen(
     meetUpViewModel: MeetUpViewModel,
     onBackToProfile: () -> Unit,
     onOpenFeed: () -> Unit,
+    onOpenVideoCall: (String, String, String) -> Unit,
 ) {
     val uiState by meetUpViewModel.uiState.collectAsState()
     var searchTerm by rememberSaveable { mutableStateOf("") }
     var selectedMemberId by rememberSaveable { mutableStateOf("") }
-    var mealMode by rememberSaveable { mutableStateOf("dinner") }
+    var mealMode by rememberSaveable { mutableStateOf("breakfast") }
     var experienceLevel by rememberSaveable { mutableStateOf("standard") }
     var callType by rememberSaveable { mutableStateOf("voice") }
-    var selectedAreaTitle by rememberSaveable { mutableStateOf(DINNER_AREAS.first().title) }
+    var selectedAreaTitle by rememberSaveable { mutableStateOf(BREAKFAST_AREAS.first().title) }
     var selectedVideoId by rememberSaveable { mutableStateOf("") }
+    var meetingTime by rememberSaveable { mutableStateOf("") }
     var requestNote by rememberSaveable { mutableStateOf("") }
     var showRequestPage by rememberSaveable { mutableStateOf(false) }
 
@@ -181,14 +183,14 @@ fun MeetUpScreen(
                     )
                 }
                 item {
-                    SectionHeading("Pick the right meet-up area")
+                    SectionHeading("MEETING AREA")
                 }
                 item {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf("dinner", "lunch", "breakfast").forEach { option ->
+                        listOf("breakfast", "lunch", "dinner").forEach { option ->
                             SelectChip(
                                 label = "\uD83C\uDF7D\uFE0F ${mealModeLabel(option)}",
                                 selected = mealMode == option,
@@ -205,7 +207,7 @@ fun MeetUpScreen(
                     }
                 }
                 item {
-                    SectionHeading("${mealModeLabel(mealMode)} Meet-Up Areas")
+                    SectionHeading("${mealModeLabel(mealMode)} Meeting Areas")
                 }
                 item {
                     Text(
@@ -232,10 +234,33 @@ fun MeetUpScreen(
                     )
                 }
                 item {
+                    OutlinedTextField(
+                        value = meetingTime,
+                        onValueChange = { meetingTime = it },
+                        label = { Text("Time") },
+                        placeholder = { Text("Choose or type meeting time") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFFE0B424),
+                            unfocusedBorderColor = Color(0xFFD7C8AA),
+                            focusedTextColor = Color(0xFF102033),
+                            unfocusedTextColor = Color(0xFF102033),
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White
+                        )
+                    )
+                }
+                item {
                     RequestActionCard(
-                        title = "Meet-Up Request",
-                        body = "${selectedArea.icon} ${selectedArea.title} • ${mealModeLabel(mealMode)} • ${experienceLabel(experienceLevel)}",
-                        buttonLabel = if (uiState.isSubmittingArea) "Submitting Meet-Up Request..." else "Submit Meet-Up Request",
+                        title = "Meeting Request",
+                        body = listOf(
+                            "${selectedArea.icon} ${selectedArea.title}",
+                            mealModeLabel(mealMode),
+                            experienceLabel(experienceLevel),
+                            meetingTime.ifBlank { null }
+                        ).filterNotNull().joinToString(" • "),
+                        buttonLabel = if (uiState.isSubmittingArea) "Submitting Meeting Request..." else "Submit Meeting Request",
                         enabled = !uiState.isSubmittingArea,
                         onClick = {
                             meetUpViewModel.submitAreaRequest(
@@ -243,6 +268,7 @@ fun MeetUpScreen(
                                 area = selectedArea,
                                 mealMode = mealMode,
                                 experienceLevel = experienceLevel,
+                                meetingTime = meetingTime,
                                 callType = callType,
                                 selectedVideo = selectedVideo
                             )
@@ -250,20 +276,21 @@ fun MeetUpScreen(
                     )
                 }
                 item {
-                    SectionHeading("Call the star")
+                    SectionHeading("Same recipient actions")
                 }
                 item {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        CALL_TYPES.forEach { type ->
-                            SelectChip(
-                                label = "${type.icon} ${type.title}",
-                                selected = callType == type.key,
-                                onClick = { callType = type.key }
-                            )
+                        Button(onClick = { onOpenVideoCall(member.uid, member.displayName, member.role) }) {
+                            Text("📹 Video Call")
                         }
+                        SelectChip(
+                            label = "📞 Voice Call",
+                            selected = callType == "voice",
+                            onClick = { callType = "voice" }
+                        )
                     }
                 }
                 item {
@@ -295,7 +322,7 @@ fun MeetUpScreen(
 
                 if (filteredMembers.isNotEmpty()) {
                     item {
-                        SectionHeading("Choose a user to meet")
+                    SectionHeading("Choose a user")
                     }
                     items(filteredMembers, key = { it.uid }) { directoryMember ->
                         MemberCard(
@@ -338,7 +365,7 @@ fun MeetUpScreen(
             }
             if (incomingAreaRequests.isEmpty()) {
                 item {
-                    EmptyStateCard("No incoming meet-up requests yet.")
+                    EmptyStateCard("No incoming meeting requests yet.")
                 }
             } else {
                 items(incomingAreaRequests.take(12), key = { it.id }) { request ->
@@ -390,22 +417,22 @@ private fun RequestMeetUpHeroCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = if (focusedMode) "SELECTED MEET-UP" else "REQUEST MEET-UP",
+                text = if (focusedMode) "SELECTED RECIPIENT" else "MEETING ZONE",
                 style = MaterialTheme.typography.labelLarge,
                 color = Color(0xFF6B5F4B),
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = if (focusedMode) (selectedMember?.displayName ?: "Choose a user to meet") else "Choose a user to meet",
+                text = if (focusedMode) (selectedMember?.displayName ?: "Choose a user") else "MEETING ZONE",
                 style = MaterialTheme.typography.headlineMedium,
                 color = Color(0xFF1F2933),
                 fontWeight = FontWeight.ExtraBold
             )
             Text(
                 text = if (focusedMode) {
-                    "${selectedMember?.role ?: "Member"} profile. Pick the right meet-up area, choose the setting that fits this level of access and energy, then submit your request."
+                    "${selectedMember?.role ?: "Member"} profile. Choose a meeting area, set the level and time, then submit your request or start a call."
                 } else {
-                    "Select any member and send a meet-up request to their profile."
+                    "Search once, select one person, then use the same recipient for Meeting Request, Video Call, or Voice Call."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFF52616B)

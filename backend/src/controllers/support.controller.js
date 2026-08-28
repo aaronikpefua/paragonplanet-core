@@ -204,54 +204,86 @@ export async function supportVideo(req, res) {
 }
 
 export async function supportSuperboss(req, res) {
-  const { supernalId } = req.params;
-  const userId = req.user?.uid;
-  const amountParag = Math.floor(Number(req.body?.amountParag || 0));
+  return supportRoleProfile(req, res, {
+    roleKey: "supernal",
+    profileId: req.params.supernalId,
+    profileCollection: "supernal_profiles",
+    supportCollection: "supernal_donations",
+    profileIdField: "supernalId",
+    profileNameField: "supernalName",
+    roleLabel: "Superboss",
+  });
+}
 
-  if (!supernalId) {
-    return res.status(400).json({ error: "Superboss id is required" });
+export async function supportBacker(req, res) {
+  return supportRoleProfile(req, res, {
+    roleKey: "backer",
+    profileId: req.params.backerId,
+    profileCollection: "backer_profiles",
+    supportCollection: "backer_donations",
+    profileIdField: "backerId",
+    profileNameField: "backerName",
+    roleLabel: "Backer",
+  });
+}
+
+async function supportRoleProfile(req, res, config) {
+  const userId = req.user?.uid;
+  const actionKey = String(req.body?.actionKey || "donate").trim().toLowerCase();
+  const amountParag = actionKey === "vote" ? 1 : Math.floor(Number(req.body?.amountParag || 0));
+
+  if (!config.profileId) {
+    return res.status(400).json({ error: `${config.roleLabel} id is required` });
   }
 
   if (!userId) {
     return res.status(401).json({ error: "Login first" });
   }
 
-  if (supernalId === userId) {
-    return res.status(400).json({ error: "You cannot donate to your own Superboss profile." });
+  if (config.profileId === userId) {
+    return res.status(400).json({ error: `You cannot support your own ${config.roleLabel} profile.` });
+  }
+
+  if (!["vote", "donate"].includes(actionKey)) {
+    return res.status(400).json({ error: "Unsupported support action" });
   }
 
   if (!Number.isFinite(amountParag) || amountParag < 1 || amountParag > 10000) {
-    return res.status(400).json({ error: "Donation amount must be between 1 and 10,000 PARAG." });
+    return res.status(400).json({ error: "Amount must be between 1 and 10,000 PARAG." });
   }
 
   const db = admin.firestore();
   const supporterWalletRef = db.collection("wallet_accounts").doc(userId);
-  const supernalWalletRef = db.collection("wallet_accounts").doc(supernalId);
-  const supernalRef = db.collection("supernal_profiles").doc(supernalId);
-  const donationRef = db.collection("supernal_donations").doc();
+  const recipientWalletRef = db.collection("wallet_accounts").doc(config.profileId);
+  const profileRef = db.collection(config.profileCollection).doc(config.profileId);
+  const supportRef = db.collection(config.supportCollection).doc();
+  const voteRef = db.collection(`${config.roleKey}_votes`).doc();
   const supporterLedgerRef = db.collection("ledger_entries").doc();
-  const supernalLedgerRef = db.collection("ledger_entries").doc();
+  const recipientLedgerRef = db.collection("ledger_entries").doc();
 
   try {
     await db.runTransaction(async (transaction) => {
-      const [supporterWalletSnap, supernalSnap] = await Promise.all([
+      const [supporterWalletSnap, profileSnap] = await Promise.all([
         transaction.get(supporterWalletRef),
-        transaction.get(supernalRef),
+        transaction.get(profileRef),
       ]);
 
-      if (!supernalSnap.exists) {
-        throw Object.assign(new Error("Superboss profile not found."), { status: 404 });
+      if (!profileSnap.exists) {
+        throw Object.assign(new Error(`${config.roleLabel} profile not found.`), { status: 404 });
       }
 
       const supporterWallet = supporterWalletSnap.data() || {};
       const supporterParag = Number(supporterWallet.balances?.parag || 0);
 
       if (supporterParag < amountParag) {
-        throw Object.assign(new Error("Insufficient PARAG balance."), { status: 400 });
+        throw Object.assign(new Error("Insufficient PARAG balance."), { status: 402 });
       }
 
-      const supernal = supernalSnap.data() || {};
+      const profile = profileSnap.data() || {};
+      const profileName = profile.stageName || profile.realName || profile.name || profile.brandName || profile.email || config.roleLabel;
       const createdAt = admin.firestore.FieldValue.serverTimestamp();
+      const supportId = actionKey === "vote" ? voteRef.id : supportRef.id;
+      const reason = `${config.roleLabel} ${actionKey}`;
 
       transaction.set(
         supporterWalletRef,
@@ -271,7 +303,7 @@ export async function supportSuperboss(req, res) {
       );
 
       transaction.set(
-        supernalWalletRef,
+        recipientWalletRef,
         {
           role: "wallet",
           balances: {
@@ -287,58 +319,76 @@ export async function supportSuperboss(req, res) {
         { merge: true }
       );
 
-      transaction.set(donationRef, {
-        supernalId,
-        supernalName: supernal.stageName || supernal.realName || supernal.name || "Superboss",
+      const supportPayload = {
+        [config.profileIdField]: config.profileId,
+        [config.profileNameField]: profileName,
         supporterId: userId,
+        actionKey,
         amountParag,
         currency: "PARAG",
-        purpose: "superboss_question_fund",
         createdAt,
-      });
+      };
+
+      if (actionKey === "vote") {
+        transaction.set(voteRef, {
+          ...supportPayload,
+          voterId: userId,
+          voterName: req.user?.name || req.user?.email || "Paragon Member",
+          status: "published",
+        });
+      } else {
+        transaction.set(supportRef, {
+          ...supportPayload,
+          purpose: `${config.roleKey}_support`,
+        });
+      }
 
       transaction.set(supporterLedgerRef, {
         accountId: userId,
-        counterpartyId: supernalId,
+        counterpartyId: config.profileId,
         direction: "debit",
         amount: amountParag,
         amountParag,
         amountGbazilo: 0,
         currency: "PARAG",
-        reason: "Superboss donation",
-        donationId: donationRef.id,
+        reason,
+        supportId,
         createdAt,
       });
 
-      transaction.set(supernalLedgerRef, {
-        accountId: supernalId,
+      transaction.set(recipientLedgerRef, {
+        accountId: config.profileId,
         counterpartyId: userId,
         direction: "credit",
         amount: amountParag,
         amountParag,
         amountGbazilo: 0,
         currency: "PARAG",
-        reason: "Superboss donation received",
-        donationId: donationRef.id,
+        reason: `${reason} received`,
+        supportId,
         createdAt,
       });
 
-      transaction.update(supernalRef, {
-        "donationStats.totalParag": admin.firestore.FieldValue.increment(amountParag),
-        "donationStats.count": admin.firestore.FieldValue.increment(1),
+      transaction.update(profileRef, {
+        [`supportStats.${actionKey}Parag`]: admin.firestore.FieldValue.increment(amountParag),
+        [`supportStats.${actionKey}Count`]: admin.firestore.FieldValue.increment(1),
+        ...(actionKey === "vote"
+          ? { votes: admin.firestore.FieldValue.increment(1), score: admin.firestore.FieldValue.increment(1) }
+          : { "donationStats.totalParag": admin.firestore.FieldValue.increment(amountParag), "donationStats.count": admin.firestore.FieldValue.increment(1) }),
         updatedAt: createdAt,
       });
     });
 
     return res.status(200).json({
       ok: true,
-      supernalId,
+      actionKey,
+      profileId: config.profileId,
       amountParag,
     });
   } catch (error) {
     const status = error.status || 500;
     return res.status(status).json({
-      error: error.message || "This donation could not be completed.",
+      error: error.message || "This support action could not be completed.",
     });
   }
 }

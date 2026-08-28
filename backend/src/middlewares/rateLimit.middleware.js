@@ -22,8 +22,13 @@ export function rateLimit({
   windowMs = DEFAULT_WINDOW_MS,
   limit = DEFAULT_LIMIT,
   keyPrefix = "global",
+  skip = null,
 } = {}) {
   return (req, res, next) => {
+    if (typeof skip === "function" && skip(req)) {
+      return next();
+    }
+
     const now = Date.now();
     if (buckets.size > 10000) cleanup(now);
 

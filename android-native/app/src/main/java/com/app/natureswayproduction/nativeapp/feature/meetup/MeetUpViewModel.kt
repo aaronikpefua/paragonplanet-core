@@ -43,6 +43,7 @@ class MeetUpViewModel(
         area: MeetUpArea,
         mealMode: String,
         experienceLevel: String,
+        meetingTime: String,
         callType: String,
         selectedVideo: MeetUpVideoPreview?,
     ) {
@@ -54,6 +55,7 @@ class MeetUpViewModel(
                     area = area,
                     mealMode = mealMode,
                     experienceLevel = experienceLevel,
+                    meetingTime = meetingTime,
                     callType = callType,
                     selectedVideo = selectedVideo,
                 )

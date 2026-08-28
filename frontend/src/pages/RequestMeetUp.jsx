@@ -90,10 +90,11 @@ export default function RequestMeetUp() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [mealMode, setMealMode] = useState("dinner");
-  const [selectedAreaTitle, setSelectedAreaTitle] = useState(DINNER_AREAS[0].title);
+  const [mealMode, setMealMode] = useState("breakfast");
+  const [selectedAreaTitle, setSelectedAreaTitle] = useState(BREAKFAST_AREAS[0].title);
   const [experienceLevel, setExperienceLevel] = useState("standard");
   const [callType, setCallType] = useState("voice");
+  const [meetingTime, setMeetingTime] = useState("");
   const [requestNote, setRequestNote] = useState("");
   const [submittingCall, setSubmittingCall] = useState(false);
   const [submittingMeetUp, setSubmittingMeetUp] = useState(false);
@@ -373,6 +374,7 @@ export default function RequestMeetUp() {
       requestKind,
       mealMode,
       experienceLevel,
+      meetingTime: meetingTime.trim(),
       areaTitle: selectedMeetUpArea?.title || "",
       areaIcon: selectedMeetUpArea?.icon || "",
       areaPitch: selectedMeetUpArea?.pitch || "",
@@ -490,8 +492,8 @@ export default function RequestMeetUp() {
     return (
       <main style={pageStyle}>
         <div style={shellStyle}>
-          <p style={eyebrowStyle}>Request a meet-up</p>
-          <h1 style={titleStyle}>Meet-up unavailable</h1>
+          <p style={eyebrowStyle}>Meeting Zone</p>
+          <h1 style={titleStyle}>Meeting Zone unavailable</h1>
           <p style={mutedStyle}>{error || "This page is not available right now."}</p>
         </div>
       </main>
@@ -503,15 +505,15 @@ export default function RequestMeetUp() {
       <div style={shellStyle}>
         <section style={{ ...heroStyle, gridTemplateColumns: isMobile ? "1fr" : heroStyle.gridTemplateColumns, padding: isMobile ? 16 : heroStyle.padding }}>
           <div style={heroCopyStyle}>
-            <p style={eyebrowStyle}>Request a meet-up</p>
+            <p style={eyebrowStyle}>Selected recipient</p>
             <h1 style={{ ...titleStyle, fontSize: isMobile ? 28 : titleStyle.fontSize, lineHeight: isMobile ? 1.1 : titleStyle.lineHeight }}>{member.displayName}</h1>
             <p style={roleStyle}>{member.role}</p>
-            <p style={promptStyle}>Pick the right meet-up area</p>
+            <p style={promptStyle}>MEETING AREA</p>
 
             <div style={{ ...mealButtonRowStyle, gap: isMobile ? 8 : mealButtonRowStyle.gap }}>
-              <button type="button" onClick={() => handleMealModeChange("dinner")} style={{ ...mealButtonStyle, ...(mealMode === "dinner" ? mealButtonActiveStyle : null), padding: isMobile ? "10px 14px" : mealButtonStyle.padding }}>🍽️ Dinner</button>
-              <button type="button" onClick={() => handleMealModeChange("lunch")} style={{ ...mealButtonStyle, ...(mealMode === "lunch" ? mealButtonActiveStyle : null), padding: isMobile ? "10px 14px" : mealButtonStyle.padding }}>🍽️ Lunch</button>
               <button type="button" onClick={() => handleMealModeChange("breakfast")} style={{ ...mealButtonStyle, ...(mealMode === "breakfast" ? mealButtonActiveStyle : null), padding: isMobile ? "10px 14px" : mealButtonStyle.padding }}>🍽️ Breakfast</button>
+              <button type="button" onClick={() => handleMealModeChange("lunch")} style={{ ...mealButtonStyle, ...(mealMode === "lunch" ? mealButtonActiveStyle : null), padding: isMobile ? "10px 14px" : mealButtonStyle.padding }}>🍽️ Lunch</button>
+              <button type="button" onClick={() => handleMealModeChange("dinner")} style={{ ...mealButtonStyle, ...(mealMode === "dinner" ? mealButtonActiveStyle : null), padding: isMobile ? "10px 14px" : mealButtonStyle.padding }}>🍽️ Dinner</button>
             </div>
 
             <div style={{ ...levelsGridStyle, gridTemplateColumns: isMobile ? "1fr" : levelsGridStyle.gridTemplateColumns }}>
@@ -589,7 +591,7 @@ export default function RequestMeetUp() {
                     <article key={request.id} style={previewStatusCardStyle}>
                       <div style={callCardHeaderStyle}>
                         <div>
-                          <strong>{isStarOwner ? getSafeRequesterName(request.requesterName) : request.areaTitle || "Meet-Up Area"}</strong>
+                          <strong>{isStarOwner ? getSafeRequesterName(request.requesterName) : request.areaTitle || "Meeting Area"}</strong>
                           <div style={callMetaStyle}>{formatMeetUpLabel(request)}</div>
                         </div>
                         <span style={statusPill(request.status)}>{request.status}</span>
@@ -611,7 +613,7 @@ export default function RequestMeetUp() {
                       ) : null}
                       {request.status === "accepted" ? (
                         <button type="button" onClick={() => openMeetUpSession(request.id)} style={primaryMiniButtonStyle}>
-                          Meet-Up
+                          Meeting Zone
                         </button>
                       ) : null}
                     </article>
@@ -627,7 +629,7 @@ export default function RequestMeetUp() {
             <section style={panelStyle}>
               <div style={sectionHeaderStyle}>
                 <div>
-                  <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>Meet-Up Request</h2>
+                  <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>Meeting Request</h2>
                   <p style={mutedStyle}>Choose one area below, then submit it for approval.</p>
                 </div>
               </div>
@@ -636,15 +638,21 @@ export default function RequestMeetUp() {
                 <div style={areaIconStyle}>{selectedMeetUpArea.icon}</div>
                 <div>
                   <strong>{selectedMeetUpArea.title}</strong>
-                  <p style={areaPitchStyle}>{mealModeLabel(mealMode)} • {experienceLabel(experienceLevel)}</p>
+                  <p style={areaPitchStyle}>{[mealModeLabel(mealMode), experienceLabel(experienceLevel), meetingTime.trim()].filter(Boolean).join(" • ")}</p>
                   <p style={areaPitchStyle}>{selectedMeetUpArea.pitch}</p>
                 </div>
               </div>
 
               {!isStarOwner && (
                 <div style={requestFormStyle}>
+                  <input
+                    value={meetingTime}
+                    onChange={(event) => setMeetingTime(event.target.value)}
+                    placeholder="Time"
+                    style={searchInputStyle}
+                  />
                   <button type="button" onClick={handleSubmitMeetUpRequest} style={primaryButtonStyle} disabled={submittingMeetUp}>
-                    {submittingMeetUp ? "Submitting Meet-Up Request..." : hasPendingSelectedMeetUp ? "Meet-Up Request Pending" : "Submit Meet-Up Request"}
+                    {submittingMeetUp ? "Submitting Meeting Request..." : hasPendingSelectedMeetUp ? "Meeting Request Pending" : "Submit Meeting Request"}
                   </button>
                   {meetUpNotice ? <p style={noticeStyle}>{meetUpNotice}</p> : null}
                 </div>
@@ -655,24 +663,26 @@ export default function RequestMeetUp() {
             <section style={panelStyle}>
               <div style={sectionHeaderStyle}>
                 <div>
-                  <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>Call the Star</h2>
-                  <p style={mutedStyle}>Stage 1 request flow for voice and video call meet-ups.</p>
+                  <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>Same recipient actions</h2>
+                  <p style={mutedStyle}>Use the same selected recipient for Video Call or Voice Call.</p>
                 </div>
               </div>
 
               <div style={callTypeRowStyle}>
-                {CALL_TYPES.map((type) => {
-                  const active = callType === type.key;
-                  return (
-                    <button key={type.key} type="button" onClick={() => setCallType(type.key)} style={{ ...callTypeCardStyle, ...(active ? callTypeCardActiveStyle : null) }}>
-                      <div style={callTypeIconStyle}>{type.icon}</div>
-                      <div style={callTypeTextStyle}>
-                        <strong>{type.title}</strong>
-                        <span style={callTypeBlurbStyle}>{type.blurb}</span>
-                      </div>
-                    </button>
-                  );
-                })}
+                <button type="button" onClick={() => navigate(`/video-call?recipient=${member.uid}`)} style={{ ...callTypeCardStyle, ...callTypeCardActiveStyle }}>
+                  <div style={callTypeIconStyle}>📹</div>
+                  <div style={callTypeTextStyle}>
+                    <strong>Video Call</strong>
+                    <span style={callTypeBlurbStyle}>Open the paid private video call plans for this recipient.</span>
+                  </div>
+                </button>
+                <button type="button" onClick={() => setCallType("voice")} style={{ ...callTypeCardStyle, ...(callType === "voice" ? callTypeCardActiveStyle : null) }}>
+                  <div style={callTypeIconStyle}>📞</div>
+                  <div style={callTypeTextStyle}>
+                    <strong>Voice Call</strong>
+                    <span style={callTypeBlurbStyle}>Simple audio call request so both sides can talk before meeting.</span>
+                  </div>
+                </button>
               </div>
 
               {!isStarOwner && (
@@ -742,7 +752,7 @@ export default function RequestMeetUp() {
 
             <div style={sectionHeaderStyle}>
               <div>
-                <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>{mealModeLabel(mealMode)} Meet-Up Areas</h2>
+                <h2 style={{ ...sectionTitleStyle, fontSize: isMobile ? 24 : sectionTitleStyle.fontSize }}>{mealModeLabel(mealMode)} Meeting Areas</h2>
                 <p style={mutedStyle}>Choose the setting that fits this level of access and energy.</p>
               </div>
             </div>

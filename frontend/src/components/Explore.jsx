@@ -1,4 +1,3 @@
-import Categories from "./Categories";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useVideos from "../hooks/useVideos";
 import VideoPlayer from "./VideoPlayer";
@@ -13,7 +12,6 @@ import {
   getDoc,
   increment,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -29,6 +27,47 @@ import {
   appCheckFetch,
   formatSupportCost,
 } from "../lib/supportActions";
+
+const HOME_MODES = [
+  { id: "explore", label: "Explore", icon: "🧭" },
+  { id: "grid", label: "Grid", icon: "▦" },
+  { id: "discover", label: "Discover", icon: "✦" },
+];
+
+const BOTTLE_TRAY_ORDER = [
+  "mineral",
+  "malt",
+  "juice",
+  "mocktail",
+  "beer",
+  "gin",
+  "rum",
+  "whiskey",
+  "vodka",
+  "cocktail",
+];
+
+const RANKING_MODES = [
+  { id: "latest", label: "Latest" },
+  { id: "trending", label: "Trending" },
+  { id: "highestVotes", label: "Highest Votes" },
+  { id: "hot", label: "Hot" },
+];
+
+const TALENT_FILTERS = [
+  "Dancers",
+  "Instrumentalists",
+  "Models",
+  "Foodies",
+  "Stuntpersons",
+  "Singers",
+  "Debaters",
+  "Comedians",
+  "Artists",
+  "Dramatizers",
+  "Special Abilities",
+  "Cultural Performers",
+];
 
 export default function Explore() {
   const videos = useVideos();
@@ -46,10 +85,16 @@ export default function Explore() {
   }, [selectedCategory, videos]);
 
   const [liked, setLiked] = useState({});
-  const [mode, setMode] = useState("feed");
+  const [mode, setMode] = useState("spotlight");
+  const [discoverRanking, setDiscoverRanking] = useState("latest");
+  const [discoverTalent, setDiscoverTalent] = useState("All");
+  const [exploreTalent, setExploreTalent] = useState(TALENT_FILTERS[0]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [supportModal, setSupportModal] = useState(null);
   const [sprayPickerVideoId, setSprayPickerVideoId] = useState("");
+  const [selectedSprayNote, setSelectedSprayNote] = useState(INLINE_SPRAY_NOTES[0]);
+  const [selectedBottleKey, setSelectedBottleKey] = useState("mineral");
+  const [supportSelectionReady, setSupportSelectionReady] = useState(false);
   const [commentModal, setCommentModal] = useState(null);
   const [processingSupportKey, setProcessingSupportKey] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
@@ -109,7 +154,7 @@ export default function Explore() {
   }, [selectedCategory]);
 
   useEffect(() => {
-    if (mode !== "feed") return;
+    if (mode !== "spotlight") return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -170,7 +215,7 @@ export default function Explore() {
 
   useEffect(() => {
     const activeVideo = visibleVideos[activeIndex];
-    if (!activeVideo?.id || mode !== "feed") return undefined;
+    if (!activeVideo?.id || mode !== "spotlight") return undefined;
 
     const timer = window.setTimeout(() => {
       void trackVideoView(activeVideo);
@@ -230,7 +275,7 @@ export default function Explore() {
 
   const handleVote = async (videoId, event) => {
     event?.stopPropagation();
-    await handleSupport(videoId, "vote");
+    openSupportModal(videoId, "vote");
   };
 
   const handleSupport = async (videoId, actionKey, options = {}) => {
@@ -287,15 +332,13 @@ export default function Explore() {
       const data = await res.json();
 
       if (!res.ok) {
-        const message = data.error || "This support action could not be completed.";
+        const rawMessage = data.error || "This support action could not be completed.";
+        const message = shouldRedirectToWallet(rawMessage) ? "Fund Your Wallet" : rawMessage;
         setSupportError(message);
         setGlobalSupportNotice({
           type: "error",
           message,
         });
-        if (shouldRedirectToWallet(message)) {
-          navigate("/wallet?deposit=1");
-        }
         return;
       }
 
@@ -353,7 +396,9 @@ export default function Explore() {
       });
       setSupportModal(null);
     } catch (error) {
-      const message = "Could not complete this action right now";
+      const rawMessage = error?.message || "";
+      const walletError = /insufficient|wallet|deposit|parag|gbazilo|balance/i.test(rawMessage);
+      const message = walletError ? "Fund Your Wallet" : "Could not complete this action right now";
       setSupportError(message);
       setGlobalSupportNotice({
         type: "error",
@@ -371,6 +416,7 @@ export default function Explore() {
   const openSupportModal = (videoId, group) => {
     setSupportModal({ videoId, group });
     setSupportError("");
+    setSupportSelectionReady(false);
   };
 
   const toggleSprayPicker = (videoId) => {
@@ -581,15 +627,18 @@ export default function Explore() {
     try {
       const commentsQuery = query(
         collection(db, "video_comments"),
-        where("videoId", "==", videoId),
-        orderBy("createdAt", "asc")
+        where("videoId", "==", videoId)
       );
 
       const snap = await getDocs(commentsQuery);
       const comments = snap.docs.map((commentDoc) => ({
         id: commentDoc.id,
         ...commentDoc.data(),
-      }));
+      })).sort((left, right) => {
+        const leftTime = left.createdAt?.toMillis?.() || 0;
+        const rightTime = right.createdAt?.toMillis?.() || 0;
+        return leftTime - rightTime;
+      });
 
       setVideoComments((prev) => ({
         ...prev,
@@ -607,10 +656,7 @@ export default function Explore() {
 
   const openCommentModal = async (video) => {
     setCommentModal(video);
-
-    if (!videoComments[video.id]) {
-      await loadComments(video.id);
-    }
+    await loadComments(video.id);
   };
 
   const openFollowPanel = async (video) => {
@@ -710,7 +756,13 @@ export default function Explore() {
     supportModal?.group === "spray" ? SPRAY_ACTION_KEYS : BOTTLE_ACTION_KEYS;
 
   const supportModalTitle =
-    supportModal?.group === "spray" ? "Spray Money" : "Pop a Bottle 4 Me";
+    supportModal?.group === "vote"
+      ? "Vote For Me"
+      : supportModal?.group === "water"
+      ? "Pour Me Water"
+      : supportModal?.group === "spray"
+        ? "Spray Me Money"
+        : "Pop Me a Bottle";
   const meetUpRequestHeading =
     pendingMeetUpCount === 1
       ? "You Have Request for Meet-ups"
@@ -863,7 +915,8 @@ export default function Explore() {
           {globalSupportNotice.message}
         </div>
       )}
-      {mode === "feed" && (
+      <HomeModeSelector mode={mode} onSelect={setMode} onOpenLive={() => navigate("/live")} />
+      {mode === "spotlight" && (
         <div ref={containerRef} style={feedStyle}>
           {visibleVideos.map((video, index) => {
             const playableUrl = getPlayableUrl(video);
@@ -886,7 +939,10 @@ export default function Explore() {
                 onDoubleClick={() => handleDoubleTap(video.id)}
               >
                 {playableUrl && index === activeIndex ? (
-                  <VideoPlayer streamUrl={playableUrl} />
+                    <VideoPlayer
+                      streamUrl={playableUrl}
+                      active={Math.abs(index - activeIndex) <= 1}
+                    />
                 ) : playableUrl ? (
                   <div
                     style={{
@@ -909,74 +965,43 @@ export default function Explore() {
                   </div>
                 )}
 
-                {liked[video.id] && <div style={likeStyle}>❤️</div>}
+                {liked[video.id] && <div style={likeStyle}>🗳️</div>}
                 {actionFeedback?.videoId === video.id && (
                   <ActionFeedback effect={actionFeedback} />
                 )}
 
                 <div style={leftInfoStyle}>
+                  <p style={creatorNameLineStyle}>{video.displayName || video.performerName || video.creatorName || video.userName || "Paragon Creator"}</p>
                   <h3>{video.title || video.name || "Untitled"}</h3>
                   <p>{video.category || video.genre || "general"}</p>
                   <p>{video.description || video.about || ""}</p>
                 </div>
 
                 <div style={rightActionsStyle}>
-                  <div style={iconActionWrapStyle}>
-                    <button
-                      type="button"
-                      onPointerDown={stopOverlayTap}
-                      onClick={(event) => {
-                        stopOverlayTap(event);
-                        handleVote(video.id, event);
-                      }}
-                      disabled={loadingVoteId === video.id}
-                      style={sideRailButtonStyle}
-                    >
-                      <span style={sideRailIconStyle}>{loadingVoteId === video.id ? "…" : "❤️"}</span>
-                      <span style={sideRailCountStyle}>
-                        {(video.votes || 0) + (localVideoStats[video.id]?.votesDelta || 0)}
-                      </span>
-                    </button>
-                    {actionFeedback?.videoId === video.id &&
-                      actionFeedback.actionKey === "vote" && (
-                        <div style={votePulseBadgeStyle}>+1</div>
-                      )}
-                  </div>
                   <button
                     type="button"
                     onPointerDown={stopOverlayTap}
                     onClick={(event) => {
                       stopOverlayTap(event);
-                      handleSupport(video.id, "pour_me_water");
+                      openSupportModal(video.id, "water");
                     }}
                     style={sideRailButtonStyle}
                   >
-                    <span style={sideRailIconStyle}>💧</span>
+                    <span style={sideRailIconStyle}>🚿</span>
                     <span style={sideRailCountStyle}>{getPourCount(video, localVideoStats[video.id]?.waterDelta || 0)}</span>
                   </button>
                   <div style={iconActionWrapStyle}>
-                    {sprayPickerVideoId === video.id ? (
-                      <InlineSprayNotePicker
-                        processing={processingSupportKey === "spray_money"}
-                        onPointerDown={stopOverlayTap}
-                        onSelect={(note) =>
-                          handleSupport(video.id, "spray_money", {
-                            customParagAmount: note.currency === "PARAG" ? note.amount : 0,
-                            customGbaziloAmount: note.currency === "GBAZILO" ? note.amount : 0,
-                          })
-                        }
-                      />
-                    ) : null}
                     <button
                       type="button"
                       onPointerDown={stopOverlayTap}
                       onClick={(event) => {
                         stopOverlayTap(event);
-                        toggleSprayPicker(video.id);
+                        setSprayPickerVideoId("");
+                        openSupportModal(video.id, "spray");
                       }}
                       style={sideRailButtonStyle}
                     >
-                      <span style={sideRailIconStyle}>💸</span>
+                      <span style={sideRailIconStyle}>💵</span>
                       <span style={sideRailCountStyle}>{getSprayCount(video, localVideoStats[video.id]?.sprayDelta || 0)}</span>
                     </button>
                   </div>
@@ -992,6 +1017,10 @@ export default function Explore() {
                     <span style={sideRailIconStyle}>🍾</span>
                     <span style={sideRailCountStyle}>{getBottleCount(video.supportCounts) + (localVideoStats[video.id]?.bottleDelta || 0)}</span>
                   </button>
+                  {actionFeedback?.videoId === video.id &&
+                    actionFeedback.actionKey === "vote" && (
+                      <div style={votePulseBadgeStyle}>+1</div>
+                    )}
                 </div>
 
                 <div style={footerSecondaryActionsStyle}>
@@ -1000,7 +1029,7 @@ export default function Explore() {
                     onPointerDown={stopOverlayTap}
                     onClick={(event) => {
                       stopOverlayTap(event);
-                      navigate("/");
+                      setMode("spotlight");
                     }}
                     style={footerSecondaryButtonStyle}
                     title="Home"
@@ -1026,13 +1055,16 @@ export default function Explore() {
                   </button>
                   <button
                     type="button"
-                    style={footerSecondaryButtonStyle}
                     onPointerDown={stopOverlayTap}
-                    disabled
-                    title="Views"
+                    onClick={(event) => {
+                      stopOverlayTap(event);
+                      handleVote(video.id, event);
+                    }}
+                    style={footerSecondaryButtonStyle}
+                    disabled={loadingVoteId === video.id}
+                    title="Vote"
                   >
-                    <span>👀</span>
-                    <span style={footerMetricBadgeStyle}>{(video.views || 0) + (localViewStats[video.id] || 0)}</span>
+                    {loadingVoteId === video.id ? "…" : <span style={footerVoteIconWrapStyle}><span>🗳️</span><small>Vote</small></span>}
                   </button>
                   <button
                     type="button"
@@ -1044,21 +1076,7 @@ export default function Explore() {
                     style={footerSecondaryButtonStyle}
                     title="Comments"
                   >
-                    <span>💬</span>
-                    <span style={footerMetricBadgeStyle}>{(videoComments[video.id] || []).length}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onPointerDown={stopOverlayTap}
-                    onClick={(event) => {
-                      stopOverlayTap(event);
-                      toggleSave(video);
-                    }}
-                    style={footerSecondaryButtonStyle}
-                    disabled={processingSaveId === video.id}
-                    title={isSaved ? "Saved" : "Save / Watch"}
-                  >
-                    <span>{processingSaveId === video.id ? "…" : isSaved ? "🔖" : "📌"}</span>
+                    💬
                   </button>
                   <button
                     type="button"
@@ -1079,313 +1097,78 @@ export default function Explore() {
         </div>
       )}
 
-      {mode === "grid" && (
-        <div style={gridPageStyle}>
-          <Categories />
+      {mode === "explore" && (
+        <ExploreModePanel
+          videos={visibleVideos}
+          selectedTalent={exploreTalent}
+          onTalentChange={setExploreTalent}
+          onOpenVideo={(video) => openVideoInSpotlight(video, visibleVideos, setMode, setActiveIndex)}
+        />
+      )}
 
-          <div style={gridStyle}>
-            {visibleVideos.map((video) => (
-              <div
-                key={video.id}
-                onClick={() => navigate(`/watch/${video.id}`)}
-                style={{
-                  ...gridItemStyle,
-                  backgroundImage: video.thumbnailUrl
-                    ? `url(${video.thumbnailUrl})`
-                    : "none",
-                }}
-              >
-                <div style={playIconStyle}>▶</div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {mode === "grid" && (
+        <GridModePanel
+          videos={visibleVideos}
+          onOpenVideo={(video) => openVideoInSpotlight(video, visibleVideos, setMode, setActiveIndex)}
+        />
+      )}
+
+      {mode === "discover" && (
+        <DiscoverModePanel
+          videos={visibleVideos}
+          ranking={discoverRanking}
+          talent={discoverTalent}
+          onRankingChange={setDiscoverRanking}
+          onTalentChange={setDiscoverTalent}
+          onOpenVideo={(video) => openVideoInSpotlight(video, visibleVideos, setMode, setActiveIndex)}
+        />
+      )}
+
+      {mode !== "spotlight" && (
+        <BrowseModeFooter
+          onHome={() => setMode("spotlight")}
+          onFollow={() => navigate(auth.currentUser ? "/following" : "/login")}
+          onMenu={() => window.dispatchEvent(new Event("open-global-menu"))}
+        />
       )}
 
       {supportModal && (
-        <div style={supportOverlayStyle}>
-          <div style={supportCardStyle}>
+        <div style={supportFloatingOverlayStyle} onClick={() => setSupportModal(null)}>
+          <div style={supportFloatingCardStyle} onClick={(event) => event.stopPropagation()}>
             <div style={supportHeaderRowStyle}>
               <div>
-                <div style={supportEyebrowStyle}>PARAGON SUPPORT</div>
                 <h3 style={{ margin: "6px 0 0" }}>{supportModalTitle}</h3>
               </div>
-              <button onClick={() => setSupportModal(null)} style={supportCloseStyle}>
-                Close
-              </button>
             </div>
 
-            {supportModal.group === "bottle" ? (
-              <div style={bottleShowcaseLayoutStyle}>
-                <div style={bottleZoneStyle}>
-                  <div style={bottleZoneGridStyle}>
-                    {bottleColumns[0].map((actionKey) => {
-                      const action = SUPPORT_ACTIONS[actionKey];
-                      const meta = bottleShowcaseMeta[actionKey];
-
-                      return (
-                        <div key={actionKey} style={bottleCardStyle}>
-                          <div style={bottleCardTopStyle}>
-                            <div style={bottleCardVisualStyle}>
-                              <span style={bottleCompactCostStyle}>
-                                {formatBottleBadge(action)}
-                              </span>
-                              <div style={bottleCardIconStyle}>{meta?.icon || "🥤"}</div>
-                              <div style={bottleCardInsideTitleStyle}>{action.label}</div>
-                              <button
-                                type="button"
-                                onClick={() => handleSupport(supportModal.videoId, actionKey)}
-                                style={bottleInlineActionButtonStyle}
-                                disabled={processingSupportKey === actionKey}
-                              >
-                                {processingSupportKey === actionKey ? "..." : "Pop"}
-                              </button>
-                            </div>
-                          </div>
-                          <p style={bottleCardHintStyle}>{meta?.note || "Celebration support"}</p>
-                          <div style={bottleStatRowStyle}>
-                            <span style={bottleMiniStatStyle}>Creator +{meta?.creatorXp || 0} XP</span>
-                            <span style={bottleMiniStatStyle}>Rank +{meta?.rankBoost || 0}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div style={bottleStageStyle}>
-                  <div style={bottleStageScreenStyle}>
-                    <div style={bottleStageArcWrapStyle}>
-                      <svg
-                        viewBox="0 0 320 92"
-                        preserveAspectRatio="xMidYMid meet"
-                        style={bottleStageArcSvgStyle}
-                        aria-hidden="true"
-                      >
-                        <path
-                          id="bottle-stage-curve"
-                          d="M 28 76 Q 160 6 292 76"
-                          fill="none"
-                        />
-                        <text style={bottleStageArcTextStyle}>
-                          <textPath href="#bottle-stage-curve" startOffset="50%" textAnchor="middle">
-                            Celebrate your favourite star for Paragon Citizen
-                          </textPath>
-                        </text>
-                      </svg>
-                    </div>
-                    <div style={bottleStageVideoShellStyle}>
-                      {supportPlayableUrl ? (
-                        <video
-                          src={supportPlayableUrl}
-                          style={bottleStageVideoStyle}
-                          autoPlay
-                          muted
-                          loop
-                          playsInline
-                        />
-                      ) : (
-                        <div
-                          style={{
-                            ...bottleStageVideoStyle,
-                            ...bottleStageVideoFallbackStyle,
-                            backgroundImage: supportVideo?.thumbnailUrl
-                              ? `url(${supportVideo.thumbnailUrl})`
-                              : "none",
-                          }}
-                        >
-                          {!supportVideo?.thumbnailUrl && <span style={videoPlayStyle}>▶</span>}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div style={bottleZoneStyle}>
-                  <div style={bottleZoneGridStyle}>
-                    {bottleColumns[1].map((actionKey) => {
-                      const action = SUPPORT_ACTIONS[actionKey];
-                      const meta = bottleShowcaseMeta[actionKey];
-
-                      return (
-                        <div key={actionKey} style={bottleCardStyle}>
-                          <div style={bottleCardTopStyle}>
-                            <div style={bottleCardVisualStyle}>
-                              <span style={bottleCompactCostStyle}>
-                                {formatBottleBadge(action)}
-                              </span>
-                              <div style={bottleCardIconStyle}>{meta?.icon || "🥃"}</div>
-                              <div style={bottleCardInsideTitleStyle}>{action.label}</div>
-                              <button
-                                type="button"
-                                onClick={() => handleSupport(supportModal.videoId, actionKey)}
-                                style={bottleInlineActionButtonStyle}
-                                disabled={processingSupportKey === actionKey}
-                              >
-                                {processingSupportKey === actionKey ? "..." : "Pop"}
-                              </button>
-                            </div>
-                          </div>
-                          <p style={bottleCardHintStyle}>{meta?.note || "Celebration support"}</p>
-                          <div style={bottleStatRowStyle}>
-                            <span style={bottleMiniStatStyle}>Creator +{meta?.creatorXp || 0} XP</span>
-                            <span style={bottleMiniStatStyle}>Rank +{meta?.rankBoost || 0}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            ) : supportModal.group === "spray" ? (
-              <div style={sprayShowcaseLayoutStyle}>
-                <div style={bottleZoneStyle}>
-                  <div style={bottleZoneGridStyle}>
-                    <div style={bottleCardStyle}>
-                      <div style={bottleCardTopStyle}>
-                        <div style={{ ...bottleCardVisualStyle, minHeight: 190, justifyContent: "space-between" }}>
-                          <span style={bottleCompactCostStyle}>P1</span>
-                          <div style={sprayCardIconStyle}>💸</div>
-                          <div style={bottleCardInsideTitleStyle}>Parag</div>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleSupport(supportModal.videoId, "spray_money", {
-                                customParagAmount: singleParagSprayAmount,
-                                customGbaziloAmount: 0,
-                              })
-                            }
-                            style={bottleInlineActionButtonStyle}
-                            disabled={processingSupportKey === "spray_money"}
-                          >
-                            {processingSupportKey === "spray_money" ? "..." : "Tap"}
-                          </button>
-                        </div>
-                      </div>
-                      <p style={bottleCardHintStyle}>Tap to spray 1 Parag at a time.</p>
-                      <div style={bottleStatRowStyle}>
-                        <span style={bottleMiniStatStyle}>Creator +2 XP</span>
-                        <span style={bottleMiniStatStyle}>Tap again to continue</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div style={sprayCenterStageStyle}>
-                  <div style={bottleStageScreenStyle}>
-                    <div style={bottleStageArcWrapStyle}>
-                      <svg
-                        viewBox="0 0 320 92"
-                        preserveAspectRatio="xMidYMid meet"
-                        style={bottleStageArcSvgStyle}
-                        aria-hidden="true"
-                      >
-                        <path
-                          id="spray-stage-curve"
-                          d="M 28 76 Q 160 6 292 76"
-                          fill="none"
-                        />
-                        <text style={bottleStageArcTextStyle}>
-                          <textPath href="#spray-stage-curve" startOffset="50%" textAnchor="middle">
-                            Tap Parag or Gbazilo to spray support live
-                          </textPath>
-                        </text>
-                      </svg>
-                    </div>
-                    <div style={bottleStageVideoShellStyle}>
-                      {supportPlayableUrl ? (
-                        <video
-                          src={supportPlayableUrl}
-                          style={bottleStageVideoStyle}
-                          autoPlay
-                          muted
-                          loop
-                          playsInline
-                        />
-                      ) : (
-                        <div
-                          style={{
-                            ...bottleStageVideoStyle,
-                            ...bottleStageVideoFallbackStyle,
-                            backgroundImage: supportVideo?.thumbnailUrl
-                              ? `url(${supportVideo.thumbnailUrl})`
-                              : "none",
-                          }}
-                        >
-                          {!supportVideo?.thumbnailUrl && <span style={videoPlayStyle}>▶</span>}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div style={bottleZoneStyle}>
-                  <div style={bottleZoneGridStyle}>
-                    <div style={bottleCardStyle}>
-                      <div style={bottleCardTopStyle}>
-                        <div style={{ ...bottleCardVisualStyle, minHeight: 190, justifyContent: "space-between" }}>
-                          <span style={bottleCompactCostStyle}>G1</span>
-                          <div style={sprayCardIconStyle}>💸</div>
-                          <div style={bottleCardInsideTitleStyle}>Gbazilo</div>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleSupport(supportModal.videoId, "spray_money", {
-                                customParagAmount: 0,
-                                customGbaziloAmount: singleGbaziloSprayAmount,
-                              })
-                            }
-                            style={bottleInlineActionButtonStyle}
-                            disabled={processingSupportKey === "spray_money"}
-                          >
-                            {processingSupportKey === "spray_money" ? "..." : "Tap"}
-                          </button>
-                        </div>
-                      </div>
-                      <p style={bottleCardHintStyle}>Tap to spray 1 Gbazilo at a time.</p>
-                      <div style={bottleStatRowStyle}>
-                        <span style={bottleMiniStatStyle}>Creator +50 XP</span>
-                        <span style={bottleMiniStatStyle}>Premium spray tap</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={supportOptionGridStyle}>
-                {supportActionKeys.map((actionKey) => {
-                const action = SUPPORT_ACTIONS[actionKey];
-                const isVariable = action.variable;
-
-                return (
-                  <div key={actionKey} style={supportOptionCardStyle}>
-                    <div style={supportOptionRowStyle}>
-                      <strong>{action.label}</strong>
-                      <span style={supportCostPillStyle}>
-                        {formatSupportCost(action)}
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => handleSupport(supportModal.videoId, actionKey)}
-                      style={supportActionButtonStyle}
-                      disabled={processingSupportKey === actionKey}
-                    >
-                      {processingSupportKey === actionKey
-                        ? "Sending..."
-                        : action.group === "spray"
-                          ? action.label
-                          : `Pop ${action.label}`}
-                    </button>
-                  </div>
-                );
-              })}
-              </div>
-            )}
-
-            {!!supportError && (
-              <div style={supportErrorStyle}>{supportError}</div>
-            )}
+            <WebSupportTray
+              mode={supportModal.group}
+              supportError={supportError}
+              processingKey={supportModal.group === "vote" ? (loadingVoteId === supportModal.videoId ? "vote" : "") : processingSupportKey}
+              selectedSprayNote={selectedSprayNote}
+              selectedBottleKey={selectedBottleKey}
+              hasSelection={supportSelectionReady}
+              bottleMeta={bottleShowcaseMeta}
+              onSelectWater={() => setSupportSelectionReady(true)}
+              onSelectSprayNote={(note) => {
+                setSelectedSprayNote(note);
+                setSupportSelectionReady(true);
+              }}
+              onSelectBottleKey={(key) => {
+                setSelectedBottleKey(key);
+                setSupportSelectionReady(true);
+              }}
+              onFundWallet={() => navigate("/wallet")}
+              onConfirmVote={() => handleSupport(supportModal.videoId, "vote")}
+              onConfirmWater={() => handleSupport(supportModal.videoId, "pour_me_water")}
+              onConfirmSpray={() =>
+                handleSupport(supportModal.videoId, "spray_money", {
+                  customParagAmount: selectedSprayNote.currency === "PARAG" ? selectedSprayNote.amount : 0,
+                  customGbaziloAmount: selectedSprayNote.currency === "GBAZILO" ? selectedSprayNote.amount : 0,
+                })
+              }
+              onConfirmBottle={() => handleSupport(supportModal.videoId, selectedBottleKey)}
+            />
           </div>
         </div>
       )}
@@ -1559,6 +1342,247 @@ export default function Explore() {
   );
 }
 
+function HomeModeSelector({ mode, onSelect, onOpenLive }) {
+  return (
+    <div style={homeModeSelectorStyle}>
+      {HOME_MODES.map((item) => (
+        <button key={item.id} type="button" onClick={() => onSelect(item.id)} style={homeModeButtonStyle(mode === item.id)}>
+          {item.icon} {item.label}
+        </button>
+      ))}
+      <button type="button" onClick={onOpenLive} style={homeModeButtonStyle(false)}>
+        🔴 Live
+      </button>
+    </div>
+  );
+}
+
+function BrowseModeFooter({ onHome, onFollow, onMenu }) {
+  return (
+    <div style={browseModeFooterStyle}>
+      <button type="button" onClick={onHome} style={footerSecondaryButtonStyle} title="Home">🏠</button>
+      <button type="button" onClick={onFollow} style={footerSecondaryButtonStyle} title="Following">👥</button>
+      <button type="button" style={footerSecondaryButtonStyle} title="Vote" disabled><span style={footerVoteIconWrapStyle}><span>🗳️</span><small>Vote</small></span></button>
+      <button type="button" style={footerSecondaryButtonStyle} title="Comments" disabled>💬</button>
+      <button type="button" onClick={onMenu} style={footerSecondaryButtonStyle} title="Menu">☰</button>
+    </div>
+  );
+}
+
+function WebSupportTray({
+  mode,
+  supportError,
+  processingKey,
+  selectedSprayNote,
+  selectedBottleKey,
+  hasSelection,
+  bottleMeta,
+  onSelectWater,
+  onSelectSprayNote,
+  onSelectBottleKey,
+  onFundWallet,
+  onConfirmVote,
+  onConfirmWater,
+  onConfirmSpray,
+  onConfirmBottle,
+}) {
+  const selectedBottleAction = SUPPORT_ACTIONS[selectedBottleKey] || SUPPORT_ACTIONS.mineral;
+  const title =
+    mode === "vote"
+      ? "Vote For Me"
+      : mode === "water"
+      ? "Pour Me Water"
+      : mode === "spray"
+        ? "Spray Me Money"
+        : "Pop Me a Bottle";
+  const confirmLabel =
+    mode === "vote"
+      ? processingKey === "vote" ? "Voting..." : "Vote 1 PARAG"
+      : mode === "water"
+      ? processingKey === "pour_me_water" ? "Pouring..." : "Pour • 5 PARAG"
+      : mode === "spray"
+        ? processingKey === "spray_money" ? "Spraying..." : `Spray • ${selectedSprayNote.amount} ${selectedSprayNote.currency}`
+        : processingKey === selectedBottleKey ? "Popping..." : `Pop • ${formatSupportCost(selectedBottleAction)}`;
+  const confirmDisabled =
+    mode === "vote"
+      ? processingKey === "vote"
+      : mode === "water"
+      ? processingKey === "pour_me_water"
+      : mode === "spray"
+        ? processingKey === "spray_money"
+        : processingKey === selectedBottleKey;
+  const onConfirm =
+    mode === "vote"
+      ? onConfirmVote
+      : mode === "water"
+      ? onConfirmWater
+      : mode === "spray"
+        ? onConfirmSpray
+        : onConfirmBottle;
+
+  return (
+    <div style={supportTrayStyle}>
+      {mode === "vote" && (
+        <div style={supportTrayCenterIconStyle}>🗳️</div>
+      )}
+
+      {mode === "water" && (
+        <button type="button" onClick={onSelectWater} style={supportTrayWaterStyle}>
+          <span style={supportTrayBigIconStyle}>🚿</span>
+        </button>
+      )}
+
+      {mode === "spray" && (
+        <div style={supportTrayScrollerStyle}>
+          {INLINE_SPRAY_NOTES.map((note) => {
+            const active = note.id === selectedSprayNote.id;
+            return (
+              <button key={note.id} type="button" onClick={() => onSelectSprayNote(note)} style={supportTrayNoteStyle(active)}>
+                <img src={note.image} alt={note.id} style={supportTrayNoteImageStyle} />
+                <strong>{note.amount}</strong>
+                <span>{note.currency}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {mode === "bottle" && (
+        <div style={supportTrayBottleGridStyle}>
+          {BOTTLE_TRAY_ORDER.filter((key) => BOTTLE_ACTION_KEYS.includes(key)).map((key) => {
+            const action = SUPPORT_ACTIONS[key];
+            const meta = bottleMeta[key] || {};
+            const active = key === selectedBottleKey;
+            return (
+              <button key={key} type="button" onClick={() => onSelectBottleKey(key)} style={supportTrayBottleStyle(active)}>
+                <span style={supportTrayBottleIconStyle}>{meta.icon || "🍾"}</span>
+                <strong>{action.label}</strong>
+                <span>{formatSupportCost(action)}</span>
+                <small>+{meta.creatorXp || 0} XP</small>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {!!supportError && (
+        supportError === "Fund Your Wallet" ? (
+          <button type="button" onClick={onFundWallet} style={supportWalletCtaStyle}>
+            Fund Your Wallet
+          </button>
+        ) : (
+          <div style={supportErrorStyle}>{supportError}</div>
+        )
+      )}
+
+      {(hasSelection || mode === "vote") && (
+        <button type="button" onClick={onConfirm} disabled={confirmDisabled} style={supportTrayConfirmStyle}>
+          {confirmLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ExploreModePanel({ videos, selectedTalent, onTalentChange, onOpenVideo }) {
+  const talentVideos = useMemo(
+    () => videos.filter((video) => normalizeTalent(video.category || video.genre || "") === normalizeTalent(selectedTalent)),
+    [videos, selectedTalent]
+  );
+  return (
+    <div style={homeBrowsePageStyle}>
+      <TalentFilterRow selected={selectedTalent} options={TALENT_FILTERS} onSelect={onTalentChange} />
+      <h2 style={homeBrowseTitleStyle}>{selectedTalent}</h2>
+      {RANKING_MODES.map((ranking) => (
+        <section key={ranking.id} style={rankingSectionStyle}>
+          <h3 style={rankingTitleStyle}>{ranking.label.toUpperCase()}</h3>
+          <div style={exploreSectionGridStyle}>
+            {rankVideos(talentVideos, ranking.id).slice(0, 6).map((video) => (
+              <VideoDiscoveryCard key={`${ranking.id}-${video.id}`} video={video} onClick={() => onOpenVideo(video)} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function GridModePanel({ videos, onOpenVideo }) {
+  return (
+    <div style={homeBrowsePageStyle}>
+      <div style={gridModeStyle}>
+        {dedupeVideos(videos).map((video) => (
+          <VideoDiscoveryCard key={video.id} video={video} onClick={() => onOpenVideo(video)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DiscoverModePanel({ videos, ranking, talent, onRankingChange, onTalentChange, onOpenVideo }) {
+  const filtered = useMemo(() => {
+    const source = talent === "All" ? videos : videos.filter((video) => normalizeTalent(video.category || video.genre || "") === normalizeTalent(talent));
+    return rankVideos(dedupeVideos(source), ranking);
+  }, [videos, ranking, talent]);
+  return (
+    <div style={homeBrowsePageStyle}>
+      <div style={rankingTabsStyle}>
+        {RANKING_MODES.map((item) => (
+          <button key={item.id} type="button" onClick={() => onRankingChange(item.id)} style={filterPillStyle(ranking === item.id)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <TalentFilterRow selected={talent} options={["All", ...TALENT_FILTERS]} onSelect={onTalentChange} />
+      <div style={discoverGridStyle}>
+        {filtered.map((video) => (
+          <VideoDiscoveryCard key={video.id} video={video} compact onClick={() => onOpenVideo(video)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TalentFilterRow({ selected, options, onSelect }) {
+  return (
+    <div style={talentFilterRowStyle}>
+      {options.map((item) => (
+        <button key={item} type="button" onClick={() => onSelect(item)} style={filterPillStyle(selected === item)}>
+          {item}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function VideoDiscoveryCard({ video, compact = false, onClick }) {
+  const thumbnail = getVideoThumbnail(video);
+  return (
+    <button type="button" onClick={onClick} style={videoDiscoveryCardStyle(compact)}>
+      <div
+        style={{
+          ...videoDiscoveryThumbStyle(compact),
+          backgroundImage: thumbnail ? `url(${thumbnail})` : "linear-gradient(180deg,#1f2937,#050505)",
+        }}
+      >
+        {!thumbnail && <span style={videoDiscoveryPlayStyle}>▶</span>}
+      </div>
+      <div style={videoDiscoveryMetaStyle(compact)}>
+        <strong style={videoDiscoveryTitleStyle(compact)}>{video.title || video.name || "Untitled performance"}</strong>
+        <span style={videoDiscoveryTextStyle(compact)}>{video.displayName || video.performerName || video.creatorName || "Paragon Creator"}</span>
+        <span style={videoDiscoveryTextStyle(compact)}>{video.category || video.genre || "General"}</span>
+        <span style={videoDiscoveryMetricStyle(compact)}>{video.votes || 0} votes • {video.views || 0} views</span>
+      </div>
+    </button>
+  );
+}
+
+function openVideoInSpotlight(video, videos, setMode, setActiveIndex) {
+  const index = videos.findIndex((item) => item.id === video.id);
+  setMode("spotlight");
+  setActiveIndex(Math.max(index, 0));
+}
+
 const INLINE_SPRAY_NOTES = [
   { id: "p1", currency: "PARAG", amount: 1, image: "/spray-notes/p1.png" },
   { id: "g1", currency: "GBAZILO", amount: 1, image: "/spray-notes/g1.png" },
@@ -1596,7 +1620,7 @@ function ActionFeedback({ effect }) {
     return (
       <div style={actionFeedbackWrapStyle}>
         <div style={actionFeedbackCardStyle}>
-          <div style={actionFeedbackIconStyle}>❤️</div>
+          <div style={actionFeedbackIconStyle}>🗳️</div>
           <div style={actionFeedbackTextStyle}>+1 Vote</div>
         </div>
       </div>
@@ -1635,7 +1659,7 @@ function ActionFeedback({ effect }) {
     return (
       <div style={actionFeedbackWrapStyle}>
         <div style={actionFeedbackCardStyle}>
-          <div style={actionFeedbackIconStyle}>💧</div>
+          <div style={actionFeedbackIconStyle}>🚿</div>
           <div style={actionFeedbackTextStyle}>Pour Me Water</div>
         </div>
       </div>
@@ -1697,6 +1721,69 @@ function shouldRedirectToWallet(message) {
     normalized.includes("insufficient") &&
     (normalized.includes("parag") || normalized.includes("gbazilo") || normalized.includes("balance"))
   );
+}
+
+function getVideoThumbnail(video = {}) {
+  return (
+    video.thumbnailUrl ||
+    video.coverImage ||
+    video.posterUrl ||
+    video.poster ||
+    video.coverUrl ||
+    video.thumbnail ||
+    ""
+  );
+}
+
+function dedupeVideos(videos = []) {
+  const seen = new Set();
+  return videos.filter((video) => {
+    if (!video?.id || seen.has(video.id)) return false;
+    seen.add(video.id);
+    return true;
+  });
+}
+
+function rankVideos(videos = [], mode = "latest") {
+  const source = dedupeVideos(videos);
+  if (mode === "highestVotes") {
+    return [...source].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+  }
+  if (mode === "trending") {
+    return [...source].sort((a, b) => rankingScore(b, 5, 2, 3, 0.2) - rankingScore(a, 5, 2, 3, 0.2));
+  }
+  if (mode === "hot") {
+    return [...source].sort((a, b) => rankingScore(b, 8, 3, 4, 0.3) - rankingScore(a, 8, 3, 4, 0.3));
+  }
+  return source;
+}
+
+function rankingScore(video, voteWeight, commentWeight, actionWeight, viewWeight) {
+  const supportCounts = video.supportCounts || {};
+  const actionCount = Object.values(supportCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+  return (
+    Number(video.votes || 0) * voteWeight +
+    Number(video.comments || video.commentCount || 0) * commentWeight +
+    actionCount * actionWeight +
+    Number(video.views || 0) * viewWeight
+  );
+}
+
+function normalizeTalent(value = "") {
+  const text = String(value).trim().toLowerCase();
+  if (["dancers", "dancer"].includes(text)) return "dancer";
+  if (["instrumentalists", "instrumentalist"].includes(text)) return "instrumentalist";
+  if (["models", "model"].includes(text)) return "model";
+  if (["foodies", "foodier", "nutritionist"].includes(text)) return "foodier";
+  if (["stuntpersons", "stunt performer", "stuntperformers"].includes(text)) return "stunt performer";
+  if (["singers", "singer"].includes(text)) return "singer";
+  if (["debaters", "debater"].includes(text)) return "debater";
+  if (["comedians", "comedian"].includes(text)) return "comedian";
+  if (["artists", "artist", "artist & designer"].includes(text)) return "artist";
+  if (["dramatizers", "dramatizer", "actor"].includes(text)) return "dramatizer";
+  if (["special abilities", "special ability", "abilities (disability)"].includes(text)) return "special ability";
+  if (["cultural performers", "cultural performer"].includes(text)) return "cultural performer";
+  return text;
 }
 
 async function loadFollowDirectory(currentUid) {
@@ -1856,6 +1943,167 @@ const pageStyle = {
   overflowX: "hidden",
   overflowY: "auto",
 };
+
+const homeModeSelectorStyle = {
+  position: "fixed",
+  top: "calc(env(safe-area-inset-top, 0px) + 62px)",
+  left: "auto",
+  right: 12,
+  zIndex: 30,
+  display: "flex",
+  gap: 8,
+  overflowX: "auto",
+  padding: "6px 0",
+  scrollbarWidth: "none",
+};
+
+const homeModeButtonStyle = (active) => ({
+  border: "none",
+  borderRadius: 999,
+  padding: "8px 10px",
+  background: active ? "#d8a928" : "transparent",
+  color: active ? "#050505" : "#fff",
+  fontWeight: 900,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  textShadow: active ? "none" : "0 1px 4px rgba(0,0,0,0.9)",
+});
+
+const browseModeFooterStyle = {
+  position: "fixed",
+  left: "50%",
+  bottom: "max(14px, calc(env(safe-area-inset-bottom, 0px) + 14px))",
+  transform: "translateX(-50%)",
+  zIndex: 35,
+  display: "flex",
+  alignItems: "center",
+  gap: "clamp(18px, 4vw, 28px)",
+};
+
+const homeBrowsePageStyle = {
+  minHeight: "100vh",
+  padding: "118px 14px 92px",
+  background: "#000",
+  color: "#fff",
+};
+
+const homeBrowseTitleStyle = {
+  margin: "10px 0 16px",
+  fontSize: 28,
+  fontWeight: 900,
+};
+
+const rankingSectionStyle = {
+  marginBottom: 28,
+};
+
+const rankingTitleStyle = {
+  margin: "0 0 10px",
+  color: "#d8a928",
+  fontSize: 15,
+  fontWeight: 900,
+};
+
+const exploreSectionGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+};
+
+const gridModeStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+};
+
+const discoverGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 8,
+  marginTop: 12,
+};
+
+const rankingTabsStyle = {
+  display: "flex",
+  gap: 8,
+  overflowX: "auto",
+  paddingBottom: 10,
+};
+
+const talentFilterRowStyle = {
+  display: "flex",
+  gap: 8,
+  overflowX: "auto",
+  padding: "8px 0 14px",
+};
+
+const filterPillStyle = (active) => ({
+  border: "none",
+  borderRadius: 999,
+  padding: "9px 12px",
+  background: active ? "#d8a928" : "#111827",
+  color: active ? "#050505" : "#fff",
+  fontWeight: 800,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+});
+
+const videoDiscoveryCardStyle = (compact) => ({
+  border: "none",
+  padding: 0,
+  overflow: "hidden",
+  borderRadius: compact ? 12 : 18,
+  background: "#101010",
+  color: "#fff",
+  textAlign: "left",
+  cursor: "pointer",
+});
+
+const videoDiscoveryThumbStyle = (compact) => ({
+  height: compact ? 124 : 188,
+  backgroundSize: "cover",
+  backgroundPosition: "center",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+});
+
+const videoDiscoveryPlayStyle = {
+  fontSize: 22,
+  color: "#fff",
+};
+
+const videoDiscoveryMetaStyle = (compact) => ({
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  padding: compact ? 7 : 10,
+});
+
+const videoDiscoveryTitleStyle = (compact) => ({
+  fontSize: compact ? 11 : 14,
+  lineHeight: 1.25,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: compact ? "nowrap" : "normal",
+});
+
+const videoDiscoveryTextStyle = (compact) => ({
+  color: "rgba(255,255,255,0.68)",
+  fontSize: compact ? 9 : 12,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+});
+
+const videoDiscoveryMetricStyle = (compact) => ({
+  color: "#d8a928",
+  fontSize: compact ? 9 : 11,
+  fontWeight: 800,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+});
 
 const emptyCategoryPageStyle = {
   minHeight: "100vh",
@@ -2063,6 +2311,14 @@ const leftInfoStyle = {
   pointerEvents: "none",
 };
 
+const creatorNameLineStyle = {
+  margin: "0 0 4px",
+  fontSize: 14,
+  fontWeight: 900,
+  color: "#fff",
+  textShadow: "0 2px 8px rgba(0,0,0,0.72)",
+};
+
 const iconActionWrapStyle = {
   position: "relative",
 };
@@ -2137,11 +2393,13 @@ const sideRailCountStyle = {
 
 const footerSecondaryActionsStyle = {
   position: "absolute",
-  right: "clamp(12px, 2.4vw, 24px)",
-  bottom: "max(18px, calc(env(safe-area-inset-bottom, 0px) + 18px))",
+  left: "50%",
+  right: "auto",
+  bottom: "max(14px, calc(env(safe-area-inset-bottom, 0px) + 14px))",
+  transform: "translateX(-50%)",
   display: "flex",
   alignItems: "center",
-  gap: "clamp(10px, 2vw, 14px)",
+  gap: "clamp(18px, 4vw, 28px)",
   zIndex: 100,
   padding: "4px 0",
   pointerEvents: "auto",
@@ -2153,13 +2411,13 @@ const footerSecondaryButtonStyle = {
   alignItems: "center",
   justifyContent: "center",
   gap: 8,
-  width: 34,
-  height: 34,
+  width: 42,
+  height: 42,
   padding: 0,
   background: "transparent",
   border: "none",
   color: "#fff",
-  fontSize: 16,
+  fontSize: 21,
   fontWeight: 800,
   cursor: "pointer",
   pointerEvents: "auto",
@@ -2233,6 +2491,21 @@ const rightActionsStyle = {
   pointerEvents: "auto",
 };
 
+const footerVoteIconWrapStyle = {
+  display: "grid",
+  justifyItems: "center",
+  gap: 0,
+  lineHeight: 1,
+};
+
+const supportTrayCenterIconStyle = {
+  display: "grid",
+  placeItems: "center",
+  fontSize: 48,
+  lineHeight: 1,
+  padding: "8px 0",
+};
+
 const supportOverlayStyle = {
   position: "fixed",
   inset: 0,
@@ -2244,6 +2517,17 @@ const supportOverlayStyle = {
   padding: 20,
 };
 
+const supportFloatingOverlayStyle = {
+  position: "fixed",
+  inset: 0,
+  background: "transparent",
+  display: "flex",
+  alignItems: "flex-end",
+  justifyContent: "center",
+  zIndex: 2000,
+  padding: "12px 12px clamp(132px, 22vh, 220px)",
+};
+
 const supportCardStyle = {
   width: "min(760px, 100%)",
   maxHeight: "85vh",
@@ -2252,6 +2536,14 @@ const supportCardStyle = {
   color: "#101828",
   borderRadius: 14,
   padding: 22,
+};
+
+const supportFloatingCardStyle = {
+  width: "min(760px, 100%)",
+  color: "#fff",
+  borderRadius: 20,
+  padding: 12,
+  background: "transparent",
 };
 
 const supportHeaderRowStyle = {
@@ -2511,6 +2803,128 @@ const supportCostPillStyle = {
   color: "#344054",
   fontSize: 12,
   fontWeight: 700,
+};
+
+const supportTrayStyle = {
+  display: "grid",
+  gap: 14,
+  padding: 16,
+  borderRadius: 22,
+  background: "linear-gradient(145deg, rgba(15,23,42,0.62), rgba(4,10,20,0.54))",
+  border: "1px solid rgba(234, 179, 8, 0.18)",
+  boxShadow: "0 22px 60px rgba(0,0,0,0.32)",
+  color: "#fff",
+};
+
+const supportTraySubtitleStyle = {
+  margin: 0,
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 13,
+  lineHeight: 1.35,
+};
+
+const supportTrayWaterStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 14,
+  padding: "4px 0",
+  border: "none",
+  background: "transparent",
+  color: "#fff",
+  textAlign: "left",
+  cursor: "pointer",
+};
+
+const supportTrayBigIconStyle = {
+  fontSize: 42,
+  lineHeight: 1,
+};
+
+const supportTrayTextStyle = {
+  margin: "5px 0",
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 12,
+};
+
+const supportTrayCostStyle = {
+  display: "inline-flex",
+  padding: "5px 9px",
+  borderRadius: 999,
+  background: "rgba(234,179,8,0.2)",
+  color: "#facc15",
+  fontSize: 12,
+  fontWeight: 800,
+};
+
+const supportTrayScrollerStyle = {
+  display: "flex",
+  gap: 18,
+  overflowX: "auto",
+  paddingBottom: 4,
+};
+
+const supportTrayNoteStyle = (active) => ({
+  minWidth: 82,
+  display: "grid",
+  justifyItems: "center",
+  gap: 5,
+  padding: "6px 0",
+  border: "none",
+  background: "transparent",
+  color: active ? "#facc15" : "#fff",
+  cursor: "pointer",
+});
+
+const supportTrayNoteImageStyle = {
+  width: 56,
+  height: 34,
+  objectFit: "contain",
+};
+
+const supportTrayBottleGridStyle = {
+  display: "flex",
+  gap: 18,
+  overflowX: "auto",
+  paddingBottom: 4,
+};
+
+const supportTrayBottleStyle = (active) => ({
+  display: "grid",
+  gap: 4,
+  justifyItems: "center",
+  minWidth: 78,
+  padding: "6px 0",
+  border: "none",
+  background: "transparent",
+  color: active ? "#facc15" : "#fff",
+  cursor: "pointer",
+});
+
+const supportTrayBottleIconStyle = {
+  fontSize: 24,
+  lineHeight: 1,
+};
+
+const supportTrayConfirmStyle = {
+  border: "none",
+  borderRadius: 999,
+  padding: "12px 18px",
+  background: "#eab308",
+  color: "#0f172a",
+  fontSize: 15,
+  fontWeight: 900,
+  cursor: "pointer",
+};
+
+const supportWalletCtaStyle = {
+  border: "none",
+  borderRadius: 999,
+  padding: "11px 16px",
+  background: "#eab308",
+  color: "#0f172a",
+  fontSize: 14,
+  fontWeight: 900,
+  cursor: "pointer",
 };
 
 const supportInputStyle = {

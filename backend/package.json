@@ -9,6 +9,7 @@
     "start": "node src/index.js",
     "play:create-products": "node src/scripts/createPlayProducts.js",
     "admin:set-claim": "node src/scripts/setAdminClaim.js",
+    "video:backfill-thumbnails": "node src/scripts/backfillVideoThumbnails.js",
     "test": "vitest run"
   },
   "dependencies": {

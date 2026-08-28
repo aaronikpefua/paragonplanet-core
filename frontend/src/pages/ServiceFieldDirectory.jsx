@@ -21,7 +21,7 @@ const SERVICE_FIELDS = [
   { name: "Religion", emoji: "🙏" },
 ];
 
-const TESTIMONIAL_GROUPS = [
+const SUPERBOSS_TESTIMONIAL_GROUPS = [
   { key: "students", label: "Students" },
   { key: "tutees", label: "Tutees" },
   { key: "trainees", label: "Trainees" },
@@ -31,11 +31,21 @@ const TESTIMONIAL_GROUPS = [
   { key: "communityMembers", label: "Community Members" },
 ];
 
+const BACKER_TESTIMONIAL_GROUPS = [
+  { key: "clients", label: "Clients" },
+  { key: "customers", label: "Customers" },
+  { key: "consumers", label: "Consumers" },
+  { key: "patients", label: "Patient" },
+  { key: "followers", label: "Followers" },
+  { key: "beneficiaries", label: "Beneficiaries" },
+  { key: "communityMembers", label: "Community Members" },
+];
+
 const DIRECTORY_CONFIG = {
   supernal: {
-    eyebrow: "The Mentors",
-    title: "The Mentors for Superbosses",
-    description: "Select a field of Discipline to see Superbosses in that field and their trust scores.",
+    eyebrow: "",
+    title: "The Candidates for Paragon Planet Superbosses",
+    description: "Select a field of discipline to find your former educators, or add an educator who positively influenced your life. Comment on their impact, express your appreciation, and vote for outstanding educators to help them qualify for the Superboss competition on Paragon Planet.",
     fieldPrompt: "Fields of Discipline",
     collectionName: "supernal_profiles",
     roleLabel: "Superboss",
@@ -43,9 +53,9 @@ const DIRECTORY_CONFIG = {
   },
   backer: {
     eyebrow: "",
-    title: "The Backer Contestants",
+    title: "The Aspirants for Paragon Planet Backer",
     description: "",
-    fieldPrompt: "Select a field of service to see Backer Contestants in that field and their scores.",
+    fieldPrompt: "Select a field of service to find professionals, or introduce a professional who has made a positive impact or rendered valuable service in your life. Share your experience, express your appreciation, and vote for deserving professionals to help them qualify for the Backer competition on Paragon Planet.",
     collectionName: "backer_profiles",
     roleLabel: "Backer Contestant",
     emptyText: "No Backer Contestants found in this field yet.",
@@ -58,29 +68,43 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
   const [searchParams] = useSearchParams();
   const selectedField = searchParams.get("field") || "";
   const config = DIRECTORY_CONFIG[type] || DIRECTORY_CONFIG.supernal;
+  const shareInvite = async () => {
+    const text = "Join me on Paragon Planet on Google Play: https://play.google.com/store/apps/details?id=com.app.natureswayproduction";
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "Paragon Planet Invite", text, url: "https://play.google.com/store/apps/details?id=com.app.natureswayproduction" });
+        return;
+      } catch {
+        // Fall back to clipboard below when share is unavailable or cancelled.
+      }
+    }
+    await navigator.clipboard?.writeText(text);
+  };
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [testimonials, setTestimonials] = useState([]);
+  const [questions, setQuestions] = useState([]);
+  const [attempts, setAttempts] = useState([]);
   const [testimonialDrafts, setTestimonialDrafts] = useState({});
   const [submittingTestimonialId, setSubmittingTestimonialId] = useState("");
   const [donationDrafts, setDonationDrafts] = useState({});
   const [submittingDonationId, setSubmittingDonationId] = useState("");
   const [testimonialNotice, setTestimonialNotice] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [submittingVoteId, setSubmittingVoteId] = useState("");
+  const [activeCommentProfileId, setActiveCommentProfileId] = useState("");
+  const [visibleSections, setVisibleSections] = useState({});
+  const [expandedScores, setExpandedScores] = useState({});
 
   useEffect(() => {
     const loadProfiles = async () => {
-      if (!selectedField) {
-        setProfiles([]);
-        return;
-      }
-
       setLoading(true);
       try {
         const snapshot = await getDocs(collection(db, config.collectionName));
         setProfiles(
           snapshot.docs
             .map((docSnap) => ({ id: docSnap.id, uid: docSnap.id, ...docSnap.data() }))
-            .filter((profile) => hasServiceField(profile, selectedField))
             .sort((a, b) => getProfileScore(b, type) - getProfileScore(a, type))
         );
       } catch (error) {
@@ -92,16 +116,19 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
     };
 
     loadProfiles();
-  }, [config.collectionName, config.title, selectedField, type]);
+  }, [config.collectionName, config.title, type]);
 
   useEffect(() => {
-    if (type !== "supernal" || !selectedField) {
+    if (!selectedField && !searchTerm) {
       setTestimonials([]);
+      setAttempts([]);
       return;
     }
 
-    loadTestimonials(selectedField).then(setTestimonials).catch(() => setTestimonials([]));
-  }, [selectedField, type]);
+    loadTestimonials(type, selectedField).then(setTestimonials).catch(() => setTestimonials([]));
+    loadQuestions(type, selectedField).then(setQuestions).catch(() => setQuestions([]));
+    loadAttempts(type).then(setAttempts).catch(() => setAttempts([]));
+  }, [selectedField, searchTerm, type]);
 
   const selectedTitle = useMemo(
     () => SERVICE_FIELDS.find((field) => field.name === selectedField)?.name || selectedField,
@@ -113,10 +140,11 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
   };
 
   const updateTestimonialDraft = (profileId, updates) => {
+    const defaultRelationship = type === "backer" ? "clients" : "students";
     setTestimonialDrafts((current) => ({
       ...current,
       [profileId]: {
-        relationship: "students",
+        relationship: defaultRelationship,
         comment: "",
         ...(current[profileId] || {}),
         ...updates,
@@ -132,12 +160,12 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
     }
 
     if (user.uid === profile.uid) {
-      setTestimonialNotice("You cannot submit a testimonial for your own Superboss profile.");
+      setTestimonialNotice(`You cannot submit a comment for your own ${config.roleLabel} profile.`);
       return;
     }
 
     const draft = testimonialDrafts[profile.uid] || {};
-    const relationship = draft.relationship || "students";
+    const relationship = draft.relationship || (type === "backer" ? "clients" : "students");
     const comment = String(draft.comment || "").trim();
 
     if (!comment) {
@@ -149,9 +177,12 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
     setTestimonialNotice("");
 
     try {
-      await addDoc(collection(db, "supernal_testimonials"), {
-        supernalId: profile.uid,
-        supernalName: getDisplayName(profile, "Superboss"),
+      const collectionName = type === "supernal" ? "supernal_testimonials" : "backer_testimonials";
+      const profileIdKey = type === "supernal" ? "supernalId" : "backerId";
+      const profileNameKey = type === "supernal" ? "supernalName" : "backerName";
+      await addDoc(collection(db, collectionName), {
+        [profileIdKey]: profile.uid,
+        [profileNameKey]: getDisplayName(profile, config.roleLabel),
         field: selectedField,
         relationship,
         relationshipLabel: testimonialLabel(relationship),
@@ -163,10 +194,10 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
       });
 
       updateTestimonialDraft(profile.uid, { comment: "" });
-      setTestimonials(await loadTestimonials(selectedField));
+      setTestimonials(await loadTestimonials(type, selectedField));
       setTestimonialNotice("Appreciation submitted.");
     } catch (error) {
-      console.error("Superboss testimonial failed:", error);
+      console.error(`${config.roleLabel} comment failed:`, error);
       setTestimonialNotice("Could not submit this appreciation right now.");
     } finally {
       setSubmittingTestimonialId("");
@@ -188,7 +219,7 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
     }
 
     if (user.uid === profile.uid) {
-      setTestimonialNotice("You cannot donate to your own Superboss profile.");
+      setTestimonialNotice(`You cannot donate to your own ${config.roleLabel} profile.`);
       return;
     }
 
@@ -203,13 +234,9 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
 
     try {
       const token = await user.getIdToken();
-      const response = await appCheckFetch(`${API_URL}/support/superboss/${profile.uid}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ amountParag }),
+      const response = await supportProfileRequest(type, profile.uid, token, {
+        actionKey: "donate",
+        amountParag,
       });
       const data = await response.json();
 
@@ -218,7 +245,7 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
       }
 
       updateDonationDraft(profile.uid, "");
-      setTestimonialNotice(`${amountParag} PARAG donated to ${getDisplayName(profile, "this Superboss")}.`);
+      setTestimonialNotice(`${amountParag} PARAG donated to ${getDisplayName(profile, config.roleLabel)}.`);
     } catch (error) {
       const message = error.message || "Could not complete this donation right now.";
       setTestimonialNotice(message);
@@ -230,6 +257,83 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
     }
   };
 
+  const submitVote = async (profile) => {
+    const user = auth.currentUser;
+    if (!user) {
+      navigate("/signup");
+      return;
+    }
+
+    if (user.uid === profile.uid) {
+      setTestimonialNotice(`You cannot vote for your own ${config.roleLabel} profile.`);
+      return;
+    }
+
+    setSubmittingVoteId(profile.uid);
+    setTestimonialNotice("");
+    try {
+      const token = await user.getIdToken();
+      const response = await supportProfileRequest(type, profile.uid, token, {
+        actionKey: "vote",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Vote failed.");
+      }
+
+      setProfiles((current) =>
+        current.map((item) =>
+          item.uid === profile.uid
+            ? { ...item, score: getProfileScore(item, type) + 1, votes: Number(item.votes || 0) + 1 }
+            : item
+        )
+      );
+      setTestimonialNotice(`1 PARAG vote recorded for ${getDisplayName(profile, config.roleLabel)}.`);
+    } catch (error) {
+      const message = error.message || "Could not record this vote right now.";
+      setTestimonialNotice(message);
+      if (shouldRedirectToWallet(message)) {
+        navigate("/wallet?deposit=1");
+      }
+    } finally {
+      setSubmittingVoteId("");
+    }
+  };
+
+  const filteredProfiles = useMemo(() => {
+    const needle = normalize(searchTerm);
+    const fieldProfiles = selectedField
+      ? profiles.filter((profile) => hasServiceField(profile, selectedField))
+      : profiles;
+    if (!needle) return fieldProfiles;
+
+    return profiles.filter((profile) =>
+      [
+        getDisplayName(profile, config.roleLabel),
+        profile.profession,
+        profile.businessName,
+        profile.country,
+        formatServiceDisplay(profile),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle)
+    );
+  }, [config.roleLabel, profiles, searchTerm, selectedField]);
+
+  async function supportProfileRequest(profileType, profileId, token, body) {
+    const rolePath = profileType === "supernal" ? "superboss" : "backer";
+    return appCheckFetch(`${API_URL}/support/${rolePath}/${profileId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      body: JSON.stringify(body),
+      });
+  }
+
   return (
     <main style={pageStyle}>
       <section style={heroStyle}>
@@ -239,7 +343,7 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
           {config.description && <p style={mutedStyle}>{config.description}</p>}
           {type === "supernal" && (
             <details style={aboutDetailsStyle}>
-              <summary style={aboutSummaryStyle}>About Superbosses</summary>
+              <summary style={aboutSummaryStyle}>About Superbosses Candidates</summary>
               <div style={aboutBodyStyle}>
                 <SuperbossAboutContent
                   footer={
@@ -257,7 +361,7 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
           )}
           {type === "backer" && (
             <details style={aboutDetailsStyle}>
-              <summary style={aboutSummaryStyle}>About Backer Contestants</summary>
+              <summary style={aboutSummaryStyle}>About Backer Aspirants</summary>
               <div style={aboutBodyStyle}>
                 <BackerAboutContent
                   footer={
@@ -273,6 +377,13 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
               </div>
             </details>
           )}
+          <button
+            type="button"
+            onClick={shareInvite}
+            style={joinButtonStyle}
+          >
+            Invite {type === "supernal" ? "Superboss" : "Backer"}
+          </button>
         </div>
         <div style={heroButtonRowStyle}>
           <button type="button" onClick={() => navigate(-1)} style={secondaryButtonStyle}>
@@ -285,6 +396,135 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
           )}
         </div>
       </section>
+
+      <section style={panelStyle}>
+        <input
+          type="search"
+          value={searchDraft}
+          onChange={(event) => setSearchDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              setSearchTerm(searchDraft);
+            }
+          }}
+          placeholder={`Search ${config.roleLabel.toLowerCase()}s by name, field, or profession`}
+          style={searchInputStyle}
+        />
+        <div style={searchActionRowStyle}>
+          <button type="button" onClick={() => setSearchTerm(searchDraft)} style={secondaryButtonStyle}>
+            Search
+          </button>
+          {(searchDraft || searchTerm) && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchDraft("");
+                setSearchTerm("");
+              }}
+              style={secondaryButtonStyle}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </section>
+
+      {(selectedField || searchTerm) && (
+        <section style={panelStyle}>
+          <div style={resultHeaderStyle}>
+            <div>
+              <p style={eyebrowStyle}>{selectedField ? selectedTitle : "Search Results"}</p>
+              <h2 style={sectionTitleStyle}>
+                {selectedField ? `${config.roleLabel}s in ${selectedTitle}` : `${config.roleLabel}s matching your search`}
+              </h2>
+            </div>
+            <span style={countBadgeStyle}>{filteredProfiles.length} found</span>
+          </div>
+          {loading ? (
+              <p style={mutedStyle}>Loading {config.roleLabel.toLowerCase()}s...</p>
+          ) : filteredProfiles.length === 0 ? (
+            <p style={mutedStyle}>{profiles.length === 0 ? config.emptyText : "No matching profiles found."}</p>
+          ) : (
+            <div style={profileGridStyle}>
+              {filteredProfiles.map((profile, index) => (
+                <article key={profile.id} style={profileCardStyle}>
+                  {(() => {
+                    const profileQuestions = questions.filter((item) => item.ownerId === profile.uid);
+                    const profileAttempts = attempts.filter(
+                      (item) => item.ownerId === profile.uid || item.responderId === profile.uid
+                    );
+                    const scoreStats = buildQuestionStats(profile.uid, profileQuestions, profileAttempts);
+                    return (
+                      <>
+                  <div style={profileMainStyle}>
+                    <span style={rankStyle}>#{index + 1}</span>
+                    <h3 style={profileNameStyle}>{getDisplayName(profile, config.roleLabel)}</h3>
+                    <p style={mutedStyle}>{profile.profession || profile.businessName || profile.country || config.roleLabel}</p>
+                    <p style={fieldTextStyle}>{formatServiceDisplay(profile)}</p>
+                    <SupportActionPanel
+                      roleLabel={config.roleLabel}
+                      type={type}
+                        profile={profile}
+                      testimonials={testimonials.filter((item) => item.profileId === profile.uid)}
+                      questions={profileQuestions}
+                      visibleSections={visibleSections[profile.uid] || {}}
+                      onToggleSection={(section) =>
+                        setVisibleSections((current) => ({
+                          ...current,
+                          [profile.uid]: {
+                            ...(current[profile.uid] || {}),
+                            [section]: !(current[profile.uid] || {})[section],
+                          },
+                        }))
+                      }
+                        draft={testimonialDrafts[profile.uid] || { relationship: type === "backer" ? "clients" : "students", comment: "" }}
+                        onDraftChange={(updates) => updateTestimonialDraft(profile.uid, updates)}
+                        onSubmit={() => submitTestimonial(profile)}
+                        submitting={submittingTestimonialId === profile.uid}
+                        donationAmount={donationDrafts[profile.uid] || ""}
+                        onDonationChange={(value) => updateDonationDraft(profile.uid, value)}
+                      onDonate={() => submitDonation(profile)}
+                        donating={submittingDonationId === profile.uid}
+                      onVote={() => submitVote(profile)}
+                      voting={submittingVoteId === profile.uid}
+                      showCommentBox={activeCommentProfileId === profile.uid}
+                      onToggleCommentBox={() =>
+                        setActiveCommentProfileId((current) => (current === profile.uid ? "" : profile.uid))
+                      }
+                      />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedScores((current) => ({
+                        ...current,
+                        [profile.uid]: !current[profile.uid],
+                      }))
+                    }
+                    style={scoreBoxStyle}
+                  >
+                    <span style={scoreHintStyle}>{expandedScores[profile.uid] ? "Hide scores" : "View scores"}</span>
+                  </button>
+                  {expandedScores[profile.uid] && (
+                    <div style={scoreStatsGridStyle}>
+                      {scoreStats.map((item) => (
+                        <div key={item.label} style={scoreStatPillStyle}>
+                          <span>{item.label}</span>
+                          <strong>{item.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                      </>
+                    );
+                  })()}
+                </article>
+              ))}
+            </div>
+          )}
+          {testimonialNotice ? <p style={noticeStyle}>{testimonialNotice}</p> : null}
+        </section>
+      )}
 
       <section style={panelStyle}>
         <h2 style={sectionTitleStyle}>
@@ -304,63 +544,18 @@ export default function ServiceFieldDirectory({ type = "supernal" }) {
           ))}
         </div>
       </section>
-
-      {selectedField && (
-        <section style={panelStyle}>
-          <div style={resultHeaderStyle}>
-            <div>
-              <p style={eyebrowStyle}>{selectedTitle}</p>
-              <h2 style={sectionTitleStyle}>{config.roleLabel}s in {selectedTitle}</h2>
-            </div>
-            <span style={countBadgeStyle}>{profiles.length} found</span>
-          </div>
-
-          {loading ? (
-              <p style={mutedStyle}>Loading {config.roleLabel.toLowerCase()}s...</p>
-          ) : profiles.length === 0 ? (
-            <p style={mutedStyle}>{config.emptyText}</p>
-          ) : (
-            <div style={profileGridStyle}>
-              {profiles.map((profile, index) => (
-                <article key={profile.id} style={profileCardStyle}>
-                  <div style={profileMainStyle}>
-                    <span style={rankStyle}>#{index + 1}</span>
-                    <h3 style={profileNameStyle}>{getDisplayName(profile, config.roleLabel)}</h3>
-                    <p style={mutedStyle}>{profile.profession || profile.businessName || profile.country || config.roleLabel}</p>
-                    <p style={fieldTextStyle}>{formatServiceDisplay(profile)}</p>
-                    {type === "supernal" ? (
-                      <SuperbossTestimonialPanel
-                        profile={profile}
-                        testimonials={testimonials.filter((item) => item.supernalId === profile.uid)}
-                        draft={testimonialDrafts[profile.uid] || { relationship: "students", comment: "" }}
-                        onDraftChange={(updates) => updateTestimonialDraft(profile.uid, updates)}
-                        onSubmit={() => submitTestimonial(profile)}
-                        submitting={submittingTestimonialId === profile.uid}
-                        donationAmount={donationDrafts[profile.uid] || ""}
-                        onDonationChange={(value) => updateDonationDraft(profile.uid, value)}
-                        onDonate={() => submitDonation(profile)}
-                        donating={submittingDonationId === profile.uid}
-                      />
-                    ) : null}
-                  </div>
-                  <div style={scoreBoxStyle}>
-                    <span style={scoreLabelStyle}>Score</span>
-                    <strong style={scoreValueStyle}>{getProfileScore(profile, type)}</strong>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-          {testimonialNotice ? <p style={noticeStyle}>{testimonialNotice}</p> : null}
-        </section>
-      )}
     </main>
   );
 }
 
-function SuperbossTestimonialPanel({
+function SupportActionPanel({
+  roleLabel,
+  type,
   profile,
   testimonials,
+  questions,
+  visibleSections,
+  onToggleSection,
   draft,
   onDraftChange,
   onSubmit,
@@ -369,24 +564,42 @@ function SuperbossTestimonialPanel({
   onDonationChange,
   onDonate,
   donating,
+  onVote,
+  voting,
+  showCommentBox,
+  onToggleCommentBox,
 }) {
   const counts = countTestimonialsByRelationship(testimonials);
+  const testimonialGroups = type === "backer" ? BACKER_TESTIMONIAL_GROUPS : SUPERBOSS_TESTIMONIAL_GROUPS;
+  const showTestimonials = Boolean(visibleSections.testimonies);
   const recentTestimonials = [...testimonials]
     .sort((first, second) => timestampMillis(second.createdAt) - timestampMillis(first.createdAt))
     .slice(0, 3);
+  const answeredQuestions = questions.filter((item) => item.answeredCorrectly || item.answeredBy);
+  const openQuestions = questions.filter((item) => !item.answeredCorrectly && !item.answeredBy);
 
   return (
     <section style={testimonialPanelStyle}>
       <div style={testimonialHeaderStyle}>
         <div>
           <p style={testimonialEyebrowStyle}>Public appreciation</p>
-          <h4 style={testimonialTitleStyle}>Comment for {getDisplayName(profile, "this Superboss")}</h4>
+          <h4 style={testimonialTitleStyle}>Comment for {getDisplayName(profile, `this ${roleLabel}`)}</h4>
         </div>
-        <span style={testimonialTotalStyle}>{testimonials.length} testimonials</span>
+        <span style={testimonialTotalStyle}>{testimonials.length} testimonies</span>
       </div>
 
-      <div style={testimonialGroupGridStyle}>
-        {TESTIMONIAL_GROUPS.map((group) => (
+      <div style={actionButtonRowStyle}>
+        <button type="button" onClick={() => onToggleSection("comments")} style={secondaryMiniButtonStyle}>
+          {visibleSections.comments ? "Hide Comments" : "View Comments"}
+        </button>
+        <button type="button" onClick={() => onToggleSection("testimonies")} style={secondaryMiniButtonStyle}>
+          {showTestimonials ? "Hide Testimonies" : "Testimonies"}
+        </button>
+      </div>
+
+      {showTestimonials && (
+        <div style={testimonialGroupGridStyle}>
+        {testimonialGroups.map((group) => (
           <button
             key={group.key}
             type="button"
@@ -397,22 +610,36 @@ function SuperbossTestimonialPanel({
             <strong>{counts[group.key] || 0}</strong>
           </button>
         ))}
+        </div>
+      )}
+
+      <div style={actionButtonRowStyle}>
+        <button type="button" onClick={onVote} disabled={voting} style={testimonialSubmitStyle}>
+          {voting ? "Voting..." : "Vote 1 PARAG"}
+        </button>
+        <button type="button" onClick={onToggleCommentBox} style={testimonialSubmitStyle}>
+          Comment
+        </button>
       </div>
 
-      <textarea
-        value={draft.comment || ""}
-        onChange={(event) => onDraftChange({ comment: event.target.value })}
-        placeholder={`Write an appreciation as ${testimonialLabel(draft.relationship || "students").toLowerCase()}...`}
-        style={testimonialTextAreaStyle}
-        rows={3}
-      />
-      <button type="button" onClick={onSubmit} disabled={submitting} style={testimonialSubmitStyle}>
-        {submitting ? "Submitting..." : "Submit Appreciation"}
-      </button>
+      {showCommentBox && (
+        <div style={commentBoxStyle}>
+          <textarea
+            value={draft.comment || ""}
+            onChange={(event) => onDraftChange({ comment: event.target.value })}
+            placeholder={`Write an appreciation as ${testimonialLabel(draft.relationship || "students").toLowerCase()}...`}
+            style={testimonialTextAreaStyle}
+            rows={3}
+          />
+          <button type="button" onClick={onSubmit} disabled={submitting} style={testimonialSubmitStyle}>
+            {submitting ? "Submitting..." : "Submit Comment"}
+          </button>
+        </div>
+      )}
 
       <div style={donationBoxStyle}>
         <div>
-          <strong>Donate to support {getDisplayName(profile, "this Superboss")}</strong>
+          <strong>Donate to support {getDisplayName(profile, `this ${roleLabel}`)}</strong>
         </div>
         <div style={donationActionStyle}>
           <input
@@ -429,7 +656,7 @@ function SuperbossTestimonialPanel({
         </div>
       </div>
 
-      {recentTestimonials.length ? (
+      {visibleSections.comments && (recentTestimonials.length ? (
         <div style={recentTestimonialListStyle}>
           {recentTestimonials.map((item) => (
             <article key={item.id} style={recentTestimonialStyle}>
@@ -440,15 +667,38 @@ function SuperbossTestimonialPanel({
         </div>
       ) : (
         <p style={testimonialEmptyStyle}>No public appreciation yet.</p>
+      ))}
+
+      {visibleSections.questions && (
+        <div style={recentTestimonialListStyle}>
+          {openQuestions.length ? openQuestions.map((item) => (
+            <article key={item.id} style={recentTestimonialStyle}>
+              <strong>Question Asked</strong>
+              <p>{item.questionText || "Untitled question"}</p>
+            </article>
+          )) : <p style={testimonialEmptyStyle}>No open questions asked yet.</p>}
+        </div>
+      )}
+
+      {visibleSections.answers && (
+        <div style={recentTestimonialListStyle}>
+          {answeredQuestions.length ? answeredQuestions.map((item) => (
+            <article key={item.id} style={recentTestimonialStyle}>
+              <strong>Answered by {safeName(item.answeredByName) || "Member"}</strong>
+              <p>{item.questionText || "Untitled question"}</p>
+            </article>
+          )) : <p style={testimonialEmptyStyle}>No answered questions yet.</p>}
+        </div>
       )}
     </section>
   );
 }
 
-async function loadTestimonials(field) {
+async function loadTestimonials(type, field) {
+  const collectionName = type === "supernal" ? "supernal_testimonials" : "backer_testimonials";
   const testimonialSnap = await getDocs(
     query(
-      collection(db, "supernal_testimonials"),
+      collection(db, collectionName),
       where("status", "==", "published")
     )
   );
@@ -458,7 +708,50 @@ async function loadTestimonials(field) {
       id: docSnap.id,
       ...docSnap.data(),
     }))
+    .map((item) => ({
+      ...item,
+      profileId: type === "supernal" ? item.supernalId : item.backerId,
+    }))
     .filter((item) => item.field === field);
+}
+
+async function loadQuestions(type, field) {
+  const collectionName = type === "supernal" ? "superboss_challenges" : "backer_questions";
+  const snapshot = await getDocs(collection(db, collectionName));
+  return snapshot.docs
+    .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+    .filter((item) => {
+      const ownerFields = [
+        ...(Array.isArray(item.serviceFields) ? item.serviceFields : []),
+        ...(Array.isArray(item.knowledgeFields) ? item.knowledgeFields : []),
+        item.field,
+        item.serviceField,
+      ].filter(Boolean);
+      return !field || ownerFields.length === 0 || ownerFields.some((value) => normalize(String(value).split(":")[0]) === normalize(field));
+    });
+}
+
+async function loadAttempts(type) {
+  const collectionName = type === "supernal" ? "superboss_challenge_attempts" : "backer_question_attempts";
+  const snapshot = await getDocs(collection(db, collectionName));
+  return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+}
+
+function buildQuestionStats(profileId, questions, attempts) {
+  const ownAttempts = attempts.filter((item) => item.ownerId === profileId);
+  const otherAttempts = attempts.filter((item) => item.responderId === profileId && item.ownerId !== profileId);
+  const touchedQuestionIds = new Set(ownAttempts.map((item) => item.questionId).filter(Boolean));
+  return [
+    { label: "Set", value: questions.length },
+    { label: "Solved", value: questions.filter((item) => item.answeredCorrectly || item.answeredBy).length },
+    { label: "Failed", value: ownAttempts.filter((item) => item.didTimeout || !item.isCorrect).length },
+    {
+      label: "Untouched",
+      value: questions.filter((item) => !item.answeredCorrectly && !item.answeredBy && !touchedQuestionIds.has(item.id)).length,
+    },
+    { label: "My Fails", value: otherAttempts.filter((item) => item.didTimeout || !item.isCorrect).length },
+    { label: "My Solves", value: otherAttempts.filter((item) => item.isCorrect).length },
+  ];
 }
 
 function hasServiceField(profile, field) {
@@ -514,7 +807,7 @@ function safeName(name) {
 }
 
 function testimonialLabel(key) {
-  return TESTIMONIAL_GROUPS.find((group) => group.key === key)?.label || "Community Members";
+  return [...SUPERBOSS_TESTIMONIAL_GROUPS, ...BACKER_TESTIMONIAL_GROUPS].find((group) => group.key === key)?.label || "Community Members";
 }
 
 function shouldRedirectToWallet(message) {
@@ -624,6 +917,24 @@ const fieldGridStyle = {
   gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
   gap: 12,
   marginTop: 14,
+};
+
+const searchInputStyle = {
+  width: "100%",
+  boxSizing: "border-box",
+  marginBottom: 10,
+  padding: "13px 15px",
+  borderRadius: 12,
+  border: "1px solid #2f2f2f",
+  background: "#050505",
+  color: "#fff",
+  font: "inherit",
+};
+
+const searchActionRowStyle = {
+  display: "flex",
+  gap: 10,
+  marginBottom: 16,
 };
 
 const fieldButtonStyle = (active) => ({
@@ -788,6 +1099,27 @@ const testimonialSubmitStyle = {
   cursor: "pointer",
 };
 
+const actionButtonRowStyle = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const secondaryMiniButtonStyle = {
+  padding: "8px 11px",
+  borderRadius: 999,
+  border: "1px solid #2f2f2f",
+  background: "#050505",
+  color: "#f3efe6",
+  fontWeight: 800,
+  cursor: "pointer",
+};
+
+const commentBoxStyle = {
+  display: "grid",
+  gap: 10,
+};
+
 const donationBoxStyle = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -857,9 +1189,11 @@ const scoreBoxStyle = {
   minWidth: 92,
   padding: 12,
   borderRadius: 10,
+  border: "none",
   background: "#f3efe6",
   color: "#101828",
   textAlign: "center",
+  cursor: "pointer",
 };
 
 const scoreLabelStyle = {
@@ -869,7 +1203,35 @@ const scoreLabelStyle = {
 };
 
 const scoreValueStyle = {
+  display: "block",
   fontSize: 28,
+};
+
+const scoreHintStyle = {
+  display: "block",
+  marginTop: 4,
+  fontSize: 11,
+  fontWeight: 800,
+};
+
+const scoreStatsGridStyle = {
+  gridColumn: "1 / -1",
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+  gap: 10,
+  marginTop: 12,
+};
+
+const scoreStatPillStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 10,
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid #2f2f2f",
+  background: "#050505",
+  color: "#f3efe6",
+  fontWeight: 800,
 };
 
 const secondaryButtonStyle = {

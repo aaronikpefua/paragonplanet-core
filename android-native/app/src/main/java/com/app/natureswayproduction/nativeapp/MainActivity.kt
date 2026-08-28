@@ -15,6 +15,7 @@ import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
 import com.app.natureswayproduction.nativeapp.data.auth.FacebookLoginCoordinator
+import com.app.natureswayproduction.nativeapp.data.auth.NativeXAuthCoordinator
 import com.app.natureswayproduction.nativeapp.data.billing.BillingRepository
 import com.app.natureswayproduction.nativeapp.feature.auth.AuthViewModel
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedRepository
@@ -23,6 +24,7 @@ import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpRepository
 import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpViewModel
 import com.app.natureswayproduction.nativeapp.feature.profile.ProfileRepository
 import com.app.natureswayproduction.nativeapp.feature.profile.ProfileViewModel
+import com.app.natureswayproduction.nativeapp.feature.realtime.PrivateVideoCallViewModel
 import com.app.natureswayproduction.nativeapp.feature.upload.UploadRepository
 import com.app.natureswayproduction.nativeapp.feature.upload.UploadViewModel
 import com.app.natureswayproduction.nativeapp.feature.wallet.WalletViewModel
@@ -32,6 +34,7 @@ import com.app.natureswayproduction.nativeapp.ui.theme.ParagonPlanetTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NativeXAuthCoordinator.handleCallback(intent?.data)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -68,6 +71,7 @@ class MainActivity : ComponentActivity() {
                 )
                 val profileViewModel: ProfileViewModel = viewModel(factory = ProfileViewModel.factory(profileRepository))
                 val meetUpViewModel: MeetUpViewModel = viewModel(factory = MeetUpViewModel.factory(meetUpRepository))
+                val privateVideoCallViewModel: PrivateVideoCallViewModel = viewModel(factory = PrivateVideoCallViewModel.factory(apiService, appCheckRepository))
                 val uploadViewModel: UploadViewModel = viewModel(factory = UploadViewModel.factory(uploadRepository))
                 ParagonApp(
                     authViewModel = authViewModel,
@@ -75,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     walletViewModel = walletViewModel,
                     profileViewModel = profileViewModel,
                     meetUpViewModel = meetUpViewModel,
+                    privateVideoCallViewModel = privateVideoCallViewModel,
                     uploadViewModel = uploadViewModel,
                 )
             }
@@ -84,6 +89,12 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        NativeXAuthCoordinator.handleCallback(intent.data)
     }
 
     @Deprecated("Required by the Facebook Android SDK callback flow")

@@ -20,6 +20,7 @@ export default function Explore() {
   const [supportModal, setSupportModal] = useState(null);
   const [processingSupportKey, setProcessingSupportKey] = useState("");
   const [customSprayAmount, setCustomSprayAmount] = useState("1");
+  const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -28,20 +29,23 @@ export default function Explore() {
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          const video = entry.target;
+          const slide = entry.target;
+          const video = slide.querySelector("video");
+          const index = Number(slide.dataset.videoIndex || 0);
 
           if (entry.isIntersecting) {
-            video.play().catch(() => {});
+            setActiveIndex(index);
+            video?.play().catch(() => {});
           } else {
-            video.pause();
+            video?.pause();
           }
         });
       },
       { threshold: 0.7 }
     );
 
-    const vids = containerRef.current.querySelectorAll("video");
-    vids.forEach((v) => observer.observe(v));
+    const slides = containerRef.current.querySelectorAll("[data-video-index]");
+    slides.forEach((slide) => observer.observe(slide));
 
     return () => observer.disconnect();
   }, [videos]);
@@ -132,9 +136,10 @@ export default function Explore() {
         background: "#000"
       }}
     >
-      {videos.map((video) => (
+      {videos.map((video, index) => (
         <div
           key={video.id}
+          data-video-index={index}
           style={{
             height: "100%",
             minHeight: "100%",
@@ -143,7 +148,10 @@ export default function Explore() {
           }}
           onDoubleClick={() => handleDoubleTap(video.id)}
         >
-          <VideoPlayer streamUrl={video.streamUrl} />
+          <VideoPlayer
+            streamUrl={video.streamUrl}
+            active={Math.abs(index - activeIndex) <= 1}
+          />
 
           {liked[video.id] && (
             <div
@@ -207,7 +215,7 @@ export default function Explore() {
               zIndex: 20
             }}
           >
-            <button onClick={() => handleVote(video.id)}>❤️</button>
+            <button onClick={() => handleVote(video.id)}>🗳️</button>
             <button>👀</button>
             <button>💬</button>
             <button onClick={() => openSupportModal(video.id, "spray")}>💸</button>
@@ -227,7 +235,7 @@ export default function Explore() {
             }}
           >
             <button onClick={() => handleVote(video.id)}>
-              {loadingVoteId === video.id ? "Sending Vote..." : "❤️ Vote"}
+              {loadingVoteId === video.id ? "Sending Vote..." : "🗳️ Vote"}
             </button>
             <button>👀 View</button>
             <button>💬 Comment</button>
@@ -241,7 +249,7 @@ export default function Explore() {
         <div style={overlayStyle}>
           <div style={modalStyle}>
             <h3 style={{ marginTop: 0 }}>
-              {supportModal.group === "spray" ? "Spray Support" : "Pop a Bottle 4 Me"}
+              {supportModal.group === "spray" ? "Spray Me Money" : "Pop Me a Bottle"}
             </h3>
 
             <div style={supportGridStyle}>
@@ -269,7 +277,7 @@ export default function Explore() {
                           onClick={() => handleSupport(supportModal.videoId, actionKey, { customParagAmount: customSprayAmount })}
                           style={btnStyle}
                         >
-                          {processingSupportKey === actionKey ? "Sending..." : "Spray Money"}
+                          {processingSupportKey === actionKey ? "Sending..." : "Spray Me Money"}
                         </button>
                       </>
                     ) : (
@@ -356,3 +364,4 @@ const supportInputStyle = {
   border: "1px solid #d0d5dd",
   marginBottom: 10
 };
+

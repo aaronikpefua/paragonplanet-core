@@ -1,14 +1,28 @@
 import { useEffect, useState } from "react";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { db } from "../config/firebase";
 
 export default function useVideos() {
   const [videos, setVideos] = useState([]);
+  const [profilesByUid, setProfilesByUid] = useState({});
+
+  useEffect(() => {
+    const unsubscribeProfiles = onSnapshot(collection(db, "public_profiles"), (snap) => {
+      const profiles = {};
+      snap.docs.forEach((profileDoc) => {
+        profiles[profileDoc.id] = profileDoc.data() || {};
+      });
+      setProfilesByUid(profiles);
+    });
+
+    return () => unsubscribeProfiles();
+  }, []);
 
   useEffect(() => {
     const q = query(
       collection(db, "videos"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"),
+      limit(40)
     );
 
     const unsubscribe = onSnapshot(q, (snap) => {
@@ -17,15 +31,46 @@ export default function useVideos() {
           id: doc.id,
           ...doc.data()
         }))
+        .map((video) => ({
+          ...video,
+          displayName: resolveVideoDisplayName(video, profilesByUid),
+          performerName: resolveVideoDisplayName(video, profilesByUid),
+          creatorName: resolveVideoDisplayName(video, profilesByUid),
+          thumbnailUrl:
+            video.thumbnailUrl ||
+            video.coverImage ||
+            video.posterUrl ||
+            video.poster ||
+            video.coverUrl ||
+            video.thumbnail ||
+            "",
+        }))
         .filter((video) => isHomeFeedVideo(video));
 
       setVideos(data);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [profilesByUid]);
 
   return videos;
+}
+
+function resolveVideoDisplayName(video, profilesByUid) {
+  const uid = video.uid || video.userId || "";
+  const profile = profilesByUid[uid] || {};
+  return (
+    profile.displayName ||
+    profile.stageName ||
+    profile.realName ||
+    profile.name ||
+    video.displayName ||
+    video.performerName ||
+    video.creatorName ||
+    video.stageName ||
+    video.realName ||
+    "Paragon Creator"
+  );
 }
 
 function isHomeFeedVideo(video) {

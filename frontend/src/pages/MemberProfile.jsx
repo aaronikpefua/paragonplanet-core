@@ -225,13 +225,22 @@ export default function MemberProfile() {
 
             <div style={heroActionRowStyle}>
               {auth.currentUser?.uid !== member.uid && (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/meet-up/${member.uid}`)}
-                  style={primaryButtonStyle}
-                >
-                  Request a Meet-Up
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/video-call?recipient=${encodeURIComponent(member.uid)}&name=${encodeURIComponent(member.displayName || member.stageName || member.realName || "Member")}`)}
+                    style={primaryButtonStyle}
+                  >
+                    📹 Video Call
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/meet-up/${member.uid}`)}
+                    style={secondaryButtonStyle}
+                  >
+                    🤝 Meet-Up
+                  </button>
+                </>
               )}
               <button type="button" onClick={handleMessage} style={secondaryButtonStyle}>
                 Message

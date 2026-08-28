@@ -66,23 +66,13 @@ fun MerchantMarketplaceScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
     var showMerchantAbout by remember { mutableStateOf(false) }
-    var showBuyerInbox by remember { mutableStateOf(false) }
-    var buyerOrders by remember { mutableStateOf(emptyList<MarketplaceOrderItem>()) }
-    var selectedBuyerOrder by remember { mutableStateOf<MarketplaceOrderItem?>(null) }
-    var buyerOrderMessages by remember { mutableStateOf(emptyList<MarketplaceOrderMessageItem>()) }
     var expandedPreviewProductId by remember { mutableStateOf<String?>(null) }
-    var actionLoading by remember { mutableStateOf(false) }
     suspend fun reload() {
         isLoading = true
         error = null
         runCatching { repository.loadProducts() }
             .onSuccess {
                 products = it.products
-                buyerOrders = repository.loadBuyerOrders()
-                if (selectedBuyerOrder != null) {
-                    selectedBuyerOrder = buyerOrders.firstOrNull { order -> order.id == selectedBuyerOrder?.id }
-                    buyerOrderMessages = selectedBuyerOrder?.let { order -> repository.loadOrderMessages(order) } ?: emptyList()
-                }
             }
             .onFailure { error = it.message ?: "Marketplace could not load." }
         isLoading = false
@@ -117,16 +107,6 @@ fun MerchantMarketplaceScreen(
                         ) {
                             Text("Sell Product")
                         }
-                        Button(
-                            onClick = {
-                                showBuyerInbox = !showBuyerInbox
-                                showMerchantAbout = false
-                            },
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF111111), contentColor = Color.White)
-                        ) {
-                            Text("Buyer Inbox")
-                        }
                     }
                 }
             }
@@ -141,7 +121,6 @@ fun MerchantMarketplaceScreen(
                     Button(
                         onClick = {
                             showMerchantAbout = !showMerchantAbout
-                            if (showMerchantAbout) showBuyerInbox = false
                         },
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF111111), contentColor = Color.White)
@@ -166,234 +145,6 @@ fun MerchantMarketplaceScreen(
             item { Text(message, color = Color(0xFF176B4D), fontWeight = FontWeight.Bold) }
         }
 
-        if (showBuyerInbox) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text("Buyer Inbox", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-                        if (buyerOrders.isEmpty()) {
-                            Text("No buyer inbox messages yet.", color = Color(0xFF5A534A))
-                        } else {
-                            buyerOrders.forEach { order ->
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = if (selectedBuyerOrder?.id == order.id) Color(0xFFFFF7E3) else Color(0xFFF9F5EE)),
-                                    shape = RoundedCornerShape(14.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            selectedBuyerOrder = order
-                                            scope.launch {
-                                                buyerOrderMessages = repository.loadOrderMessages(order)
-                                            }
-                                        },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color(0xFF111111))
-                                    ) {
-                                        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(order.productName, fontWeight = FontWeight.ExtraBold)
-                                            Text(order.merchantName)
-                                            Text("${order.amount.toInt()} ${order.currency}")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        selectedBuyerOrder?.let { order ->
-                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF9F5EE)), shape = RoundedCornerShape(14.dp)) {
-                                Column(
-                                    modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text(order.productName, fontWeight = FontWeight.ExtraBold)
-                                    Text("Merchant: ${order.merchantName}", color = Color(0xFF5A534A))
-                                    Text(
-                                        marketplaceStatusLabel(order.status),
-                                        color = marketplaceStatusColor(order.status),
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (buyerOrderMessages.isEmpty()) {
-                                        Text("No messages yet.", color = Color(0xFF5A534A))
-                                    } else {
-                                        buyerOrderMessages.forEach { message ->
-                                            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
-                                                Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    Text(message.senderName, fontWeight = FontWeight.Bold)
-                                                    Text(message.text)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if (order.status == "final_offer_sent" || order.status == "buyer_accepted") {
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
-                                            shape = RoundedCornerShape(10.dp)
-                                        ) {
-                                            Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                Text("Final Offer: ${order.amount.toInt()} ${order.currency}", fontWeight = FontWeight.ExtraBold)
-                                                Text("Funds will be held in secure escrow until you confirm delivery.", color = Color(0xFF5A534A))
-                                                Button(
-                                                    onClick = {
-                                                        scope.launch {
-                                                            actionLoading = true
-                                                            note = null
-                                                            runCatching { repository.settleOrder(order) }
-                                                                .onSuccess { ok ->
-                                                                    if (ok) {
-                                                                        selectedBuyerOrder = order.copy(status = "escrow_funded")
-                                                                        buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "escrow_funded") else o }
-                                                                        note = "Payment secured in escrow! Awaiting delivery."
-                                                                    } else {
-                                                                        note = "Payment failed. Check your wallet balance."
-                                                                    }
-                                                                }
-                                                                .onFailure { err -> note = err.message ?: "Payment failed." }
-                                                            actionLoading = false
-                                                        }
-                                                    },
-                                                    enabled = !actionLoading,
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
-                                                ) {
-                                                    Text(if (actionLoading) "Processing…" else "Pay ${order.amount.toInt()} ${order.currency} into Escrow")
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if (order.status == "delivering" || order.status == "buyer_review" || order.status == "delivered") {
-                                        Button(
-                                            onClick = {
-                                                scope.launch {
-                                                    actionLoading = true
-                                                    note = null
-                                                    runCatching { repository.confirmDelivery(order) }
-                                                        .onSuccess {
-                                                            selectedBuyerOrder = order.copy(status = "completed")
-                                                            buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "completed") else o }
-                                                            note = "✅ Delivery confirmed. Payment released to merchant."
-                                                        }
-                                                        .onFailure { err -> note = err.message ?: "Could not confirm delivery." }
-                                                    actionLoading = false
-                                                }
-                                            },
-                                            enabled = !actionLoading,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(8.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF176B4D), contentColor = Color.White)
-                                        ) {
-                                            Text(if (actionLoading) "Confirming…" else "Confirm Delivery — Release Payment")
-                                        }
-                                        Spacer(Modifier.height(6.dp))
-                                        Button(
-                                            onClick = {
-                                                scope.launch {
-                                                    actionLoading = true
-                                                    note = null
-                                                    runCatching {
-                                                        repository.openDispute(order, "Product issue", "I have an issue with this delivery.")
-                                                    }
-                                                        .onSuccess {
-                                                            selectedBuyerOrder = order.copy(status = "disputed")
-                                                            buyerOrders = buyerOrders.map { o -> if (o.id == order.id) o.copy(status = "disputed") else o }
-                                                            note = "Dispute opened. Admin has been notified."
-                                                        }
-                                                        .onFailure { err -> note = err.message ?: "Could not open dispute." }
-                                                    actionLoading = false
-                                                }
-                                            },
-                                            enabled = !actionLoading,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(8.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB45309), contentColor = Color.White)
-                                        ) {
-                                            Text("Open Dispute")
-                                        }
-                                    }
-                                    if (order.status == "disputed") {
-                                        Text("⚠️ Dispute opened. Admin is reviewing. Funds remain in escrow.", color = Color(0xFFB45309), fontWeight = FontWeight.Bold)
-                                    }
-                                    if (order.status == "admin_review") {
-                                        Text("🔍 Under admin review. You will be notified of the decision.", color = Color(0xFF6D28D9), fontWeight = FontWeight.Bold)
-                                    }
-                                    if (order.status == "completed") {
-                                        Text("✅ Transaction completed. Payment has been released to the merchant.", color = Color(0xFF176B4D), fontWeight = FontWeight.Bold)
-                                    }
-                                    if (order.status in listOf("cancelled", "expired", "refunded", "closed")) {
-                                        Text("Order is ${marketplaceStatusLabel(order.status)}.", color = Color(0xFF52616B), fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!isLoading && products.isEmpty()) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                    Text("No merchant products yet.", modifier = Modifier.padding(18.dp), color = Color(0xFF5A534A))
-                }
-            }
-        }
-
-        items(products) { product ->
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            expandedPreviewProductId = if (expandedPreviewProductId == product.id) null else product.id
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF111111), contentColor = Color.White)
-                    ) {
-                        Text(if (expandedPreviewProductId == product.id) "Hide Preview" else "Load Preview")
-                    }
-                    if (expandedPreviewProductId == product.id) {
-                        MarketplaceProductMediaPreview(product = product)
-                    }
-                    Text(product.merchantName, color = Color(0xFF6B5F4B), fontWeight = FontWeight.Bold)
-                    Text(product.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
-                    if (product.description.isNotBlank()) Text(product.description, color = Color(0xFF232323))
-                    if (product.materials.isNotBlank()) Text("Materials: ${product.materials}", color = Color(0xFF5A534A))
-                    Text("${product.priceText} ${product.currency}", fontWeight = FontWeight.ExtraBold)
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                isDealLoading = true
-                                runCatching { repository.openDealPanel(product) }
-                                    .onSuccess { dealState ->
-                                        selectedProduct = product
-                                        activeOrder = dealState.order
-                                        orderMessages = dealState.messages
-                                    }
-                                    .onFailure { error = it.message ?: "Could not open private deal." }
-                                isDealLoading = false
-                            }
-                        },
-                        enabled = !product.isOwnProduct,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (product.isOwnProduct) Color(0xFFB9B2A8) else Color(0xFF176B4D), contentColor = Color.White)
-                    ) {
-                        Text(if (product.isOwnProduct) "Your Product" else "Chat / Agree Deal")
-                    }
-
-                    Text(
-                        "Questions and price negotiation stay inside the private deal inbox.",
-                        color = Color(0xFF111111),
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
-
         selectedProduct?.let { product ->
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
@@ -401,8 +152,19 @@ fun MerchantMarketplaceScreen(
                         modifier = Modifier.fillMaxWidth().padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        Button(
+                            onClick = {
+                                selectedProduct = null
+                                activeOrder = null
+                                orderMessages = emptyList()
+                                dealMessage = ""
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF111111), contentColor = Color.White)
+                        ) {
+                            Text("Close Private Deal")
+                        }
                         MarketplaceProductMediaPreview(product = product)
-                        Text("Private buyer and merchant space", color = Color(0xFF6B5F4B), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         Text(product.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
                         if (product.description.isNotBlank()) Text(product.description, color = Color(0xFF232323))
                         if (product.materials.isNotBlank()) Text("Materials: ${product.materials}", color = Color(0xFF5A534A))
@@ -460,6 +222,64 @@ fun MerchantMarketplaceScreen(
                             ) {
                                 Text("Start Payment")
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!isLoading && products.isEmpty()) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
+                    Text("No merchant products yet.", modifier = Modifier.padding(18.dp), color = Color(0xFF5A534A))
+                }
+            }
+        }
+
+        if (selectedProduct == null) {
+            items(products) { product ->
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                expandedPreviewProductId = if (expandedPreviewProductId == product.id) null else product.id
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF111111), contentColor = Color.White)
+                        ) {
+                            Text(if (expandedPreviewProductId == product.id) "Hide Preview" else "Load Preview")
+                        }
+                        if (expandedPreviewProductId == product.id) {
+                            MarketplaceProductMediaPreview(product = product)
+                        }
+                        Text(product.merchantName, color = Color(0xFF6B5F4B), fontWeight = FontWeight.Bold)
+                        Text(product.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
+                        if (product.description.isNotBlank()) Text(product.description, color = Color(0xFF232323))
+                        if (product.materials.isNotBlank()) Text("Materials: ${product.materials}", color = Color(0xFF5A534A))
+                        Text("${product.priceText} ${product.currency}", fontWeight = FontWeight.ExtraBold)
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isDealLoading = true
+                                    error = null
+                                    runCatching { repository.openDealPanel(product) }
+                                        .onSuccess { dealState ->
+                                            selectedProduct = product
+                                            activeOrder = dealState.order
+                                            orderMessages = dealState.messages
+                                        }
+                                        .onFailure { error = it.message ?: "Could not open private deal." }
+                                    isDealLoading = false
+                                }
+                            },
+                            enabled = !product.isOwnProduct,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (product.isOwnProduct) Color(0xFFB9B2A8) else Color(0xFF176B4D), contentColor = Color.White)
+                        ) {
+                            Text(if (product.isOwnProduct) "Your Product" else "Chat / Agree Deal")
                         }
                     }
                 }
@@ -587,6 +407,7 @@ private class MerchantMarketplaceRepository(
                 val data = doc.data.orEmpty()
                 MarketplaceOrderMessageItem(
                     id = doc.id,
+                    senderId = data["senderId"] as? String ?: "",
                     senderName = data["senderName"] as? String ?: "Member",
                     text = data["text"] as? String ?: "",
                     createdAtMillis = (data["createdAt"] as? com.google.firebase.Timestamp)?.toDate()?.time ?: 0L,
@@ -624,10 +445,42 @@ private class MerchantMarketplaceRepository(
             .sortedByDescending { it.id }
     }
 
+    suspend fun sendBuyerReply(order: MarketplaceOrderItem, text: String) = withContext(Dispatchers.IO) {
+        val user = auth.currentUser ?: throw IllegalStateException("Login first.")
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) {
+            throw IllegalStateException("Enter a message before sending.")
+        }
+        firestore.collection("merchant_order_messages").add(
+            mapOf(
+                "orderId" to order.id,
+                "productId" to order.productId,
+                "productName" to order.productName,
+                "buyerId" to order.buyerId,
+                "buyerName" to order.buyerName,
+                "merchantId" to order.merchantId,
+                "merchantName" to order.merchantName,
+                "amount" to order.amount,
+                "currency" to order.currency,
+                "productMediaUrl" to order.productMediaUrl,
+                "productStreamUrl" to order.productStreamUrl,
+                "productOriginalUrl" to order.productOriginalUrl,
+                "productMediaType" to order.productMediaType,
+                "senderId" to user.uid,
+                "senderName" to (user.displayName ?: user.email ?: "Buyer"),
+                "text" to trimmed,
+                "readBy" to listOf(user.uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+    }
+
     suspend fun sendDealMessage(order: MarketplaceOrderItem, product: MarketplaceProductItem, text: String) = withContext(Dispatchers.IO) {
         val user = auth.currentUser ?: throw IllegalStateException("Login first.")
         val trimmed = text.trim()
-        if (trimmed.isBlank()) return@withContext
+        if (trimmed.isBlank()) {
+            throw IllegalStateException("Enter a message before sending.")
+        }
         firestore.collection("merchant_order_messages").add(
             mapOf(
                 "orderId" to order.id,
@@ -766,6 +619,7 @@ data class MarketplaceOrderItem(
 
 data class MarketplaceOrderMessageItem(
     val id: String,
+    val senderId: String,
     val senderName: String,
     val text: String,
     val createdAtMillis: Long,

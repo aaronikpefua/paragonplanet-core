@@ -2,17 +2,21 @@ package com.app.natureswayproduction.nativeapp.feature.feed
 
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 class FeedRepository(
     private val apiService: ParagonApiService = ParagonApiService(),
     private val appCheckRepository: AppCheckRepository = AppCheckRepository(),
+    private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
 ) {
     suspend fun loadFeed(): FeedPayload = withContext(Dispatchers.IO) {
         val appCheckToken = appCheckRepository.getToken(forceRefresh = false)
         val videos = apiService.fetchFeed(appCheckToken = appCheckToken)
             .filter { it.isCitizenHomeFeedVideo() }
+        val profileNames = loadPublicProfileNames(videos.mapNotNull { it.creatorUid }.distinct())
         val categories = videos.map { it.category }.distinct().ifEmpty {
             listOf("Cultural Performers", "Singers", "Dancers", "Comedians", "MCs")
         }
@@ -21,7 +25,7 @@ class FeedRepository(
                 id = it.id,
                 creatorUid = it.creatorUid,
                 title = it.title,
-                performer = it.performerName,
+                performer = profileNames[it.creatorUid].orEmpty().ifBlank { it.performerName },
                 category = it.category,
                 description = it.description,
                 supportCount = it.supportCount,
@@ -48,6 +52,30 @@ class FeedRepository(
             categories = categories,
             items = cards,
         )
+    }
+
+    private suspend fun loadPublicProfileNames(userIds: List<String>): Map<String, String> {
+        if (userIds.isEmpty()) return emptyMap()
+        return userIds.mapNotNull { uid ->
+            val data = runCatching {
+                firestore.collection("public_profiles").document(uid).get().await().data
+            }.getOrNull() ?: return@mapNotNull null
+            val displayName = firstText(
+                data["displayName"],
+                data["stageName"],
+                data["realName"],
+                data["name"],
+                data["brandName"],
+                data["email"],
+            )
+            displayName?.let { uid to it }
+        }.toMap()
+    }
+
+    private fun firstText(vararg values: Any?): String? {
+        return values
+            .mapNotNull { it?.toString()?.trim() }
+            .firstOrNull { it.isNotBlank() }
     }
 }
 

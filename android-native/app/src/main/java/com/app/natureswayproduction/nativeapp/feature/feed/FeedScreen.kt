@@ -118,6 +118,8 @@ private data class SprayNoteChoice(
 )
 
 private enum class SupportSheetMode {
+    VOTE,
+    WATER,
     SPRAY,
     BOTTLE,
 }
@@ -148,8 +150,8 @@ private val bottleChoices = listOf(
     SupportChoice("beer", "🍺", "Beer", "6 PARAG", "Crowd mood booster", 12, 8),
     SupportChoice("gin", "🍸", "Gin", "7 PARAG", "Sharper stage glow", 15, 10),
     SupportChoice("rum", "🥃", "Rum", "8 PARAG", "Heavy fan respect", 18, 12),
-    SupportChoice("vodka", "🍾", "Vodka", "9 PARAG", "Big celebration wave", 22, 15),
     SupportChoice("whiskey", "🧊", "Whiskey", "1 GBAZILO", "Premium spotlight burst", 50, 30),
+    SupportChoice("vodka", "🍾", "Vodka", "9 PARAG", "Big celebration wave", 22, 15),
     SupportChoice("cocktail", "🍸", "Cocktail", "2 PARAG • 1 GBAZILO", "Ultimate party trigger", 70, 50),
 )
 
@@ -166,6 +168,8 @@ fun FeedScreen(
     onOpenWallet: () -> Unit,
     onOpenWalletFunding: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: (String, String, String) -> Unit,
+    onOpenLive: () -> Unit,
     onOpenCitizenContestants: () -> Unit,
     onOpenSuperbossDirectory: () -> Unit,
     onOpenBackerDirectory: () -> Unit,
@@ -181,8 +185,35 @@ fun FeedScreen(
 ) {
     val state by feedViewModel.uiState.collectAsState()
     val pagerState = rememberPagerState(pageCount = { state.items.size })
-    LaunchedEffect(pagerState.currentPage, state.items) {
-        state.items.getOrNull(pagerState.currentPage)?.let(feedViewModel::selectItem)
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var homeMode by remember { mutableStateOf(HomeMode.SPOTLIGHT) }
+    var showBrowseMenu by remember { mutableStateOf(false) }
+    val playbackController = remember(context) { HomeFeedPlaybackController(context) }
+    val activePlayback = playbackController.activePlayback
+    val openInSpotlight: (FeedCard) -> Unit = { selected ->
+        val index = state.items.indexOfFirst { it.id == selected.id }.coerceAtLeast(0)
+        homeMode = HomeMode.SPOTLIGHT
+        scope.launch {
+            pagerState.scrollToPage(index)
+            state.items.getOrNull(index)?.let(feedViewModel::selectItem)
+            playbackController.sync(state.items, index)
+        }
+    }
+
+    LaunchedEffect(pagerState.currentPage, state.items, homeMode) {
+        if (homeMode == HomeMode.SPOTLIGHT) {
+            state.items.getOrNull(pagerState.currentPage)?.let(feedViewModel::selectItem)
+            playbackController.sync(state.items, pagerState.currentPage)
+        } else {
+            playbackController.sync(emptyList(), 0)
+        }
+    }
+
+    DisposableEffect(playbackController) {
+        onDispose {
+            playbackController.release()
+        }
     }
 
     Box(
@@ -196,7 +227,7 @@ fun FeedScreen(
                 errorMessage = state.errorMessage,
                 onRefresh = feedViewModel::refresh
             )
-        } else {
+        } else if (homeMode == HomeMode.SPOTLIGHT) {
             VerticalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
@@ -205,6 +236,7 @@ fun FeedScreen(
                 FeedStagePage(
                     item = item,
                     isActive = pagerState.currentPage == page,
+                    activePlayback = activePlayback,
                     isSignedIn = isSignedIn,
                     currentUserUid = currentUserUid,
                     onOpenUpload = onOpenUpload,
@@ -213,6 +245,8 @@ fun FeedScreen(
                     onOpenWallet = onOpenWallet,
                     onOpenWalletFunding = onOpenWalletFunding,
                     onOpenMeetUp = onOpenMeetUp,
+                    onOpenVideoCall = onOpenVideoCall,
+                    onOpenLive = onOpenLive,
                     onOpenCitizenContestants = onOpenCitizenContestants,
                     onOpenSuperbossDirectory = onOpenSuperbossDirectory,
                     onOpenBackerDirectory = onOpenBackerDirectory,
@@ -224,9 +258,17 @@ fun FeedScreen(
                     onOpenPrivacyPolicy = onOpenPrivacyPolicy,
                     onSignOut = onSignOut,
                     onRefreshFeed = feedViewModel::refresh,
+                    onRetryPlayback = { playbackController.retry(state.items, pagerState.currentPage) },
                     onOpenWatch = { onOpenWatch(item) }
                 )
             }
+        } else {
+            HomeModeContent(
+                mode = homeMode,
+                items = state.items,
+                onOpenInSpotlight = openInSpotlight,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         TopStageBar(
@@ -238,6 +280,55 @@ fun FeedScreen(
             onOpenAdmin = onOpenAdmin,
             onSignOut = onSignOut,
         )
+        HomeModeSelector(
+            selectedMode = homeMode,
+            onModeSelected = { homeMode = it },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 58.dp, start = 72.dp, end = 10.dp)
+        )
+
+        if (homeMode != HomeMode.SPOTLIGHT) {
+            FeedFooterActions(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 14.dp),
+                onHome = {
+                    homeMode = HomeMode.SPOTLIGHT
+                    playbackController.sync(state.items, pagerState.currentPage)
+                },
+                onFollow = {
+                    if (!isSignedIn) {
+                        onOpenSignIn()
+                    } else {
+                        onOpenMeetUp()
+                    }
+                },
+                onVote = {},
+                onComments = {},
+                onLive = onOpenLive,
+                onMenu = { showBrowseMenu = true }
+            )
+        }
+
+        if (showBrowseMenu) {
+            GlobalMenuSheet(
+                onDismiss = { showBrowseMenu = false },
+                entries = listOf(
+                    MenuEntry("Marketplace", "Digital products from Paragon Merchants") { showBrowseMenu = false; onOpenMerchantMarketplace() },
+                    MenuEntry("The Citizen Contestants", "About Citizen Contestants") { showBrowseMenu = false; onOpenCitizenContestants() },
+                    MenuEntry("Paragon Superbosses", "The Mentors") { showBrowseMenu = false; onOpenSuperbossDirectory() },
+                    MenuEntry("Paragon Backers", "The Service Providers for Backer Contestants") { showBrowseMenu = false; onOpenBackerDirectory() },
+                    MenuEntry("Paragon Ambassadors", "The Talent Ambassadors") { showBrowseMenu = false; onOpenAmbassadorDirectory() },
+                    MenuEntry("Paragon Users", "Viewers, voters, buyers, and supporters") { showBrowseMenu = false; onOpenUserAbout() },
+                    MenuEntry("Paragon Sponsors / Investors", "Partnerships, funding, and ecosystem support") { showBrowseMenu = false; onOpenSponsorInvestorAbout() },
+                    MenuEntry("About Paragon Planet", "The app and reality system") { showBrowseMenu = false; onOpenAboutPlanet() },
+                    MenuEntry("Privacy Policy", "Data, safety, payments, and user rights") { showBrowseMenu = false; onOpenPrivacyPolicy() },
+                )
+            )
+        }
     }
 }
 
@@ -246,6 +337,7 @@ fun FeedScreen(
 private fun FeedStagePage(
     item: FeedCard,
     isActive: Boolean,
+    activePlayback: HomeFeedActivePlayback,
     isSignedIn: Boolean,
     currentUserUid: String?,
     onOpenUpload: () -> Unit,
@@ -254,6 +346,8 @@ private fun FeedStagePage(
     onOpenWallet: () -> Unit,
     onOpenWalletFunding: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: (String, String, String) -> Unit,
+    onOpenLive: () -> Unit,
     onOpenCitizenContestants: () -> Unit,
     onOpenSuperbossDirectory: () -> Unit,
     onOpenBackerDirectory: () -> Unit,
@@ -265,18 +359,11 @@ private fun FeedStagePage(
     onOpenPrivacyPolicy: () -> Unit,
     onSignOut: () -> Unit,
     onRefreshFeed: () -> Unit,
+    onRetryPlayback: () -> Unit,
     onOpenWatch: () -> Unit,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val watchRepository = remember { WatchActionRepository() }
-    val player = remember(context, item.id) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = ExoPlayer.REPEAT_MODE_ONE
-            playWhenReady = false
-            volume = 0f
-        }
-    }
     val playbackUrl = item.preferredPlaybackUrl()
     var showMenu by remember { mutableStateOf(false) }
     var showFollowPanel by remember { mutableStateOf(false) }
@@ -297,47 +384,14 @@ private fun FeedStagePage(
     var commentDraft by remember { mutableStateOf("") }
     var isPostingComment by remember { mutableStateOf(false) }
     var showSupportSheet by remember { mutableStateOf(false) }
-    var showSprayPicker by remember { mutableStateOf(false) }
     var supportSheetMode by remember { mutableStateOf(SupportSheetMode.SPRAY) }
+    var selectedSprayNote by remember { mutableStateOf(sprayNoteChoices.first()) }
+    var selectedBottleChoice by remember { mutableStateOf(bottleChoices.first()) }
+    var supportSelectionReady by remember { mutableStateOf(false) }
+    var showSprayPicker by remember { mutableStateOf(false) }
     var isSendingVote by remember { mutableStateOf(false) }
     var processingSupportKey by remember { mutableStateOf("") }
     var supportError by remember { mutableStateOf("") }
-
-    LaunchedEffect(playbackUrl) {
-        if (!playbackUrl.isNullOrBlank()) {
-            player.stop()
-            player.clearMediaItems()
-            player.setMediaItem(MediaItem.fromUri(Uri.parse(playbackUrl)))
-            player.prepare()
-        } else {
-            player.stop()
-            player.clearMediaItems()
-        }
-    }
-
-    LaunchedEffect(isActive, playbackUrl) {
-        if (playbackUrl.isNullOrBlank()) {
-            player.volume = 0f
-            player.playWhenReady = false
-            player.pause()
-        } else if (isActive) {
-            player.volume = 1f
-            player.playWhenReady = true
-            player.play()
-        } else {
-            player.volume = 0f
-            player.playWhenReady = false
-            player.pause()
-        }
-    }
-
-    DisposableEffect(player) {
-        onDispose {
-            player.volume = 0f
-            player.playWhenReady = false
-            player.release()
-        }
-    }
 
     LaunchedEffect(actionFeedback) {
         if (actionFeedback != null) {
@@ -361,16 +415,57 @@ private fun FeedStagePage(
             } ?: false
     }
 
+    fun sendVote() {
+        if (!isSignedIn) {
+            onOpenSignIn()
+            return
+        }
+        if (isSendingVote) return
+        isSendingVote = true
+        scope.launch {
+            runCatching { watchRepository.sendVote(item) }
+                .onSuccess {
+                    showSprayPicker = false
+                    localVoteCount += 1
+                    actionFeedback = FeedActionFeedback(actionKey = "vote", label = "Vote")
+                    statusNotice = "Vote sent"
+                }
+                .onFailure {
+                    val message = it.message ?: "Could not send vote right now"
+                    if (message.contains("Insufficient PARAG balance", ignoreCase = true)) {
+                        onOpenWalletFunding()
+                    } else {
+                        statusNotice = message
+                    }
+                }
+            isSendingVote = false
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
         if (!playbackUrl.isNullOrBlank()) {
-            WebsiteParityNativePlayer(
-                player = player,
-                modifier = Modifier.fillMaxSize(),
-            )
+            if (isActive && activePlayback.videoId == item.id && activePlayback.player != null) {
+                WebsiteParityNativePlayer(
+                    player = activePlayback.player,
+                    playbackState = activePlayback.state,
+                    errorMessage = activePlayback.errorMessage,
+                    onRetry = onRetryPlayback,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = ParagonGold)
+                }
+            }
         } else {
             Box(
                 modifier = Modifier
@@ -407,133 +502,38 @@ private fun FeedStagePage(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Bottom
         ) {
-            if (showSprayPicker) {
-                InlineSprayNotePicker(
-                    options = sprayNoteChoices,
-                    isProcessing = processingSupportKey == "spray_money",
-                    onSelect = { note ->
-                        if (processingSupportKey == "spray_money") return@InlineSprayNotePicker
-                        if (item.creatorUid == currentUserUid) {
-                            supportError = "You cannot support your own video."
-                            statusNotice = "You cannot support your own video."
-                            return@InlineSprayNotePicker
-                        }
-                        processingSupportKey = "spray_money"
-                        supportError = ""
-                        scope.launch {
-                            runCatching {
-                                watchRepository.sendSprayMoney(
-                                    item,
-                                    customParagAmount = if (note.currency == "PARAG") note.amount else 0,
-                                    customGbaziloAmount = if (note.currency == "GBAZILO") note.amount else 0
-                                )
-                            }
-                                .onSuccess {
-                                    localSprayCount += 1
-                                    actionFeedback = FeedActionFeedback(
-                                        actionKey = "spray_money",
-                                        label = "Spray Money",
-                                        amountParag = if (note.currency == "PARAG") note.amount else 0,
-                                        amountGbazilo = if (note.currency == "GBAZILO") note.amount else 0
-                                    )
-                                    statusNotice = if (note.currency == "GBAZILO") {
-                                        "Gbazilo spray sent"
-                                    } else {
-                                        "Parag spray sent"
-                                    }
-                                }
-                                .onFailure {
-                                    val message = it.toSupportActionMessage()
-                                    supportError = message
-                                    statusNotice = message
-                                    if (shouldRedirectSupportErrorToWallet(message)) {
-                                        onOpenWallet()
-                                    }
-                                }
-                            processingSupportKey = ""
-                        }
-                    }
-                )
-            }
             RightActionRail(
-                supportCount = localVoteCount,
                 pourCount = localPourCount,
                 sprayCount = localSprayCount,
                 bottleCount = localBottleCount,
-                onVote = {
-                if (!isSignedIn) {
-                    onOpenSignIn()
-                    return@RightActionRail
-                }
-                if (isSendingVote) return@RightActionRail
-                isSendingVote = true
-                scope.launch {
-                    runCatching { watchRepository.sendVote(item) }
-                        .onSuccess {
-                            showSprayPicker = false
-                            localVoteCount += 1
-                            actionFeedback = FeedActionFeedback(actionKey = "vote", label = "Vote")
-                            statusNotice = "Vote sent"
-                        }
-                        .onFailure {
-                            val message = it.message ?: "Could not send vote right now"
-                            if (message.contains("Insufficient PARAG balance", ignoreCase = true)) {
-                                onOpenWalletFunding()
-                            } else {
-                                statusNotice = message
-                            }
-                        }
-                    isSendingVote = false
-                }
-            },
             onOpenPourWater = {
                 if (!isSignedIn) {
                     onOpenSignIn()
                     return@RightActionRail
                 }
-                if (item.creatorUid == currentUserUid) {
-                    supportError = "You cannot support your own video."
-                    statusNotice = "You cannot support your own video."
-                    return@RightActionRail
-                }
-                if (processingSupportKey == "pour_me_water") return@RightActionRail
-                processingSupportKey = "pour_me_water"
+                supportSheetMode = SupportSheetMode.WATER
                 supportError = ""
-                scope.launch {
-                    runCatching { watchRepository.sendSpraySupport(item) }
-                        .onSuccess {
-                            showSprayPicker = false
-                            localPourCount += 1
-                            actionFeedback = FeedActionFeedback(actionKey = "pour_me_water", label = "Pour Me Water")
-                            statusNotice = "Pour Me Water sent"
-                        }
-                        .onFailure {
-                            val message = it.toSupportActionMessage()
-                            supportError = message
-                            statusNotice = message
-                            if (shouldRedirectSupportErrorToWallet(message)) {
-                                onOpenWallet()
-                            }
-                        }
-                    processingSupportKey = ""
-                }
+                supportSelectionReady = false
+                showSupportSheet = true
             },
             onOpenSupport = {
                 if (!isSignedIn) {
                     onOpenSignIn()
                     return@RightActionRail
                 }
+                supportSheetMode = SupportSheetMode.SPRAY
                 supportError = ""
-                showSprayPicker = !showSprayPicker
+                supportSelectionReady = false
+                showSupportSheet = true
             },
             onOpenBottle = {
                 if (!isSignedIn) {
                     onOpenSignIn()
                     return@RightActionRail
                 }
-                showSprayPicker = false
                 supportSheetMode = SupportSheetMode.BOTTLE
                 supportError = ""
+                supportSelectionReady = false
                 showSupportSheet = true
             }
         )
@@ -550,10 +550,9 @@ private fun FeedStagePage(
 
         FeedFooterActions(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
+                .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(end = 18.dp, bottom = 8.dp),
-            isSaved = isSaved,
+                .padding(bottom = 14.dp),
             onHome = onRefreshFeed,
             onFollow = {
                 if (!isSignedIn) {
@@ -562,8 +561,16 @@ private fun FeedStagePage(
                 }
                 onOpenMeetUp()
             },
-            viewCount = item.viewCount,
-            commentCount = localCommentCount,
+            onVote = {
+                if (!isSignedIn) {
+                    onOpenSignIn()
+                    return@FeedFooterActions
+                }
+                supportSheetMode = SupportSheetMode.VOTE
+                supportError = ""
+                supportSelectionReady = true
+                showSupportSheet = true
+            },
             onComments = {
                 showCommentSheet = true
                 isLoadingComments = true
@@ -576,22 +583,7 @@ private fun FeedStagePage(
                     isLoadingComments = false
                 }
             },
-            onSave = {
-                if (!isSignedIn || currentUserUid.isNullOrBlank()) {
-                    onOpenSignIn()
-                    return@FeedFooterActions
-                }
-                scope.launch {
-                    runCatching { watchRepository.toggleSaved(currentUserUid, item) }
-                        .onSuccess { saved ->
-                            isSaved = saved
-                            statusNotice = if (saved) "Saved to Watch Later" else "Removed from Save / Watch"
-                        }
-                        .onFailure {
-                            statusNotice = "Could not update Save / Watch right now"
-                        }
-                }
-            },
+            onLive = onOpenLive,
             onMenu = { showMenu = true }
         )
 
@@ -667,6 +659,7 @@ private fun FeedStagePage(
                         member = creatorMember,
                         isFollowing = isFollowingCreator,
                         canFollow = !currentUserUid.isNullOrBlank() && creatorMember.uid != currentUserUid,
+                        canVideoCall = !currentUserUid.isNullOrBlank() && creatorMember.uid != currentUserUid,
                         onFollowToggle = {
                             if (currentUserUid.isNullOrBlank()) {
                                 onOpenSignIn()
@@ -686,6 +679,10 @@ private fun FeedStagePage(
                         onMeetUp = {
                             showFollowPanel = false
                             onOpenMeetUp()
+                        },
+                        onVideoCall = {
+                            showFollowPanel = false
+                            onOpenVideoCall(creatorMember.uid, creatorMember.displayName, creatorMember.role)
                         }
                     )
                 }
@@ -808,6 +805,143 @@ private fun FeedStagePage(
     }
 
     if (showSupportSheet) {
+        SupportTray(
+            mode = supportSheetMode,
+            sprayNotes = sprayNoteChoices,
+            bottleChoices = bottleChoices,
+            selectedSprayNote = selectedSprayNote,
+            selectedBottleChoice = selectedBottleChoice,
+            hasSelection = supportSelectionReady,
+            processingKey = if (supportSheetMode == SupportSheetMode.VOTE && isSendingVote) "vote" else processingSupportKey,
+            errorMessage = supportError,
+            onDismiss = { showSupportSheet = false },
+            onOpenWallet = onOpenWallet,
+            onSelectWater = { supportSelectionReady = true },
+            onSelectSprayNote = {
+                selectedSprayNote = it
+                supportSelectionReady = true
+            },
+            onSelectBottle = {
+                selectedBottleChoice = it
+                supportSelectionReady = true
+            },
+            onConfirmVote = {
+                if (isSendingVote) return@SupportTray
+                if (item.creatorUid == currentUserUid) {
+                    supportError = "You cannot support your own video."
+                    statusNotice = "You cannot support your own video."
+                    return@SupportTray
+                }
+                isSendingVote = true
+                supportError = ""
+                scope.launch {
+                    runCatching { watchRepository.sendVote(item) }
+                        .onSuccess {
+                            localVoteCount += 1
+                            actionFeedback = FeedActionFeedback(actionKey = "vote", label = "Vote")
+                            statusNotice = "Vote sent"
+                            showSupportSheet = false
+                        }
+                        .onFailure {
+                            val message = it.toSupportActionMessage()
+                            supportError = message
+                            statusNotice = message
+                        }
+                    isSendingVote = false
+                }
+            },
+            onConfirmWater = {
+                if (processingSupportKey == "pour_me_water") return@SupportTray
+                if (item.creatorUid == currentUserUid) {
+                    supportError = "You cannot support your own video."
+                    statusNotice = "You cannot support your own video."
+                    return@SupportTray
+                }
+                processingSupportKey = "pour_me_water"
+                supportError = ""
+                scope.launch {
+                    runCatching { watchRepository.sendSpraySupport(item) }
+                        .onSuccess {
+                            localPourCount += 1
+                            actionFeedback = FeedActionFeedback(actionKey = "pour_me_water", label = "Pour Me Water")
+                            statusNotice = "Pour Me Water sent"
+                            showSupportSheet = false
+                        }
+                        .onFailure {
+                            val message = it.toSupportActionMessage()
+                            supportError = message
+                            statusNotice = message
+                        }
+                    processingSupportKey = ""
+                }
+            },
+            onConfirmSpray = {
+                if (processingSupportKey == "spray_money") return@SupportTray
+                if (item.creatorUid == currentUserUid) {
+                    supportError = "You cannot support your own video."
+                    statusNotice = "You cannot support your own video."
+                    return@SupportTray
+                }
+                processingSupportKey = "spray_money"
+                supportError = ""
+                val note = selectedSprayNote
+                scope.launch {
+                    runCatching {
+                        watchRepository.sendSprayMoney(
+                            item,
+                            customParagAmount = if (note.currency == "PARAG") note.amount else 0,
+                            customGbaziloAmount = if (note.currency == "GBAZILO") note.amount else 0
+                        )
+                    }
+                        .onSuccess {
+                            localSprayCount += 1
+                            actionFeedback = FeedActionFeedback(
+                                actionKey = "spray_money",
+                                label = "Spray Me Money",
+                                amountParag = if (note.currency == "PARAG") note.amount else 0,
+                                amountGbazilo = if (note.currency == "GBAZILO") note.amount else 0
+                            )
+                            statusNotice = if (note.currency == "GBAZILO") "Gbazilo spray sent" else "Parag spray sent"
+                            showSupportSheet = false
+                        }
+                        .onFailure {
+                            val message = it.toSupportActionMessage()
+                            supportError = message
+                            statusNotice = message
+                        }
+                    processingSupportKey = ""
+                }
+            },
+            onConfirmBottle = {
+                val choice = selectedBottleChoice
+                if (processingSupportKey == choice.key) return@SupportTray
+                if (item.creatorUid == currentUserUid) {
+                    supportError = "You cannot support your own video."
+                    statusNotice = "You cannot support your own video."
+                    return@SupportTray
+                }
+                processingSupportKey = choice.key
+                supportError = ""
+                scope.launch {
+                    runCatching { watchRepository.sendBottleSupport(item, choice.key) }
+                        .onSuccess {
+                            localBottleCount += 1
+                            actionFeedback = FeedActionFeedback(actionKey = choice.key, label = choice.title)
+                            statusNotice = "Pop ${choice.title} sent"
+                            showSupportSheet = false
+                        }
+                        .onFailure {
+                            val message = it.toSupportActionMessage()
+                            supportError = message
+                            statusNotice = message
+                        }
+                    processingSupportKey = ""
+                }
+            }
+        )
+    }
+
+    if (false && showSupportSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSupportSheet = false },
             containerColor = Color.Transparent
@@ -834,7 +968,7 @@ private fun FeedStagePage(
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("PARAGON SUPPORT", color = Color(0xFF475467), style = MaterialTheme.typography.labelSmall)
                             Text(
-                                if (supportSheetMode == SupportSheetMode.SPRAY) "Spray Money" else "Pop a Bottle 4 Me",
+                                if (supportSheetMode == SupportSheetMode.SPRAY) "Spray Me Money" else "Pop Me a Bottle",
                                 color = Color(0xFF101828),
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold
@@ -889,7 +1023,7 @@ private fun FeedStagePage(
                                                 localSprayCount += 1
                                                 actionFeedback = FeedActionFeedback(
                                                     actionKey = "spray_money",
-                                                    label = "Spray Money",
+                                                    label = "Spray Me Money",
                                                     amountParag = 1
                                                 )
                                                 statusNotice = "Parag spray sent"
@@ -936,7 +1070,7 @@ private fun FeedStagePage(
                                                 localSprayCount += 1
                                                 actionFeedback = FeedActionFeedback(
                                                     actionKey = "spray_money",
-                                                    label = "Spray Money",
+                                                    label = "Spray Me Money",
                                                     amountGbazilo = 1
                                                 )
                                                 statusNotice = "Gbazilo spray sent"
@@ -1082,9 +1216,236 @@ private fun FeedStagePage(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SupportTray(
+    mode: SupportSheetMode,
+    sprayNotes: List<SprayNoteChoice>,
+    bottleChoices: List<SupportChoice>,
+    selectedSprayNote: SprayNoteChoice,
+    selectedBottleChoice: SupportChoice,
+    hasSelection: Boolean,
+    processingKey: String,
+    errorMessage: String,
+    onDismiss: () -> Unit,
+    onOpenWallet: () -> Unit,
+    onSelectWater: () -> Unit,
+    onSelectSprayNote: (SprayNoteChoice) -> Unit,
+    onSelectBottle: (SupportChoice) -> Unit,
+    onConfirmVote: () -> Unit,
+    onConfirmWater: () -> Unit,
+    onConfirmSpray: () -> Unit,
+    onConfirmBottle: () -> Unit,
+) {
+    val title = when (mode) {
+        SupportSheetMode.VOTE -> "Vote For Me"
+        SupportSheetMode.WATER -> "Pour Me Water"
+        SupportSheetMode.SPRAY -> "Spray Me Money"
+        SupportSheetMode.BOTTLE -> "Pop Me a Bottle"
+    }
+    val confirmLabel = when (mode) {
+        SupportSheetMode.VOTE -> if (processingKey == "vote") "Voting..." else "Vote 1 PARAG"
+        SupportSheetMode.WATER -> if (processingKey == "pour_me_water") "Pouring..." else "Pour • 5 PARAG"
+        SupportSheetMode.SPRAY -> if (processingKey == "spray_money") "Spraying..." else "Spray • ${selectedSprayNote.amount} ${selectedSprayNote.currency}"
+        SupportSheetMode.BOTTLE -> if (processingKey == selectedBottleChoice.key) "Popping..." else "Pop • ${selectedBottleChoice.costLabel}"
+    }
+    val confirmEnabled = when (mode) {
+        SupportSheetMode.VOTE -> processingKey != "vote"
+        SupportSheetMode.WATER -> processingKey != "pour_me_water"
+        SupportSheetMode.SPRAY -> processingKey != "spray_money"
+        SupportSheetMode.BOTTLE -> processingKey != selectedBottleChoice.key
+    }
+    val onConfirm = when (mode) {
+        SupportSheetMode.VOTE -> onConfirmVote
+        SupportSheetMode.WATER -> onConfirmWater
+        SupportSheetMode.SPRAY -> onConfirmSpray
+        SupportSheetMode.BOTTLE -> onConfirmBottle
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.Transparent,
+        scrimColor = Color.Transparent,
+        tonalElevation = 0.dp,
+        dragHandle = null,
+    ) {
+        Surface(
+            color = Color.Transparent,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .padding(bottom = 132.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+                    }
+                }
+
+                when (mode) {
+                    SupportSheetMode.VOTE -> VoteSupportPanel()
+                    SupportSheetMode.WATER -> WaterSupportPanel(onSelect = onSelectWater)
+                    SupportSheetMode.SPRAY -> SprayMoneyPanel(
+                        notes = sprayNotes,
+                        selected = selectedSprayNote,
+                        onSelect = onSelectSprayNote
+                    )
+                    SupportSheetMode.BOTTLE -> PopBottlePanel(
+                        choices = bottleChoices,
+                        selected = selectedBottleChoice,
+                        onSelect = onSelectBottle
+                    )
+                }
+
+                if (errorMessage.isNotBlank()) {
+                    val walletError = shouldRedirectSupportErrorToWallet(errorMessage)
+                    Surface(shape = RoundedCornerShape(14.dp), color = if (walletError) ParagonGold else Color(0xFF3A1414)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = walletError, onClick = onOpenWallet)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (walletError) "Fund Your Wallet" else errorMessage,
+                                color = if (walletError) Color.Black else Color(0xFFFFB4AB),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Black
+                            )
+                            if (walletError) {
+                                Text("Open", color = Color.Black, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    }
+                }
+
+                if (hasSelection) {
+                    Button(
+                        onClick = onConfirm,
+                        enabled = confirmEnabled,
+                        colors = ButtonDefaults.buttonColors(containerColor = ParagonGold, contentColor = Color.Black),
+                        shape = RoundedCornerShape(999.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(confirmLabel, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoteSupportPanel() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("🗳️", fontSize = 44.sp)
+    }
+}
+
+@Composable
+private fun WaterSupportPanel(onSelect: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onSelect)
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("🚿", fontSize = 44.sp)
+    }
+}
+
+@Composable
+private fun SprayMoneyPanel(
+    notes: List<SprayNoteChoice>,
+    selected: SprayNoteChoice,
+    onSelect: (SprayNoteChoice) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        notes.forEach { note ->
+            val active = note == selected
+            Column(
+                modifier = Modifier
+                    .width(82.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSelect(note) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Image(
+                    painter = painterResource(note.drawableRes),
+                    contentDescription = note.id,
+                    modifier = Modifier
+                        .width(66.dp)
+                        .height(38.dp)
+                )
+                Text("${note.amount}", color = if (active) ParagonGold else Color.White, fontWeight = FontWeight.Black)
+                Text(note.currency, color = if (active) ParagonGold else Color.White.copy(alpha = 0.72f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PopBottlePanel(
+    choices: List<SupportChoice>,
+    selected: SupportChoice,
+    onSelect: (SupportChoice) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(18.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        choices.forEach { choice ->
+            val active = choice == selected
+            Column(
+                modifier = Modifier
+                    .width(84.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSelect(choice) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(choice.icon, fontSize = 28.sp)
+                Text(choice.title, color = if (active) ParagonGold else Color.White, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(choice.costLabel, color = ParagonGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
 @Composable
 private fun WebsiteParityNativePlayer(
     player: ExoPlayer,
+    playbackState: HomeFeedPlaybackState,
+    errorMessage: String?,
+    onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val configuration = LocalConfiguration.current
@@ -1099,6 +1460,9 @@ private fun WebsiteParityNativePlayer(
     var isScrubbing by remember(player) { mutableStateOf(false) }
     var showControls by remember(player) { mutableStateOf(false) }
     var videoSize by remember(player) { mutableStateOf(VideoSize.UNKNOWN) }
+    val controllerLoading = playbackState == HomeFeedPlaybackState.IDLE ||
+        playbackState == HomeFeedPlaybackState.BUFFERING
+    val controllerError = playbackState == HomeFeedPlaybackState.ERROR
 
     val isVertical = videoSize.height > 0 && videoSize.width > 0 && videoSize.height > videoSize.width
     val isLandscape = !isVertical
@@ -1109,6 +1473,7 @@ private fun WebsiteParityNativePlayer(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 if (playing) {
+                    isLoading = false
                     showControls = true
                 }
             }
@@ -1133,6 +1498,11 @@ private fun WebsiteParityNativePlayer(
 
             override fun onVideoSizeChanged(size: VideoSize) {
                 videoSize = size
+            }
+
+            override fun onRenderedFirstFrame() {
+                isLoading = false
+                hasError = false
             }
         }
         player.addListener(listener)
@@ -1163,6 +1533,7 @@ private fun WebsiteParityNativePlayer(
             factory = { viewContext ->
                 PlayerView(viewContext).apply {
                     this.player = player
+                    keepScreenOn = true
                     useController = false
                     resizeMode = if (useContain) {
                         AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -1175,6 +1546,7 @@ private fun WebsiteParityNativePlayer(
             },
             update = { view ->
                 view.player = player
+                view.keepScreenOn = true
                 view.resizeMode = if (useContain) {
                     AspectRatioFrameLayout.RESIZE_MODE_FIT
                 } else {
@@ -1183,7 +1555,26 @@ private fun WebsiteParityNativePlayer(
             }
         )
 
-        if (isLoading) {
+        if (!isLoading && !hasError && !controllerLoading && !controllerError) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable {
+                        if (player.isPlaying) {
+                            player.playWhenReady = false
+                            player.pause()
+                            showControls = true
+                        } else {
+                            hasEnded = false
+                            player.playWhenReady = true
+                            player.play()
+                            showControls = false
+                        }
+                    }
+            )
+        }
+
+        if (isLoading || controllerLoading) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -1192,36 +1583,43 @@ private fun WebsiteParityNativePlayer(
             }
         }
 
-        if (hasError && !isLoading) {
-            Text(
-                text = "Failed",
-                color = Color.White,
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.align(Alignment.Center)
-            )
+        if ((hasError || controllerError) && !isLoading) {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = errorMessage ?: "Failed",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Button(
+                    onClick = onRetry,
+                    colors = ButtonDefaults.buttonColors(containerColor = ParagonGold)
+                ) {
+                    Text("Retry", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
-        if (!isLoading && !hasError) {
+        if (!isLoading && !hasError && !isPlaying && (!player.playWhenReady || hasEnded)) {
             Surface(
                 shape = CircleShape,
-                color = Color.White.copy(alpha = if (isPlaying) 0.18f else 0.92f),
+                color = Color.White.copy(alpha = 0.92f),
                 modifier = Modifier
                     .align(Alignment.Center)
                     .clickable {
-                        showControls = true
-                        if (player.isPlaying) {
-                            player.pause()
-                        } else {
-                            hasEnded = false
-                            player.playWhenReady = true
-                            player.play()
-                        }
+                        hasEnded = false
+                        player.playWhenReady = true
+                        player.play()
+                        showControls = false
                     }
             ) {
                 Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = if (isPlaying) Color.White else Color.Black,
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = "Play",
+                    tint = Color.Black,
                     modifier = Modifier.padding(14.dp)
                 )
             }
@@ -1773,6 +2171,8 @@ private fun WebsiteParityFeedPlayer(
         factory = { context ->
             WebView(context).apply {
                 overScrollMode = WebView.OVER_SCROLL_NEVER
+                keepScreenOn = true
+                setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                 setBackgroundColor(android.graphics.Color.BLACK)
                 webChromeClient = WebChromeClient()
                 webViewClient = WebViewClient()
@@ -1788,6 +2188,7 @@ private fun WebsiteParityFeedPlayer(
             }
         },
         update = { webView ->
+            webView.keepScreenOn = isActive
             val safeUrl = streamUrl
                 .replace("\\", "\\\\")
                 .replace("'", "\\'")
@@ -1934,9 +2335,9 @@ private fun FeedActionFeedbackOverlay(
         ) {
             Text(
                 text = when (feedback.actionKey) {
-                    "vote" -> "❤️"
+                    "vote" -> "🗳️"
                     "spray_money" -> "💸"
-                    "pour_me_water" -> "💧"
+                    "pour_me_water" -> "🚿"
                     else -> "🍾"
                 },
                 fontSize = 32.sp
@@ -1959,11 +2360,9 @@ private fun FeedActionFeedbackOverlay(
 @Composable
 private fun RightActionRail(
     modifier: Modifier = Modifier,
-    supportCount: Int,
     pourCount: Int,
     sprayCount: Int,
     bottleCount: Int,
-    onVote: () -> Unit,
     onOpenPourWater: () -> Unit,
     onOpenSupport: () -> Unit,
     onOpenBottle: () -> Unit,
@@ -1974,26 +2373,23 @@ private fun RightActionRail(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         RailAction(
-            icon = "❤️",
-            iconColor = Color(0xFFE53935),
-            value = supportCount.toString(),
-            onClick = onVote
-        )
-        RailAction(
-            icon = "💧",
+            icon = "🚿",
             iconColor = Color(0xFF8EDBFF),
+            label = "Pour",
             value = pourCount.toString(),
             onClick = onOpenPourWater
         )
         RailAction(
-            icon = "💸",
+            icon = "💵",
             iconColor = Color(0xFF59D46A),
+            label = "Spray",
             value = sprayCount.toString(),
             onClick = onOpenSupport
         )
         RailAction(
             icon = "🍾",
             iconColor = Color(0xFFF5D26C),
+            label = "Pop",
             value = bottleCount.toString(),
             onClick = onOpenBottle
         )
@@ -2004,6 +2400,7 @@ private fun RightActionRail(
 private fun RailAction(
     icon: String,
     iconColor: Color,
+    label: String,
     value: String,
     onClick: () -> Unit,
 ) {
@@ -2025,6 +2422,12 @@ private fun RailAction(
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold
         )
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = 0.78f),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -2038,6 +2441,14 @@ private fun StageMeta(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        Text(
+            text = item.performer,
+            color = Color.White.copy(alpha = 0.92f),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
         Text(
             text = item.title,
             color = Color.White,
@@ -2062,41 +2473,38 @@ private fun StageMeta(
 @Composable
 private fun FeedFooterActions(
     modifier: Modifier = Modifier,
-    isSaved: Boolean,
-    viewCount: Int,
-    commentCount: Int,
     onHome: () -> Unit,
     onFollow: () -> Unit,
+    onVote: () -> Unit,
     onComments: () -> Unit,
-    onSave: () -> Unit,
+    onLive: () -> Unit,
     onMenu: () -> Unit,
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(18.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         FeedFooterActionButton(icon = { Icon(Icons.Outlined.Home, contentDescription = null, tint = Color.White) }, onClick = onHome)
         FeedFooterActionButton(icon = { Icon(Icons.Outlined.People, contentDescription = null, tint = Color.White) }, onClick = onFollow)
         FeedFooterActionButton(
-            count = viewCount,
-            icon = { Text("👀", color = Color.White, fontSize = 16.sp) },
-            onClick = {}
+            icon = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🗳️", color = Color.White, fontSize = 22.sp)
+                    Text("Vote", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            onClick = onVote
         )
-        FeedFooterActionButton(
-            count = commentCount,
-            icon = { Text("💬", color = Color.White, fontSize = 16.sp) },
-            onClick = onComments
-        )
+        FeedFooterActionButton(icon = { Text("💬", color = Color.White, fontSize = 24.sp) }, onClick = onComments)
         FeedFooterActionButton(
             icon = {
-                Icon(
-                    imageVector = if (isSaved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                    contentDescription = null,
-                    tint = Color.White
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🔴", color = Color.White, fontSize = 16.sp)
+                    Text("Live", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
             },
-            onClick = onSave
+            onClick = onLive
         )
         FeedFooterActionButton(icon = { Icon(Icons.Outlined.Menu, contentDescription = null, tint = Color.White) }, onClick = onMenu)
     }
@@ -2104,7 +2512,6 @@ private fun FeedFooterActions(
 
 @Composable
 private fun FeedFooterActionButton(
-    count: Int? = null,
     icon: @Composable () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -2113,22 +2520,10 @@ private fun FeedFooterActionButton(
         modifier = Modifier.clickable(onClick = onClick)
     ) {
         Box(
-            modifier = Modifier.padding(vertical = 6.dp, horizontal = 2.dp),
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 5.dp),
             contentAlignment = Alignment.Center
         ) {
             icon()
-            if (count != null) {
-                Text(
-                    text = count.toString(),
-                    color = Color.White,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .background(Color.Black.copy(alpha = 0.72f), CircleShape)
-                        .padding(horizontal = 4.dp, vertical = 1.dp)
-                )
-            }
         }
     }
 }
@@ -2543,8 +2938,10 @@ private fun FeedCreatorCard(
     member: WatchMember,
     isFollowing: Boolean,
     canFollow: Boolean,
+    canVideoCall: Boolean,
     onFollowToggle: () -> Unit,
     onMeetUp: () -> Unit,
+    onVideoCall: () -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))) {
         Column(
@@ -2572,6 +2969,11 @@ private fun FeedCreatorCard(
                 }
                 OutlinedButton(onClick = onMeetUp) {
                     Text("Meet-Up")
+                }
+                if (canVideoCall) {
+                    OutlinedButton(onClick = onVideoCall) {
+                        Text("📹 Video Call")
+                    }
                 }
             }
         }
@@ -2740,7 +3142,7 @@ private fun shouldRedirectSupportErrorToWallet(message: String): Boolean {
     return listOf("insufficient", "wallet", "deposit", "parag", "gbazilo", "balance")
         .any { text.contains(it) }
 }
-private fun FeedCard.preferredPlaybackUrl(): String? {
+internal fun FeedCard.preferredPlaybackUrl(): String? {
     return mobileUrl
         ?.takeIf { it.isNotBlank() }
         ?: streamUrl?.takeIf { it.isNotBlank() }
@@ -2769,6 +3171,7 @@ private fun MenuAction(
         )
     }
 }
+
 
 
 

@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -38,6 +39,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.app.natureswayproduction.R
 import com.app.natureswayproduction.nativeapp.ui.theme.ParagonGold
 
@@ -48,7 +52,9 @@ fun AuthScreen(
 ) {
     val state by authViewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val activity = context.findActivity()
+    val isPhoneMode = state.emailInput.isPhoneIdentifier()
     val providerButtonText = if (state.mode == AuthMode.Login) {
         "Use a provider to sign in"
     } else {
@@ -60,6 +66,18 @@ fun AuthScreen(
         if (state.isSignedIn && completedAction != null) {
             onAuthFinished(completedAction)
             authViewModel.consumeCompletedAction()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                authViewModel.completePendingProviderSignIn()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -133,6 +151,13 @@ fun AuthScreen(
                                 } else {
                                     Toast.makeText(context, "X sign-in needs an active screen.", Toast.LENGTH_SHORT).show()
                                 }
+                            },
+                            onAppleClick = {
+                                if (activity != null) {
+                                    authViewModel.continueWithApple(activity)
+                                } else {
+                                    Toast.makeText(context, "Apple sign-in needs an active screen.", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
                     }
@@ -145,25 +170,39 @@ fun AuthScreen(
                     OutlinedTextField(
                         value = state.emailInput,
                         onValueChange = authViewModel::updateEmail,
-                        placeholder = { Text("Email") },
+                        placeholder = { Text("Email / Phone number") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
                         colors = authFieldColors()
                     )
 
-                    OutlinedTextField(
-                        value = state.passwordInput,
-                        onValueChange = authViewModel::updatePassword,
-                        placeholder = { Text("Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = authFieldColors()
-                    )
+                    if (!isPhoneMode) {
+                        OutlinedTextField(
+                            value = state.passwordInput,
+                            onValueChange = authViewModel::updatePassword,
+                            placeholder = { Text("Password") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = authFieldColors()
+                        )
+                    }
 
-                    if (state.mode == AuthMode.Login) {
+                    if (state.phoneVerificationId.isNotBlank()) {
+                        OutlinedTextField(
+                            value = state.otpInput,
+                            onValueChange = authViewModel::updateOtp,
+                            placeholder = { Text("Enter phone OTP") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = authFieldColors()
+                        )
+                    }
+
+                    if (state.mode == AuthMode.Login && !isPhoneMode) {
                         Text(
                             text = "Forgot password?",
                             color = Color(0xFF7A5E12),
@@ -174,10 +213,21 @@ fun AuthScreen(
                     }
 
                     PrimaryAuthButton(
-                        label = if (state.mode == AuthMode.Login) "Sign in" else "Create account",
+                        label = when {
+                            state.phoneVerificationId.isNotBlank() -> "Verify OTP"
+                            isPhoneMode -> "Send phone OTP"
+                            state.mode == AuthMode.Login -> "Sign in"
+                            else -> "Create account"
+                        },
                         enabled = !state.isLoading,
                         onClick = {
-                            if (state.mode == AuthMode.Login) {
+                            if (state.phoneVerificationId.isNotBlank()) {
+                                authViewModel.verifyPhoneOtp()
+                            } else if (isPhoneMode && activity != null) {
+                                authViewModel.sendPhoneOtp(activity)
+                            } else if (isPhoneMode) {
+                                Toast.makeText(context, "Phone OTP needs an active screen.", Toast.LENGTH_SHORT).show()
+                            } else if (state.mode == AuthMode.Login) {
                                 authViewModel.signIn()
                             } else {
                                 authViewModel.signUp()
@@ -301,6 +351,7 @@ private fun SocialButtonStack(
     onGoogleClick: () -> Unit,
     onFacebookClick: () -> Unit,
     onXClick: () -> Unit,
+    onAppleClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -323,6 +374,12 @@ private fun SocialButtonStack(
             containerColor = Color(0xFF111111),
             contentColor = Color.White,
             onClick = onXClick
+        )
+        SocialActionButton(
+            label = if (loading) "Connecting..." else "Continue with Apple",
+            containerColor = Color.White,
+            contentColor = Color(0xFF101828),
+            onClick = onAppleClick
         )
     }
 }
@@ -377,5 +434,10 @@ private fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+private fun String.isPhoneIdentifier(): Boolean {
+    val trimmed = trim()
+    return trimmed.startsWith("+") || Regex("^[0-9][0-9\\s\\-()]{6,}$").matches(trimmed)
 }
 

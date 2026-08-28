@@ -3,7 +3,7 @@ import { getAppCheckHeader } from "../config/firebase";
 const configuredApiUrl = import.meta.env.VITE_BACKEND_URL?.trim();
 
 export const API_URL =
-  configuredApiUrl || "https://backend-849823064688.us-central1.run.app";
+  configuredApiUrl || "https://backend-fafgci45ha-uc.a.run.app";
 
 export async function appCheckFetch(url, options = {}) {
   const appCheckHeaders = await getAppCheckHeader();

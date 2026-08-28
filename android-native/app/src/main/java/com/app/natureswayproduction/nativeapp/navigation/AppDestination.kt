@@ -28,4 +28,6 @@ sealed class AppDestination(val route: String) {
     data object UserOnboarding : AppDestination("onboarding_user")
     data object UserAbout : AppDestination("user_about")
     data object MeetUp : AppDestination("meet_up")
+    data object PrivateVideoCall : AppDestination("private_video_call")
+    data object Live : AppDestination("live")
 }

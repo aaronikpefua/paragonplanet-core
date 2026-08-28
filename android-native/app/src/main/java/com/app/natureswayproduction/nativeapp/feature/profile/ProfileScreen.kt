@@ -75,6 +75,7 @@ fun ProfileScreen(
     onOpenSignIn: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenMarketplace: () -> Unit,
     onOpenMerchantAbout: () -> Unit,
     onOpenEditProfile: () -> Unit,
@@ -164,6 +165,7 @@ fun ProfileScreen(
                         inboxUnreadCount = profileState.inboxUnreadCount,
                         onOpenWallet = onOpenWallet,
                         onOpenMeetUp = onOpenMeetUp,
+                        onOpenVideoCall = onOpenVideoCall,
                         onOpenEditProfile = onOpenEditProfile,
                         onOpenEarnRoles = onOpenEarnRoles,
                     )
@@ -177,15 +179,17 @@ fun ProfileScreen(
                             onOpenEditProfile = onOpenEditProfile,
                             onOpenWallet = onOpenWallet,
                             onOpenMeetUp = onOpenMeetUp,
+                            onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
                         )
                     } else if (isSponsorInvestorProfile) {
                         ProfileHero(
                             profile = it,
-                            onOpenEditProfile = onOpenEditProfile,
-                            onOpenWallet = onOpenWallet,
-                            onOpenMeetUp = onOpenMeetUp,
-                            onOpenMarketplace = onOpenMarketplace,
+                    onOpenEditProfile = onOpenEditProfile,
+                    onOpenWallet = onOpenWallet,
+                    onOpenMeetUp = onOpenMeetUp,
+                    onOpenVideoCall = onOpenVideoCall,
+                    onOpenMarketplace = onOpenMarketplace,
                             onOpenMerchantAbout = onOpenMerchantAbout,
                             onOpenEarnRoles = onOpenEarnRoles,
                             inboxUnreadCount = profileState.inboxUnreadCount,
@@ -202,6 +206,7 @@ fun ProfileScreen(
                             inboxUnreadCount = profileState.inboxUnreadCount,
                             onOpenEditProfile = onOpenEditProfile,
                             onOpenWallet = onOpenWallet,
+                            onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
                         )
                     } else if (isPromoterProfile) {
@@ -210,6 +215,7 @@ fun ProfileScreen(
                             profileViewModel = profileViewModel,
                             inboxUnreadCount = profileState.inboxUnreadCount,
                             onOpenWallet = onOpenWallet,
+                            onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
                         )
                     } else if (isSuperbossProfile) {
@@ -219,16 +225,18 @@ fun ProfileScreen(
                             inboxUnreadCount = profileState.inboxUnreadCount,
                             onOpenEditProfile = onOpenEditProfile,
                             onOpenWallet = onOpenWallet,
+                            onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
                         )
                     } else {
                         AboutRoleButton(role = profile?.role ?: "USER")
                         ProfileHero(
                             profile = it,
-                            onOpenEditProfile = onOpenEditProfile,
-                            onOpenWallet = onOpenWallet,
-                            onOpenMeetUp = onOpenMeetUp,
-                            onOpenMarketplace = onOpenMarketplace,
+                    onOpenEditProfile = onOpenEditProfile,
+                    onOpenWallet = onOpenWallet,
+                    onOpenMeetUp = onOpenMeetUp,
+                    onOpenVideoCall = onOpenVideoCall,
+                    onOpenMarketplace = onOpenMarketplace,
                             onOpenMerchantAbout = onOpenMerchantAbout,
                             onOpenEarnRoles = onOpenEarnRoles,
                             inboxUnreadCount = profileState.inboxUnreadCount,
@@ -722,6 +730,7 @@ private fun ProfileHero(
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenMarketplace: () -> Unit,
     onOpenMerchantAbout: () -> Unit,
     onOpenEarnRoles: () -> Unit,
@@ -755,9 +764,10 @@ private fun ProfileHero(
             ProfileQuickActions(
                 role = profile.role,
                 onOpenEditProfile = onOpenEditProfile,
-                onOpenWallet = onOpenWallet,
-                onOpenMeetUp = onOpenMeetUp,
-                onOpenMarketplace = onOpenMarketplace,
+        onOpenWallet = onOpenWallet,
+        onOpenMeetUp = onOpenMeetUp,
+        onOpenVideoCall = onOpenVideoCall,
+        onOpenMarketplace = onOpenMarketplace,
                 onOpenMerchantAbout = onOpenMerchantAbout,
                 onOpenEarnRoles = onOpenEarnRoles,
                 inboxUnreadCount = inboxUnreadCount,
@@ -776,6 +786,7 @@ private fun CitizenProfileHero(
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
 ) {
     var ambassadors by remember { mutableStateOf<List<AmbassadorContactItem>>(emptyList()) }
@@ -831,10 +842,11 @@ private fun CitizenProfileHero(
                 ProfileActionChip("Invite", onClick = {
                     context.shareText(buildPlayStoreInviteMessage())
                 })
-                ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
-                ProfileActionChip("Wallet", onClick = onOpenWallet)
-                ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
-                ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
+        ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
+        ProfileActionChip("Wallet", onClick = onOpenWallet)
+        ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
+        ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
+        ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
             }
         }
     }
@@ -868,6 +880,7 @@ private fun AmbassadorProfileHero(
     profileViewModel: ProfileViewModel,
     inboxUnreadCount: Int,
     onOpenWallet: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -923,6 +936,7 @@ private fun AmbassadorProfileHero(
                 ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
                 ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
                 ProfileActionChip("Wallet", onClick = onOpenWallet)
+                ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
             }
             inviteError?.let {
                 Text(
@@ -1124,6 +1138,7 @@ private fun BackerProfileHero(
     inboxUnreadCount: Int,
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1158,6 +1173,7 @@ private fun BackerProfileHero(
             BackerProfileQuickActions(
                 onOpenEditProfile = onOpenEditProfile,
                 onOpenWallet = onOpenWallet,
+                onOpenVideoCall = onOpenVideoCall,
                 onOpenEarnRoles = onOpenEarnRoles,
                 inboxUnreadCount = inboxUnreadCount,
                 isCreatingInvite = isCreatingInvite,
@@ -1214,6 +1230,7 @@ private fun SuperbossProfileHero(
     inboxUnreadCount: Int,
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1243,6 +1260,7 @@ private fun SuperbossProfileHero(
             BackerProfileQuickActions(
                 onOpenEditProfile = onOpenEditProfile,
                 onOpenWallet = onOpenWallet,
+                onOpenVideoCall = onOpenVideoCall,
                 onOpenEarnRoles = onOpenEarnRoles,
                 inboxUnreadCount = inboxUnreadCount,
                 isCreatingInvite = isCreatingInvite,
@@ -1291,6 +1309,7 @@ private fun SuperbossProfileHero(
 private fun BackerProfileQuickActions(
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
     inboxUnreadCount: Int,
     isCreatingInvite: Boolean,
@@ -1311,6 +1330,7 @@ private fun BackerProfileQuickActions(
         })
         ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
         ProfileActionChip("Wallet", onClick = onOpenWallet)
+        ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
         ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
     }
 }
@@ -2300,6 +2320,7 @@ private fun UserProfileActionsCard(
     inboxUnreadCount: Int,
     onOpenWallet: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenEditProfile: () -> Unit,
     onOpenEarnRoles: () -> Unit,
 ) {
@@ -2326,9 +2347,10 @@ private fun UserProfileActionsCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ProfileActionChip("Wallet", onClick = onOpenWallet)
-                ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
-                ProfileActionChip("Edit Profile", onClick = onOpenEditProfile)
+            ProfileActionChip("Wallet", onClick = onOpenWallet)
+            ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
+            ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
+            ProfileActionChip("Edit Profile", onClick = onOpenEditProfile)
                 ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
                 ProfileActionChip("Invite", onClick = {
                     context.shareText(buildPlayStoreInviteMessage())
@@ -2448,6 +2470,7 @@ private fun ProfileQuickActions(
     onOpenEditProfile: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenMeetUp: () -> Unit,
+    onOpenVideoCall: () -> Unit,
     onOpenMarketplace: () -> Unit,
     onOpenMerchantAbout: () -> Unit,
     onOpenEarnRoles: () -> Unit,
@@ -2483,6 +2506,7 @@ private fun ProfileQuickActions(
             ProfileActionChip("Inbox", unreadCount = inboxUnreadCount, onClick = onOpenInbox)
             ProfileActionChip("Wallet", onClick = onOpenWallet)
             ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
+            ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
             ProfileActionChip("Invite", onClick = {
                 context.shareText(buildPlayStoreInviteMessage())
             })
@@ -2995,6 +3019,7 @@ private fun formatRewardPreview(amount: String, unit: String): String {
     val nairaValue = if (safeUnit == "GBAZILO") safeAmount * 1000 else safeAmount * 100
     return "$safeAmount $safeUnit (N${nairaValue})"
 }
+
 
 
 

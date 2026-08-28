@@ -15,7 +15,7 @@ import {
   limit
 } from "firebase/firestore";
 import { deleteUser } from "firebase/auth";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import SuperbossAboutContent from "../components/SuperbossAboutContent";
 import CitizenAboutContent from "../components/CitizenAboutContent";
 import BackerAboutContent from "../components/BackerAboutContent";
@@ -62,6 +62,7 @@ export default function Profile() {
   const [showBackerAspirantAbout, setShowBackerAspirantAbout] = useState(false);
   const [showSupernalCandidateAbout, setShowSupernalCandidateAbout] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const promoterStatusLabel =
     profile?.status === "APPROVED"
@@ -151,6 +152,16 @@ export default function Profile() {
 
     loadProfile();
   }, [navigate, activeRoleKey]);
+
+  useEffect(() => {
+    if (loading || searchParams.get("section") !== "questions") return;
+    window.setTimeout(() => {
+      document.getElementById("role-question-board")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 100);
+  }, [loading, role, searchParams]);
 
   /* ================= DELETE VIDEO ================= */
   const deleteVideo = async (videoId) => {
@@ -1418,7 +1429,7 @@ export default function Profile() {
               </div>
             </div>
 
-              <div style={sectionCardStyle}>
+              <div id="role-question-board" style={sectionCardStyle}>
                 <h3 style={{ marginTop: 0 }}>Backer Challenge Studio</h3>
                 <p style={mutedTextStyle}>
                   Create up to 5 timed challenge cards. Each card needs 4 answer choices, a hidden correct answer, a visible timer, and a visible reward weight.
@@ -1698,25 +1709,27 @@ export default function Profile() {
               value={formatServiceDisplay(profile.serviceCategories, profile.serviceFields || profile.knowledgeFields)}
             />
 
-            <SuperbossChallengeStudio
-              challengeDrafts={backerQuestionDrafts}
-              publishedChallenges={backerQuestions}
-              openChallenges={answerableBackerQuestions}
-              attemptHistory={backerAttemptHistory}
-              leaderboard={backerLeaderboard}
-              stats={backerStats}
-              saving={savingBackerQuestions}
-              answeringQuestionId={answeringQuestionId}
-              activeOpenedQuestion={activeOpenedQuestion}
-              openedQuestionSecondsLeft={openedBackerQuestionSecondsLeft}
-              failedQuestionIds={failedQuestionIds}
-              onDraftChange={handleBackerQuestionChange}
-              onOptionChange={handleBackerOptionChange}
-              onAddDraft={addBackerQuestionDraft}
-              onPublish={publishBackerQuestions}
-              onOpenQuestion={openBackerQuestion}
-              onAnswerQuestion={answerBackerQuestion}
-            />
+            <div id="role-question-board">
+              <SuperbossChallengeStudio
+                challengeDrafts={backerQuestionDrafts}
+                publishedChallenges={backerQuestions}
+                openChallenges={answerableBackerQuestions}
+                attemptHistory={backerAttemptHistory}
+                leaderboard={backerLeaderboard}
+                stats={backerStats}
+                saving={savingBackerQuestions}
+                answeringQuestionId={answeringQuestionId}
+                activeOpenedQuestion={activeOpenedQuestion}
+                openedQuestionSecondsLeft={openedBackerQuestionSecondsLeft}
+                failedQuestionIds={failedQuestionIds}
+                onDraftChange={handleBackerQuestionChange}
+                onOptionChange={handleBackerOptionChange}
+                onAddDraft={addBackerQuestionDraft}
+                onPublish={publishBackerQuestions}
+                onOpenQuestion={openBackerQuestion}
+                onAnswerQuestion={answerBackerQuestion}
+              />
+            </div>
 
             <div style={sectionCardStyle}>
               <h3 style={{ marginTop: 0, marginBottom: 10 }}>Superboss Reputation System</h3>
@@ -3103,6 +3116,8 @@ function getBackerGoodWorksTotal(profile) {
 function formatCount(value) {
   return Number(value || 0).toLocaleString();
 }
+
+
 
 
 

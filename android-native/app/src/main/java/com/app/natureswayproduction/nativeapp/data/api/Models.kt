@@ -6,6 +6,12 @@ data class MobileUser(
     val role: String?
 )
 
+data class NativeXAuthStart(
+    val authUrl: String,
+    val requestToken: String,
+    val state: String,
+)
+
 data class MobileProfile(
     val uid: String,
     val role: String,
@@ -251,4 +257,121 @@ data class MarketplaceNotification(
     val body: String = "",
     val orderId: String = "",
     val read: Boolean = false,
+)
+
+// Realtime private video calling
+
+data class RealtimeProviderInfo(
+    val provider: String,
+    val configured: Boolean,
+    val recordingDefault: String,
+)
+
+data class CallPlan(
+    val id: String,
+    val label: String,
+    val durationMinutes: Int,
+    val priceParag: Int,
+    val participantLimit: Int = 2,
+)
+
+data class CallPlansResponse(
+    val plans: List<CallPlan>,
+    val provider: RealtimeProviderInfo,
+)
+
+data class PrivateCallSession(
+    val id: String,
+    val status: String,
+    val requesterId: String,
+    val requesterName: String,
+    val recipientId: String,
+    val recipientName: String,
+    val planId: String,
+    val planLabel: String,
+    val durationMinutes: Int,
+    val priceParag: Int,
+    val roomId: String? = null,
+    val roomName: String? = null,
+)
+
+data class RealtimeToken(
+    val authToken: String,
+    val roomId: String,
+    val participantId: String,
+    val provider: String,
+)
+
+data class JoinCallResult(
+    val call: PrivateCallSession,
+    val token: RealtimeToken,
+)
+
+data class LiveProviderInfo(
+    val provider: String,
+    val configured: Boolean,
+    val recordingDefault: String,
+    val missing: List<String> = emptyList(),
+)
+
+data class LiveSession(
+    val id: String,
+    val status: String,
+    val hostUid: String,
+    val hostUsername: String,
+    val hostRole: String,
+    val purpose: String,
+    val title: String,
+    val description: String,
+    val liveInputId: String? = null,
+    val playbackId: String? = null,
+    val playbackUrl: String? = null,
+    val playbackHlsUrl: String? = null,
+    val playbackDashUrl: String? = null,
+    val webRtcPlaybackUrl: String? = null,
+    val playbackWebRtcUrl: String? = null,
+    val publisherTransport: String? = null,
+    val playbackTransport: String? = null,
+    val scheduledAt: String? = null,
+    val actualStartedAt: String? = null,
+    val wentLiveAt: String? = null,
+    val startedAt: String? = null,
+    val createdAt: String? = null,
+    val endedAt: String? = null,
+)
+
+data class LiveIngestInfo(
+    val rtmpsUrl: String,
+    val rtmpsStreamKey: String,
+    val srtUrl: String,
+    val srtStreamId: String,
+    val webRtcUrl: String,
+)
+
+data class StartLiveResult(
+    val session: LiveSession,
+    val ingest: LiveIngestInfo,
+    val provider: LiveProviderInfo,
+)
+
+data class LiveSessionsResponse(
+    val sessions: List<LiveSession>,
+    val provider: LiveProviderInfo,
+)
+
+data class LiveChatMessage(
+    val id: String,
+    val userId: String,
+    val userName: String,
+    val displayName: String,
+    val text: String,
+    val createdAt: String,
+)
+
+data class LiveSupportResult(
+    val ok: Boolean,
+    val sessionId: String,
+    val actionKey: String,
+    val amountParag: Int,
+    val amountGbazilo: Int,
 )

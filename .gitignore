@@ -27,3 +27,31 @@ service-account.json
 android-twa/android-keystore
 android-twa/*.jks
 android-twa/*.keystore
+
+# Local machine configuration
+**/local.properties
+
+# Local logs
+*.log
+
+# Android release bundles / packages
+*.aab
+*.apk
+
+# Temporary compiled archives
+classes.jar
+
+# Local development tools
+.tools/
+
+# Architecture/performance audit artifacts
+architecture-scan/
+performance-baseline-v1/
+paragonplanet-architecture-scan.zip
+paragonplanet-performance-baseline-v1.zip
+
+# Gradle / IDE generated directories at any level
+**/.gradle/
+**/.idea/
+**/.kotlin/
+**/build/

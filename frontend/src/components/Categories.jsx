@@ -30,7 +30,7 @@ export default function Categories() {
       <button type="button" onClick={() => navigate(-1)} style={backButtonStyle}>
         Go Back
       </button>
-      <h2 style={titleStyle}>The Citizen Contestants</h2>
+      <h2 style={titleStyle}>The Contestants for Paragon Planet Citizen</h2>
 
       <button
         type="button"
@@ -66,7 +66,7 @@ export default function Categories() {
       )}
 
       <h2 style={fieldPromptStyle}>
-        Select a field of Talent to see Citizen Contestants in that field and watch their Performs.
+        Select a talent category to view entertainers, or introduce your favourite entertainer. Watch their performances, share your comments, express your views, and vote for your favourite entertainers to help them qualify as Paragon Planet Citizens.
       </h2>
 
       <div style={containerStyle}>

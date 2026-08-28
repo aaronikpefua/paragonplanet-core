@@ -75,7 +75,7 @@ const DEFAULT_COMMISSION_PCT = 5;
 const ALLOWED_TRANSITIONS = {
   request_submitted: ["negotiating", "cancelled"],
   negotiating: ["final_offer_sent", "cancelled"],
-  final_offer_sent: ["buyer_accepted", "negotiating", "cancelled", "expired"],
+  final_offer_sent: ["buyer_accepted", "escrow_funded", "negotiating", "cancelled", "expired"],
   buyer_accepted: ["escrow_funded", "cancelled"],
   escrow_funded: ["delivering", "cancelled"],
   delivering: ["buyer_review", "disputed"],
@@ -96,6 +96,10 @@ function isValidTransition(from, to) {
 
 function isPositiveAmount(amount) {
   return Number.isFinite(Number(amount)) && Number(amount) > 0;
+}
+
+function sanitizeMessageText(text) {
+  return typeof text === "string" ? text.trim().slice(0, 2000) : "";
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -165,6 +169,146 @@ export async function updateMarketplaceSettings(req, res) {
   } catch (err) {
     console.error("updateMarketplaceSettings failed:", err);
     return res.status(500).json({ message: "Could not update settings" });
+  }
+}
+
+// ─── Merchant negotiation – send final offer ────────────────────────────────
+
+export async function sendFinalOffer(req, res) {
+  const merchantId = req.user.uid;
+  const { orderId, amount, message } = req.body;
+  const ip = req.ip || null;
+
+  if (!orderId || typeof orderId !== "string") {
+    return res.status(400).json({ message: "orderId is required" });
+  }
+
+  const offerAmount = Number(amount);
+  if (!isPositiveAmount(offerAmount)) {
+    return res.status(400).json({ message: "amount must be greater than zero" });
+  }
+
+  try {
+    const orderRef = orders().doc(orderId);
+    const orderSnap = await orderRef.get();
+
+    if (!orderSnap.exists) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    const order = orderSnap.data();
+
+    if (order.merchantId !== merchantId) {
+      return res.status(403).json({ message: "Only the merchant may send a final offer" });
+    }
+
+    const currentStatus = order.status || "request_submitted";
+    const allowedOfferStatuses = ["request_submitted", "chat_open", "negotiating", "final_offer_sent"];
+    if (!allowedOfferStatuses.includes(currentStatus)) {
+      return res.status(409).json({
+        message: `Cannot send final offer from status '${currentStatus}'.`,
+      });
+    }
+
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const currency = (order.currency || "PARAG").toUpperCase();
+    const senderName = order.merchantName || req.user.name || req.user.email || "Merchant";
+    const text =
+      sanitizeMessageText(message) ||
+      `Final Offer: ${offerAmount} ${currency}. Please accept and pay from your wallet to proceed.`;
+
+    await db().runTransaction(async (tx) => {
+      const freshOrderSnap = await tx.get(orderRef);
+      if (!freshOrderSnap.exists) throw new Error("ORDER_NOT_FOUND");
+      const freshOrder = freshOrderSnap.data();
+
+      if (freshOrder.merchantId !== merchantId) {
+        const err = new Error("FORBIDDEN");
+        err.code = "FORBIDDEN";
+        throw err;
+      }
+
+      const freshStatus = freshOrder.status || "request_submitted";
+      if (!allowedOfferStatuses.includes(freshStatus)) {
+        const err = new Error("INVALID_TRANSITION");
+        err.code = "INVALID_TRANSITION";
+        err.status = freshStatus;
+        throw err;
+      }
+
+      tx.update(orderRef, {
+        status: "final_offer_sent",
+        amount: offerAmount,
+        currency,
+        finalOfferAmount: offerAmount,
+        finalOfferCurrency: currency,
+        finalOfferSentAt: now,
+        finalOfferSentBy: merchantId,
+        updatedAt: now,
+      });
+
+      tx.set(orderMessages().doc(), {
+        orderId,
+        productId: freshOrder.productId || "",
+        productName: freshOrder.productName || "Product request",
+        productMediaUrl: freshOrder.productMediaUrl || "",
+        productStreamUrl: freshOrder.productStreamUrl || "",
+        productOriginalUrl: freshOrder.productOriginalUrl || "",
+        productThumbnailUrl: freshOrder.productThumbnailUrl || "",
+        productMediaType: freshOrder.productMediaType || "",
+        buyerId: freshOrder.buyerId,
+        buyerName: freshOrder.buyerName || "Buyer",
+        merchantId,
+        merchantName: senderName,
+        amount: offerAmount,
+        currency,
+        senderId: merchantId,
+        senderName,
+        senderRole: "merchant",
+        text,
+        type: "final_offer",
+        messageType: "final_offer",
+        readBy: [merchantId],
+        createdAt: now,
+      });
+    });
+
+    await writeAudit({
+      orderId,
+      action: "final_offer_sent",
+      userId: merchantId,
+      ip,
+      extra: { amount: offerAmount, currency },
+    });
+
+    await pushNotification({
+      recipientId: order.buyerId,
+      type: "final_offer",
+      title: "Final offer received",
+      body: `${senderName} sent a final offer of ${offerAmount} ${currency}.`,
+      orderId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      orderId,
+      status: "final_offer_sent",
+      amount: offerAmount,
+      currency,
+      messageText: text,
+    });
+  } catch (err) {
+    if (err.code === "FORBIDDEN") {
+      return res.status(403).json({ message: "Only the merchant may send a final offer" });
+    }
+    if (err.code === "INVALID_TRANSITION") {
+      return res.status(409).json({ message: `Cannot send final offer from status '${err.status}'.` });
+    }
+    if (err.message === "ORDER_NOT_FOUND") {
+      return res.status(404).json({ message: "Order not found" });
+    }
+    console.error("sendFinalOffer failed:", err);
+    return res.status(500).json({ message: "Could not send final offer" });
   }
 }
 

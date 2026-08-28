@@ -4,6 +4,7 @@ import { authenticate } from "../../middlewares/auth.middleware.js";
 import { requireAdmin } from "../../middlewares/admin.middleware.js";
 import {
   // Escrow / transaction flow
+  sendFinalOffer,
   fundEscrow,
   submitDelivery,
   confirmDeliveryAndSettle,
@@ -40,6 +41,13 @@ const router = Router();
 router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 // ── Buyer / Merchant transaction flow ─────────────────────────────────────────
+router.post(
+  "/final-offer",
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
+  authenticate,
+  sendFinalOffer
+);
+
 router.post(
   "/pay",
   rateLimit({ windowMs: 60 * 1000, max: 10 }),

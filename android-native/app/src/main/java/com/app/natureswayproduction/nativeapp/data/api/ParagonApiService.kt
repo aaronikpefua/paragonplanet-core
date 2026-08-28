@@ -38,6 +38,311 @@ class ParagonApiService {
         )
     }
 
+    suspend fun startNativeXAuth(): NativeXAuthStart = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/native-x-auth/start",
+            method = "POST",
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString()
+        )
+        val json = JSONObject(response)
+        NativeXAuthStart(
+            authUrl = json.optString("authUrl"),
+            requestToken = json.optString("requestToken"),
+            state = json.optString("state")
+        )
+    }
+
+    suspend fun fetchRealtimeCallPlans(idToken: String, appCheckToken: String? = null): CallPlansResponse = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/realtime/plans",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        val json = JSONObject(response)
+        val plansArray = json.optJSONArray("plans") ?: JSONArray()
+        CallPlansResponse(
+            plans = buildList {
+                for (index in 0 until plansArray.length()) {
+                    val item = plansArray.getJSONObject(index)
+                    add(
+                        CallPlan(
+                            id = item.optString("id"),
+                            label = item.optString("label"),
+                            durationMinutes = item.optInt("durationMinutes", 0),
+                            priceParag = item.optInt("priceParag", 0),
+                            participantLimit = item.optInt("participantLimit", 2),
+                        )
+                    )
+                }
+            },
+            provider = json.optJSONObject("provider")?.toRealtimeProviderInfo() ?: RealtimeProviderInfo(
+                provider = "cloudflare-realtimekit",
+                configured = false,
+                recordingDefault = "OFF",
+            )
+        )
+    }
+
+    suspend fun startParagonLive(
+        idToken: String,
+        appCheckToken: String?,
+        hostRole: String,
+        purpose: String,
+        title: String,
+        description: String,
+    ): StartLiveResult = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/start",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("hostRole", hostRole)
+                .put("purpose", purpose)
+                .put("title", title)
+                .put("description", description)
+                .put("audience", "Public")
+                .toString(),
+        )
+        JSONObject(response).toStartLiveResult()
+    }
+
+    suspend fun scheduleParagonLive(
+        idToken: String,
+        appCheckToken: String?,
+        hostRole: String,
+        purpose: String,
+        title: String,
+        description: String,
+        scheduledAt: String,
+    ): LiveSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/schedule",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("hostRole", hostRole)
+                .put("purpose", purpose)
+                .put("title", title)
+                .put("description", description)
+                .put("audience", "Public")
+                .put("scheduledAt", scheduledAt)
+                .toString(),
+        )
+        JSONObject(response).getJSONObject("session").toLiveSession()
+    }
+
+    suspend fun endParagonLive(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): LiveSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/end",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString(),
+        )
+        JSONObject(response).getJSONObject("session").toLiveSession()
+    }
+
+    suspend fun markParagonLiveActive(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): LiveSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/active",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString(),
+        )
+        JSONObject(response).getJSONObject("session").toLiveSession()
+    }
+
+    suspend fun heartbeatParagonLive(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): LiveSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/heartbeat",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString(),
+        )
+        JSONObject(response).getJSONObject("session").toLiveSession()
+    }
+
+    suspend fun listParagonLiveSessions(
+        idToken: String,
+        appCheckToken: String?,
+        tab: String,
+    ): LiveSessionsResponse = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions?tab=${java.net.URLEncoder.encode(tab, "UTF-8")}",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        JSONObject(response).toLiveSessionsResponse()
+    }
+
+    suspend fun fetchParagonLiveChat(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): List<LiveChatMessage> = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/chat",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        val array = JSONObject(response).optJSONArray("messages") ?: JSONArray()
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                add(item.toLiveChatMessage())
+            }
+        }
+    }
+
+    suspend fun postParagonLiveChat(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+        text: String,
+    ): LiveChatMessage = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/chat",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().put("text", text).toString(),
+        )
+        JSONObject(response).getJSONObject("message").toLiveChatMessage()
+    }
+
+    suspend fun sendParagonLiveSupport(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+        actionKey: String,
+        customParagAmount: Int? = null,
+        customGbaziloAmount: Int? = null,
+    ): LiveSupportResult = withContext(Dispatchers.IO) {
+        val payload = JSONObject().put("actionKey", actionKey)
+        if (customParagAmount != null) payload.put("customParagAmount", customParagAmount)
+        if (customGbaziloAmount != null) payload.put("customGbaziloAmount", customGbaziloAmount)
+        val response = request(
+            path = "/api/live/sessions/$sessionId/support",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = payload.toString(),
+        )
+        val json = JSONObject(response)
+        LiveSupportResult(
+            ok = json.optBoolean("ok", true),
+            sessionId = json.optString("sessionId"),
+            actionKey = json.optString("actionKey"),
+            amountParag = json.optInt("amountParag", 0),
+            amountGbazilo = json.optInt("amountGbazilo", 0),
+        )
+    }
+
+    suspend fun requestPrivateVideoCall(
+        idToken: String,
+        appCheckToken: String?,
+        recipientId: String,
+        planId: String,
+        idempotencyKey: String,
+    ): PrivateCallSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/realtime/calls/request",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("recipientId", recipientId)
+                .put("planId", planId)
+                .put("idempotencyKey", idempotencyKey)
+                .toString(),
+        )
+        JSONObject(response).getJSONObject("call").toPrivateCallSession()
+    }
+
+    suspend fun fetchMyRealtimeCalls(idToken: String, appCheckToken: String? = null): List<PrivateCallSession> = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/realtime/calls",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        val array = JSONObject(response).optJSONArray("calls") ?: JSONArray()
+        buildList {
+            for (index in 0 until array.length()) {
+                add(array.getJSONObject(index).toPrivateCallSession())
+            }
+        }
+    }
+
+    suspend fun updateRealtimeCall(
+        idToken: String,
+        appCheckToken: String?,
+        callId: String,
+        action: String,
+    ): PrivateCallSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/realtime/calls/$callId/$action",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString(),
+        )
+        JSONObject(response).getJSONObject("call").toPrivateCallSession()
+    }
+
+    suspend fun joinRealtimeCall(
+        idToken: String,
+        appCheckToken: String?,
+        callId: String,
+    ): JoinCallResult = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/realtime/calls/$callId/join",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().toString(),
+        )
+        val json = JSONObject(response)
+        JoinCallResult(
+            call = json.getJSONObject("call").toPrivateCallSession(),
+            token = json.getJSONObject("token").toRealtimeToken(),
+        )
+    }
+
     suspend fun fetchFeed(appCheckToken: String? = null): List<VideoSummary> = withContext(Dispatchers.IO) {
         val response = request(
             path = "/api/video/list",
@@ -58,7 +363,11 @@ class ParagonApiService {
                         category = item.optString("category").ifBlank { "General" },
                         performerName = item.optString("displayName")
                             .ifBlank { item.optString("performerName") }
-                            .ifBlank { item.optString("userId") }
+                            .ifBlank { item.optString("creatorName") }
+                            .ifBlank { item.optString("username") }
+                            .ifBlank { item.optString("userName") }
+                            .ifBlank { item.optString("stageName") }
+                            .ifBlank { item.optString("realName") }
                             .ifBlank { "Paragon Creator" },
                         description = item.optString("description")
                             .ifBlank { item.optString("about") }
@@ -73,6 +382,10 @@ class ParagonApiService {
                         } ?: 0,
                         thumbnailUrl = item.optString("thumbnailUrl")
                             .ifBlank { item.optString("coverImage") }
+                            .ifBlank { item.optString("posterUrl") }
+                            .ifBlank { item.optString("poster") }
+                            .ifBlank { item.optString("coverUrl") }
+                            .ifBlank { item.optString("thumbnail") }
                             .ifBlank { null },
                         streamUrl = item.optString("streamUrl").ifBlank { null },
                         mobileUrl = item.optString("mobileUrl").ifBlank { null },
@@ -221,6 +534,25 @@ class ParagonApiService {
         )
     }
 
+    suspend fun supportRoleProfile(
+        idToken: String,
+        rolePath: String,
+        profileId: String,
+        actionKey: String,
+        amountParag: Int = 1,
+    ) = withContext(Dispatchers.IO) {
+        request(
+            path = "/support/$rolePath/$profileId",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("actionKey", actionKey)
+                .put("amountParag", amountParag)
+                .toString()
+        )
+    }
+
 
     suspend fun settleMarketplaceOrder(
         idToken: String,
@@ -229,8 +561,28 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/pay",
             method = "POST",
-            authorization = "******",
+            authorization = "Bearer $idToken",
             jsonBody = JSONObject().put("orderId", orderId).toString()
+        )
+        val json = JSONObject(response)
+        json.optBoolean("success", false)
+    }
+
+    suspend fun sendMarketplaceFinalOffer(
+        idToken: String,
+        orderId: String,
+        amount: Double,
+        message: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/marketplace/final-offer",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            jsonBody = JSONObject()
+                .put("orderId", orderId)
+                .put("amount", amount)
+                .put("message", message)
+                .toString()
         )
         val json = JSONObject(response)
         json.optBoolean("success", false)
@@ -252,7 +604,7 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/deliver",
             method = "POST",
-            authorization = "******",
+            authorization = "Bearer $idToken",
             jsonBody = body.toString()
         )
         val json = JSONObject(response)
@@ -266,7 +618,7 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/confirm",
             method = "POST",
-            authorization = "******",
+            authorization = "Bearer $idToken",
             jsonBody = JSONObject().put("orderId", orderId).toString()
         )
         val json = JSONObject(response)
@@ -281,7 +633,7 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/cancel",
             method = "POST",
-            authorization = "******",
+            authorization = "Bearer $idToken",
             jsonBody = JSONObject().put("orderId", orderId).put("reason", reason).toString()
         )
         val json = JSONObject(response)
@@ -297,7 +649,7 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/dispute",
             method = "POST",
-            authorization = "******",
+            authorization = "Bearer $idToken",
             jsonBody = JSONObject()
                 .put("orderId", orderId)
                 .put("reason", reason)
@@ -312,7 +664,7 @@ class ParagonApiService {
         val response = request(
             path = "/api/marketplace/notifications",
             method = "GET",
-            authorization = "******"
+            authorization = "Bearer $idToken"
         )
         val array = JSONArray(response)
         buildList {
@@ -558,6 +910,124 @@ class ParagonApiService {
 
         return ApiResponse(statusCode = statusCode, body = body)
     }
+}
+
+private fun JSONObject.toRealtimeProviderInfo(): RealtimeProviderInfo {
+    return RealtimeProviderInfo(
+        provider = optString("provider").ifBlank { "cloudflare-realtimekit" },
+        configured = optBoolean("configured", false),
+        recordingDefault = optString("recordingDefault").ifBlank { "OFF" },
+    )
+}
+
+private fun JSONObject.toPrivateCallSession(): PrivateCallSession {
+    return PrivateCallSession(
+        id = optString("id").ifBlank { optString("callId") },
+        status = optString("status"),
+        requesterId = optString("requesterId"),
+        requesterName = optString("requesterName"),
+        recipientId = optString("recipientId"),
+        recipientName = optString("recipientName"),
+        planId = optString("planId"),
+        planLabel = optString("planLabel"),
+        durationMinutes = optInt("durationMinutes", 0),
+        priceParag = optInt("priceParag", 0),
+        roomId = optString("roomId").ifBlank { null },
+        roomName = optString("roomName").ifBlank { null },
+    )
+}
+
+private fun JSONObject.toRealtimeToken(): RealtimeToken {
+    return RealtimeToken(
+        authToken = optString("authToken"),
+        roomId = optString("roomId"),
+        participantId = optString("participantId"),
+        provider = optString("provider").ifBlank { "cloudflare-realtimekit" },
+    )
+}
+
+private fun JSONObject.toLiveProviderInfo(): LiveProviderInfo {
+    val missingArray = optJSONArray("missing") ?: JSONArray()
+    return LiveProviderInfo(
+        provider = optString("provider").ifBlank { "cloudflare-stream-live" },
+        configured = optBoolean("configured", false),
+        recordingDefault = optString("recordingDefault").ifBlank { "automatic" },
+        missing = buildList {
+            for (index in 0 until missingArray.length()) {
+                add(missingArray.optString(index))
+            }
+        },
+    )
+}
+
+private fun JSONObject.toLiveSession(): LiveSession {
+    return LiveSession(
+        id = optString("id").ifBlank { optString("liveSessionId") },
+        status = optString("status"),
+        hostUid = optString("hostUid"),
+        hostUsername = optString("hostUsername"),
+        hostRole = optString("hostRole"),
+        purpose = optString("purpose"),
+        title = optString("title"),
+        description = optString("description"),
+        liveInputId = optString("liveInputId").ifBlank { null },
+        playbackId = optString("playbackId").ifBlank { null },
+        playbackUrl = optString("playbackUrl").ifBlank { null },
+        playbackHlsUrl = optString("playbackHlsUrl").ifBlank { null },
+        playbackDashUrl = optString("playbackDashUrl").ifBlank { null },
+        webRtcPlaybackUrl = optString("webRtcPlaybackUrl").ifBlank { null },
+        playbackWebRtcUrl = optString("playbackWebRtcUrl").ifBlank { null },
+        publisherTransport = optString("publisherTransport").ifBlank { null },
+        playbackTransport = optString("playbackTransport").ifBlank { null },
+        scheduledAt = optString("scheduledAt").ifBlank { null },
+        actualStartedAt = optString("actualStartedAt").ifBlank { null },
+        wentLiveAt = optString("wentLiveAt").ifBlank { null },
+        startedAt = optString("startedAt").ifBlank { null },
+        createdAt = optString("createdAt").ifBlank { null },
+        endedAt = optString("endedAt").ifBlank { null },
+    )
+}
+
+private fun JSONObject.toLiveIngestInfo(): LiveIngestInfo {
+    return LiveIngestInfo(
+        rtmpsUrl = optString("rtmpsUrl"),
+        rtmpsStreamKey = optString("rtmpsStreamKey"),
+        srtUrl = optString("srtUrl"),
+        srtStreamId = optString("srtStreamId"),
+        webRtcUrl = optString("webRtcUrl"),
+    )
+}
+
+private fun JSONObject.toStartLiveResult(): StartLiveResult {
+    return StartLiveResult(
+        session = getJSONObject("session").toLiveSession(),
+        ingest = optJSONObject("ingest")?.toLiveIngestInfo() ?: LiveIngestInfo("", "", "", "", ""),
+        provider = optJSONObject("provider")?.toLiveProviderInfo() ?: LiveProviderInfo("cloudflare-stream-live", false, "automatic"),
+    )
+}
+
+private fun JSONObject.toLiveSessionsResponse(): LiveSessionsResponse {
+    val array = optJSONArray("sessions") ?: JSONArray()
+    return LiveSessionsResponse(
+        sessions = buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                add(item.toLiveSession())
+            }
+        },
+        provider = optJSONObject("provider")?.toLiveProviderInfo() ?: LiveProviderInfo("cloudflare-stream-live", false, "automatic"),
+    )
+}
+
+private fun JSONObject.toLiveChatMessage(): LiveChatMessage {
+    return LiveChatMessage(
+        id = optString("id"),
+        userId = optString("userId"),
+        userName = optString("userName").ifBlank { "Paragon Member" },
+        displayName = optString("displayName").ifBlank { optString("userName").ifBlank { "Paragon Member" } },
+        text = optString("text"),
+        createdAt = optString("createdAt"),
+    )
 }
 
 private data class ApiResponse(

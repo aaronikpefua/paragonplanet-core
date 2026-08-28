@@ -75,9 +75,9 @@ export default function MeetUpDirectory() {
       <section style={panelStyle}>
         <div style={headerStyle}>
           <div>
-            <p style={eyebrowStyle}>Request meet-up</p>
-            <h1 style={titleStyle}>Choose a user to meet</h1>
-            <p style={mutedStyle}>Select any member and send a meet-up request to their profile.</p>
+            <p style={eyebrowStyle}>Meeting Zone</p>
+            <h1 style={titleStyle}>MEETING ZONE</h1>
+            <p style={mutedStyle}>Search once, select one person, then use the same recipient for Meeting Request, Video Call, or Voice Call.</p>
           </div>
           <button type="button" onClick={() => navigate("/profile")} style={secondaryButtonStyle}>
             Profile
@@ -110,7 +110,7 @@ export default function MeetUpDirectory() {
                   onClick={() => navigate(`/meet-up/${member.uid}`)}
                   style={primaryButtonStyle}
                 >
-                  Request Meet-Up
+                  Select User
                 </button>
               </article>
             ))}

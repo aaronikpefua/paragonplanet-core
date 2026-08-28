@@ -722,32 +722,45 @@ export default function MerchantOnboarding() {
 
     setActionLoading(true);
     try {
-      await updateDoc(doc(db, "merchant_orders", selectedOrder.id), {
-        status: "final_offer_sent",
-        amount,
-        updatedAt: serverTimestamp(),
+      const senderName = profile.realName || user.email || "Merchant";
+      const idToken = await user.getIdToken();
+      const response = await appCheckFetch(`${BACKEND_URL}/api/marketplace/final-offer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          orderId: selectedOrder.id,
+          amount,
+          message: `Final Offer: ${amount} ${selectedOrder.currency || "PARAG"}. Please accept and pay from your wallet to proceed.`,
+        }),
       });
 
-      const senderName = profile.realName || user.email || "Merchant";
-      const productPayload = buildProductMessagePayload(selectedOrder);
-      await addDoc(collection(db, "merchant_order_messages"), {
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(data.message || data.error || "Could not send final offer");
+      }
+
+      const finalOfferMessage = {
+        id: `local-final-offer-${Date.now()}`,
         orderId: selectedOrder.id,
-        productId: selectedOrder.productId,
-        productName: selectedOrder.productName || "Product request",
-        ...productPayload,
-        buyerId: selectedOrder.buyerId,
-        merchantId: selectedOrder.merchantId,
         senderId: user.uid,
         senderName,
-        text: `📋 Final Offer: ${amount} ${selectedOrder.currency || "PARAG"}. Please accept and pay from your wallet to proceed.`,
+        text: data.messageText || `Final Offer: ${amount} ${data.currency || selectedOrder.currency || "PARAG"}. Please accept and pay from your wallet to proceed.`,
         type: "final_offer",
+        messageType: "final_offer",
+        amount,
+        currency: data.currency || selectedOrder.currency || "PARAG",
         readBy: [user.uid],
-        createdAt: serverTimestamp(),
-      });
+        createdAt: { toMillis: () => Date.now() },
+        ...buildProductMessagePayload(selectedOrder),
+      };
 
-      setSelectedOrder((prev) => ({ ...prev, status: "final_offer_sent", amount }));
+      setOrderMessages((prev) => [...prev, finalOfferMessage]);
+      setSelectedOrder((prev) => ({ ...prev, status: data.status || "final_offer_sent", amount, currency: data.currency || prev.currency }));
       setOrders((prev) =>
-        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: "final_offer_sent", amount } : o))
+        prev.map((o) => (o.id === selectedOrder.id ? { ...o, status: data.status || "final_offer_sent", amount, currency: data.currency || o.currency } : o))
       );
       alert("Final offer sent to buyer.");
     } catch (err) {

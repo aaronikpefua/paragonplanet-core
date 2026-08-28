@@ -59,10 +59,22 @@ function normalizeVideoDocument(doc) {
     data.originalUrl ||
     data.fileUrl ||
     (objectPath ? getPublicUrlForObject(objectPath) : "");
+  const thumbnailUrl =
+    data.thumbnailUrl ||
+    data.coverImage ||
+    data.posterUrl ||
+    data.poster ||
+    data.coverUrl ||
+    data.thumbnail ||
+    "";
 
   return {
     videoId: doc.id,
+    uid: data.uid || data.userId || "",
     userId: data.uid || data.userId || "",
+    displayName: data.displayName || data.stageName || data.realName || data.creatorName || data.name || "",
+    performerName: data.performerName || data.displayName || data.stageName || data.realName || data.creatorName || data.name || "",
+    creatorName: data.creatorName || data.displayName || data.stageName || data.realName || data.name || "",
     title: data.title || "Untitled performance",
     description: data.description || data.about || "",
     about: data.about || data.description || "",
@@ -70,6 +82,7 @@ function normalizeVideoDocument(doc) {
     genre: data.genre || data.category || "General",
     votes: Number(data.votes || 0),
     supportCounts: data.supportCounts || {},
+    thumbnailUrl,
     objectPath: objectPath || "",
     mobileUrl: data.mobileUrl || "",
     desktopUrl: data.desktopUrl || "",
@@ -85,6 +98,44 @@ function normalizeVideoDocument(doc) {
     source: data.source || "",
     fileName: data.fileName || "",
   };
+}
+
+function profileDisplayName(profile = {}) {
+  return (
+    profile.displayName ||
+    profile.stageName ||
+    profile.realName ||
+    profile.name ||
+    profile.brandName ||
+    profile.email ||
+    ""
+  );
+}
+
+async function enrichVideosWithPublicProfiles(db, videos) {
+  const userIds = [...new Set(videos.map((video) => video.uid || video.userId).filter(Boolean))];
+  if (!userIds.length) return videos;
+
+  const refs = userIds.map((uid) => db.collection("public_profiles").doc(uid));
+  const snaps = await db.getAll(...refs);
+  const profilesByUid = new Map(
+    snaps
+      .filter((snap) => snap.exists)
+      .map((snap) => [snap.id, snap.data() || {}])
+  );
+
+  return videos.map((video) => {
+    const profile = profilesByUid.get(video.uid || video.userId);
+    const displayName = profileDisplayName(profile) || video.displayName || video.performerName || video.creatorName;
+    return {
+      ...video,
+      displayName: displayName || "",
+      performerName: displayName || video.performerName || "",
+      creatorName: displayName || video.creatorName || "",
+      stageName: profile?.stageName || "",
+      realName: profile?.realName || "",
+    };
+  });
 }
 
 function collectMediaKeys(item = {}) {
@@ -332,7 +383,7 @@ export async function listVideos(req, res) {
         return bTime - aTime;
       });
 
-    return res.json(videos);
+    return res.json(await enrichVideosWithPublicProfiles(db, videos));
   } catch (error) {
     console.error("Video list request failed:", error);
     return res.status(500).json({

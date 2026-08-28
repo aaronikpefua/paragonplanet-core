@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.app.natureswayproduction.BuildConfig
 import com.app.natureswayproduction.nativeapp.data.auth.ExistingAccountRequiresFacebookLinkException
+import com.app.natureswayproduction.nativeapp.data.auth.ExistingAccountRequiresXLinkException
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.auth.EmailAuthProvider
@@ -40,6 +41,10 @@ class AuthViewModel(
         _uiState.value = _uiState.value.copy(passwordInput = value)
     }
 
+    fun updateOtp(value: String) {
+        _uiState.value = _uiState.value.copy(otpInput = value)
+    }
+
     fun showLoginMode() {
         _uiState.value = _uiState.value.copy(
             mode = AuthMode.Login,
@@ -57,7 +62,7 @@ class AuthViewModel(
     fun refresh() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            runCatching { sessionRepository.loadSessionSummary() }
+            runCatching { sessionRepository.completePendingProviderSignIn() ?: sessionRepository.loadSessionSummary() }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -79,6 +84,11 @@ class AuthViewModel(
 
     fun signIn() {
         val state = _uiState.value
+        if (isPhoneIdentifier(state.emailInput)) {
+            _uiState.value = state.copy(errorMessage = "Tap Send phone OTP to continue with this phone number.")
+            return
+        }
+
         if (state.emailInput.isBlank() || state.passwordInput.isBlank()) {
             _uiState.value = state.copy(errorMessage = "Email and password are required.")
             return
@@ -87,7 +97,7 @@ class AuthViewModel(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             runCatching {
                 val session = sessionRepository.signIn(state.emailInput.trim(), state.passwordInput)
-                sessionRepository.linkPendingFacebookCredential() ?: session
+                linkPendingProviderCredential() ?: session
             }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
@@ -125,6 +135,11 @@ class AuthViewModel(
 
     fun signUp() {
         val state = _uiState.value
+        if (isPhoneIdentifier(state.emailInput)) {
+            _uiState.value = state.copy(errorMessage = "Tap Send phone OTP to continue with this phone number.")
+            return
+        }
+
         if (state.emailInput.isBlank() || state.passwordInput.isBlank()) {
             _uiState.value = state.copy(errorMessage = "Email and password are required.")
             return
@@ -167,7 +182,7 @@ class AuthViewModel(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             runCatching {
                 val session = sessionRepository.signInWithGoogle(activity)
-                sessionRepository.linkPendingFacebookCredential() ?: session
+                linkPendingProviderCredential() ?: session
             }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
@@ -240,8 +255,9 @@ class AuthViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             runCatching {
-                val session = sessionRepository.signInWithX(activity)
-                sessionRepository.linkPendingFacebookCredential() ?: session
+                val session = sessionRepository.signInWithX(
+                    activity)
+                linkPendingProviderCredential() ?: session
             }
                 .onSuccess { session ->
                     _uiState.value = _uiState.value.copy(
@@ -293,7 +309,163 @@ class AuthViewModel(
 
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
+                        errorMessage = if (error is ExistingAccountRequiresXLinkException) {
+                            null
+                        } else {
+                            providerErrorMessage("X", error)
+                        },
+                        note = if (error is ExistingAccountRequiresXLinkException) {
+                            xLinkInstruction(error)
+                        } else {
+                            _uiState.value.note
+                        },
+                    )
+                }
+        }
+    }
+
+    fun continueWithApple(activity: Activity) {
+        val expectedAction = if (_uiState.value.mode == AuthMode.Signup) {
+            AuthCompletedAction.Signup
+        } else {
+            AuthCompletedAction.Login
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            runCatching {
+                val session = sessionRepository.signInWithApple(activity)
+                linkPendingProviderCredential() ?: session
+            }
+                .onSuccess { session ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isSignedIn = true,
+                        currentEmail = session.email,
+                        role = session.role,
+                        uid = session.uid,
+                        note = session.note,
+                        passwordInput = "",
+                        lastCompletedAction = expectedAction,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = providerErrorMessage("Apple", error),
+                    )
+                }
+        }
+    }
+
+    fun completePendingProviderSignIn() {
+        viewModelScope.launch {
+            runCatching { sessionRepository.completePendingProviderSignIn() }
+                .onSuccess { session ->
+                    if (session == null) return@onSuccess
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isSignedIn = true,
+                        currentEmail = session.email,
+                        role = session.role,
+                        uid = session.uid,
+                        note = session.note,
+                        passwordInput = "",
+                        lastCompletedAction = if (_uiState.value.mode == AuthMode.Signup) {
+                            AuthCompletedAction.Signup
+                        } else {
+                            AuthCompletedAction.Login
+                        },
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
                         errorMessage = providerErrorMessage("X", error),
+                    )
+                }
+        }
+    }
+
+    fun sendPhoneOtp(activity: Activity) {
+        val phoneNumber = _uiState.value.emailInput.trim()
+        if (!isPhoneIdentifier(phoneNumber)) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "Enter a phone number with country code, for example +234..."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            runCatching { sessionRepository.sendPhoneOtp(activity, phoneNumber) }
+                .onSuccess { verificationId ->
+                    if (verificationId == AUTO_VERIFIED_PHONE_SESSION) {
+                        val session = sessionRepository.loadSessionSummary()
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            isSignedIn = true,
+                            currentEmail = session.email,
+                            role = session.role,
+                            uid = session.uid,
+                            note = "Phone number verified successfully.",
+                            lastCompletedAction = if (_uiState.value.mode == AuthMode.Signup) {
+                                AuthCompletedAction.Signup
+                            } else {
+                                AuthCompletedAction.Login
+                            },
+                        )
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            phoneVerificationId = verificationId,
+                            note = "OTP sent. Enter the code to continue.",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = error.message ?: "Could not send phone OTP",
+                    )
+                }
+        }
+    }
+
+    fun verifyPhoneOtp() {
+        val state = _uiState.value
+        val verificationId = state.phoneVerificationId
+        if (verificationId.isBlank() || state.otpInput.isBlank()) {
+            _uiState.value = state.copy(errorMessage = "Enter the OTP sent to your phone.")
+            return
+        }
+
+        val expectedAction = if (state.mode == AuthMode.Signup) {
+            AuthCompletedAction.Signup
+        } else {
+            AuthCompletedAction.Login
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            runCatching { sessionRepository.verifyPhoneOtp(verificationId, state.otpInput) }
+                .onSuccess { session ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isSignedIn = true,
+                        currentEmail = session.email,
+                        role = session.role,
+                        uid = session.uid,
+                        note = session.note,
+                        otpInput = "",
+                        phoneVerificationId = "",
+                        lastCompletedAction = expectedAction,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = error.message ?: "Phone OTP verification failed",
                     )
                 }
         }
@@ -335,6 +507,10 @@ class AuthViewModel(
         _uiState.value = AuthUiState(note = "Signed out locally.")
         refresh()
     }
+
+    private suspend fun linkPendingProviderCredential() =
+        sessionRepository.linkPendingFacebookCredential()
+            ?: sessionRepository.linkPendingXCredential()
 
     private fun providerErrorMessage(provider: String, error: Throwable): String {
         if (BuildConfig.DEBUG) {
@@ -382,23 +558,34 @@ class AuthViewModel(
     }
 
     private fun facebookLinkInstruction(error: ExistingAccountRequiresFacebookLinkException): String {
-        val providerNames = error.signInMethods.mapNotNull { method ->
+        val providerText = providerText(error.signInMethods)
+        return "An account already exists for this Facebook email. Sign in with $providerText; Facebook will then be linked to that existing account automatically."
+    }
+
+    private fun xLinkInstruction(error: ExistingAccountRequiresXLinkException): String {
+        val providerText = providerText(error.signInMethods)
+        return "An account already exists for this X email. Sign in with $providerText; X will then be linked to that existing account automatically."
+    }
+
+    private fun providerText(signInMethods: List<String>): String {
+        val providerNames = signInMethods.mapNotNull { method ->
             when (method) {
                 GoogleAuthProvider.PROVIDER_ID -> "Google"
                 FacebookAuthProvider.PROVIDER_ID -> "Facebook"
                 EmailAuthProvider.PROVIDER_ID -> "email and password"
                 "twitter.com" -> "X"
+                "apple.com" -> "Apple"
+                "phone" -> "phone number"
                 else -> null
             }
         }.distinct()
 
-        val providerText = when (providerNames.size) {
+        return when (providerNames.size) {
             0 -> "your existing sign-in method"
             1 -> providerNames.single()
             2 -> providerNames.joinToString(" or ")
             else -> providerNames.dropLast(1).joinToString(", ") + ", or " + providerNames.last()
         }
-        return "An account already exists for this Facebook email. Sign in with $providerText; Facebook will then be linked to that existing account automatically."
     }
 
     fun deleteAccount() {
@@ -436,6 +623,8 @@ data class AuthUiState(
     val isSignedIn: Boolean = false,
     val emailInput: String = "",
     val passwordInput: String = "",
+    val otpInput: String = "",
+    val phoneVerificationId: String = "",
     val currentEmail: String? = null,
     val role: String? = null,
     val uid: String? = null,
@@ -444,6 +633,13 @@ data class AuthUiState(
     val errorMessage: String? = null,
     val lastCompletedAction: AuthCompletedAction? = null,
 )
+
+private fun isPhoneIdentifier(value: String): Boolean {
+    val trimmed = value.trim()
+    return trimmed.startsWith("+") || Regex("^[0-9][0-9\\s\\-()]{6,}$").matches(trimmed)
+}
+
+private const val AUTO_VERIFIED_PHONE_SESSION = "__paragon_auto_verified_phone_session__"
 
 enum class AuthMode {
     Login,

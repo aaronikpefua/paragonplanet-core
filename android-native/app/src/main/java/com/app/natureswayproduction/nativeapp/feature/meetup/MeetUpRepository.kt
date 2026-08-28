@@ -66,6 +66,7 @@ class MeetUpRepository(
         area: MeetUpArea,
         mealMode: String,
         experienceLevel: String,
+        meetingTime: String,
         callType: String,
         selectedVideo: MeetUpVideoPreview?,
     ): String {
@@ -87,6 +88,7 @@ class MeetUpRepository(
                 "requestKind" to "area",
                 "mealMode" to mealMode,
                 "experienceLevel" to experienceLevel,
+                "meetingTime" to meetingTime.trim(),
                 "areaTitle" to area.title,
                 "areaIcon" to area.icon,
                 "areaPitch" to area.pitch,

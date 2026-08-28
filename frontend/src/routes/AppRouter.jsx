@@ -30,6 +30,8 @@ import MemberProfile from "../pages/MemberProfile";
 import RequestMeetUp from "../pages/RequestMeetUp";
 import MeetUpSession from "../pages/MeetUpSession";
 import MeetUpDirectory from "../pages/MeetUpDirectory";
+import PrivateVideoCall from "../pages/PrivateVideoCall";
+import ParagonLive from "../pages/ParagonLive";
 import ServiceFieldDirectory from "../pages/ServiceFieldDirectory";
 import AmbassadorTalentDirectory from "../pages/AmbassadorTalentDirectory";
 import AboutParagonPlanet from "../pages/AboutParagonPlanet";
@@ -94,6 +96,7 @@ export default function AppRouter() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/invite/:code" element={<InviteHandler />} />
+        <Route path="/live" element={<ParagonLive />} />
 
         <Route
           path="/inbox"
@@ -236,6 +239,15 @@ export default function AppRouter() {
           element={
             <RequireAuth>
               <Wallet />
+            </RequireAuth>
+          }
+        />
+
+        <Route
+          path="/video-call"
+          element={
+            <RequireAuth>
+              <PrivateVideoCall />
             </RequireAuth>
           }
         />

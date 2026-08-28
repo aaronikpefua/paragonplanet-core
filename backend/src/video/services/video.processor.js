@@ -22,6 +22,12 @@ function getProcessedObjectPath(objectPath, variant) {
   return `processed/${variant}/${withoutExtension}.mp4`;
 }
 
+function getThumbnailObjectPath(objectPath) {
+  const safePath = String(objectPath || "").replace(/^videos\//, "");
+  const withoutExtension = safePath.replace(/\.[a-z0-9]+$/i, "");
+  return `processed/thumbnails/${withoutExtension}.jpg`;
+}
+
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", args, {
@@ -162,6 +168,25 @@ async function createDisplayVideo({ inputPath, outputPath, width, height }) {
   ]);
 }
 
+async function createVideoThumbnail({ inputPath, outputPath }) {
+  await runFfmpeg([
+    "-y",
+    "-ss",
+    "00:00:01",
+    "-i",
+    inputPath,
+    "-filter_complex",
+    buildFitFilter({ width: 720, height: 1280 }),
+    "-map",
+    "[v]",
+    "-frames:v",
+    "1",
+    "-q:v",
+    "4",
+    outputPath,
+  ]);
+}
+
 export async function processUploadedVideo({
   objectPath,
   originalUrl,
@@ -178,6 +203,7 @@ export async function processUploadedVideo({
   const inputPath = path.join(tempDir, "original");
   const mobilePath = path.join(tempDir, "mobile.mp4");
   const desktopPath = path.join(tempDir, "desktop.mp4");
+  const thumbnailPath = path.join(tempDir, "thumbnail.jpg");
 
   try {
     const videoRef = db.collection(collectionName).doc(documentId);
@@ -218,9 +244,14 @@ export async function processUploadedVideo({
       width: 1920,
       height: 1080,
     });
+    await createVideoThumbnail({
+      inputPath,
+      outputPath: thumbnailPath,
+    });
 
     const mobileObjectPath = getProcessedObjectPath(objectPath, "mobile");
     const desktopObjectPath = getProcessedObjectPath(objectPath, "desktop");
+    const thumbnailObjectPath = getThumbnailObjectPath(objectPath);
     const mobileUrl = await uploadFileToR2({
       objectPath: mobileObjectPath,
       filePath: mobilePath,
@@ -231,9 +262,15 @@ export async function processUploadedVideo({
       filePath: desktopPath,
       contentType: "video/mp4",
     });
+    const thumbnailUrl = await uploadFileToR2({
+      objectPath: thumbnailObjectPath,
+      filePath: thumbnailPath,
+      contentType: "image/jpeg",
+    });
 
     await videoRef.set(
       {
+        thumbnailUrl,
         mobileUrl,
         desktopUrl,
         streamUrl: desktopUrl,
@@ -246,6 +283,7 @@ export async function processUploadedVideo({
 
     return {
       videoId: documentId,
+      thumbnailUrl,
       mobileUrl,
       desktopUrl,
     };
@@ -263,6 +301,83 @@ export async function processUploadedVideo({
     }
 
     throw error;
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+export async function ensureVideoThumbnail({
+  videoId,
+  collectionName = "videos",
+  db,
+}) {
+  if (!videoId || !db) {
+    throw new Error("videoId and db are required");
+  }
+
+  const videoRef = db.collection(collectionName).doc(videoId);
+  const snapshot = await videoRef.get();
+  if (!snapshot.exists) {
+    throw new Error(`Video document ${videoId} does not exist`);
+  }
+
+  const data = snapshot.data() || {};
+  if (data.thumbnailUrl || data.posterUrl) {
+    return {
+      videoId,
+      skipped: true,
+      reason: "thumbnail_exists",
+      thumbnailUrl: data.thumbnailUrl || data.posterUrl,
+    };
+  }
+
+  const sourceUrl =
+    data.mobileUrl ||
+    data.desktopUrl ||
+    data.streamUrl ||
+    data.originalUrl ||
+    data.fileUrl ||
+    "";
+  if (!sourceUrl) {
+    return {
+      videoId,
+      skipped: true,
+      reason: "missing_source_url",
+    };
+  }
+
+  const objectPath = data.objectPath || data.fileName || `videos/${videoId}.mp4`;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "paragon-thumb-"));
+  const inputPath = path.join(tempDir, "source");
+  const thumbnailPath = path.join(tempDir, "thumbnail.jpg");
+
+  try {
+    await downloadFile(sourceUrl, inputPath);
+    await createVideoThumbnail({
+      inputPath,
+      outputPath: thumbnailPath,
+    });
+
+    const thumbnailObjectPath = getThumbnailObjectPath(objectPath);
+    const thumbnailUrl = await uploadFileToR2({
+      objectPath: thumbnailObjectPath,
+      filePath: thumbnailPath,
+      contentType: "image/jpeg",
+    });
+
+    await videoRef.set(
+      {
+        thumbnailUrl,
+        updatedAt: new Date(),
+      },
+      { merge: true }
+    );
+
+    return {
+      videoId,
+      skipped: false,
+      thumbnailUrl,
+    };
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

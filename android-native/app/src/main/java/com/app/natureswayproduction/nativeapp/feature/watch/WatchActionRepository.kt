@@ -4,6 +4,8 @@ import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedCard
+import com.google.firebase.Timestamp
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -117,6 +119,9 @@ class WatchActionRepository(
             .get()
             .await()
             .documents
+            .sortedBy { docSnap ->
+                (docSnap.get("createdAt") as? Timestamp)?.toDate()?.time ?: 0L
+            }
             .map { docSnap ->
                 val data = docSnap.data.orEmpty()
                 VideoCommentItem(
@@ -134,9 +139,11 @@ class WatchActionRepository(
         firestore.collection("video_comments").add(
             mapOf(
                 "videoId" to video.id,
+                "uid" to userUid,
                 "userId" to userUid,
                 "userName" to userName,
                 "text" to text.trim(),
+                "createdAt" to FieldValue.serverTimestamp(),
             )
         ).await()
     }

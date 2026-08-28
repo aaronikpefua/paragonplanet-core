@@ -391,9 +391,6 @@ export default function MerchantMarketplace() {
         <button onClick={() => navigate("/onboarding/merchant")} style={primaryBtnStyle}>
           Sell Product
         </button>
-        <button onClick={() => navigate("/buyer-inbox")} style={secondaryBtnStyle}>
-          Buyer Inbox
-        </button>
       </section>
 
       <section style={aboutPanelStyle}>
@@ -426,9 +423,6 @@ export default function MerchantMarketplace() {
                   Chat / Agree Deal
                 </button>
 
-                <div style={privateNoteStyle}>
-                  Questions and price discussions stay inside the private deal inbox.
-                </div>
               </div>
             </article>
           ))}
@@ -442,7 +436,6 @@ export default function MerchantMarketplace() {
               Close
             </button>
 
-            <p style={eyebrowStyle}>Private buyer and merchant space</p>
             <h2 style={productTitleStyle}>{selectedProduct.name}</h2>
             <p>{selectedProduct.description}</p>
             <p style={materialsStyle}>Materials: {selectedProduct.materials}</p>
@@ -691,16 +684,6 @@ const smallBtnStyle = {
   border: "none",
   borderRadius: 6,
   cursor: "pointer",
-};
-
-const privateNoteStyle = {
-  marginTop: 16,
-  padding: "12px 14px",
-  borderRadius: 6,
-  border: "1px solid #e2d8c8",
-  background: "#fff8e8",
-  color: "#1f2933",
-  fontWeight: 700,
 };
 
 const modalBackdropStyle = {

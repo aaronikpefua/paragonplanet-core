@@ -1,6 +1,7 @@
 package com.app.natureswayproduction.nativeapp.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.clickable
@@ -23,6 +24,7 @@ import com.app.natureswayproduction.nativeapp.feature.auth.AuthViewModel
 import com.app.natureswayproduction.nativeapp.feature.admin.AdminScreen
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedScreen
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedViewModel
+import com.app.natureswayproduction.nativeapp.feature.live.ParagonLiveScreen
 import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpScreen
 import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpViewModel
 import com.app.natureswayproduction.nativeapp.feature.onboarding.CitizenOnboardingScreen
@@ -46,6 +48,8 @@ import com.app.natureswayproduction.nativeapp.feature.onboarding.UserAboutScreen
 import com.app.natureswayproduction.nativeapp.feature.onboarding.UserOnboardingScreen
 import com.app.natureswayproduction.nativeapp.feature.profile.ProfileScreen
 import com.app.natureswayproduction.nativeapp.feature.profile.ProfileViewModel
+import com.app.natureswayproduction.nativeapp.feature.realtime.PrivateVideoCallScreen
+import com.app.natureswayproduction.nativeapp.feature.realtime.PrivateVideoCallViewModel
 import com.app.natureswayproduction.nativeapp.feature.upload.UploadScreen
 import com.app.natureswayproduction.nativeapp.feature.upload.UploadViewModel
 import com.app.natureswayproduction.nativeapp.feature.wallet.WalletScreen
@@ -59,6 +63,7 @@ fun ParagonApp(
     walletViewModel: WalletViewModel,
     profileViewModel: ProfileViewModel,
     meetUpViewModel: MeetUpViewModel,
+    privateVideoCallViewModel: PrivateVideoCallViewModel,
     uploadViewModel: UploadViewModel,
 ) {
     val navController = rememberNavController()
@@ -96,6 +101,11 @@ fun ParagonApp(
                         navController.navigate(AppDestination.Wallet.route)
                     },
                     onOpenMeetUp = { navController.navigate(AppDestination.MeetUp.route) },
+                    onOpenVideoCall = { recipientUid, recipientName, recipientRole ->
+                        privateVideoCallViewModel.updateRecipient(recipientUid, recipientName, recipientRole)
+                        navController.navigate(AppDestination.PrivateVideoCall.route)
+                    },
+                    onOpenLive = { navController.navigate(AppDestination.Live.route) },
                     onOpenCitizenContestants = { navController.navigate(AppDestination.CitizenContestants.route) },
                     onOpenSuperbossDirectory = { navController.navigate(AppDestination.SuperbossDirectory.route) },
                     onOpenBackerDirectory = { navController.navigate(AppDestination.BackerDirectory.route) },
@@ -195,6 +205,9 @@ fun ParagonApp(
                     onOpenSignIn = { navController.navigate(AppDestination.Auth.route) },
                     onOpenWallet = { navController.navigate(AppDestination.Wallet.route) },
                     onOpenMeetUp = { navController.navigate(AppDestination.MeetUp.route) },
+                    onOpenVideoCall = {
+                        navController.navigate(AppDestination.MeetUp.route)
+                    },
                     onOpenMarketplace = { navController.navigate(AppDestination.MerchantMarketplace.route) },
                     onOpenMerchantAbout = { navController.navigate(AppDestination.MerchantAbout.route) },
                     onOpenEditProfile = {
@@ -401,13 +414,29 @@ fun ParagonApp(
             composable(AppDestination.SuperbossDirectory.route) {
                 SuperbossDirectoryScreen(
                     onBack = { navController.popBackStack() },
-                    onJoin = { navController.navigate(AppDestination.SupernalOnboarding.route) }
+                    onJoin = { navController.navigate(AppDestination.SupernalOnboarding.route) },
+                    onOpenQuestionBoard = {
+                        if (profileViewModel.uiState.value.availableRoles.any { it.key.equals("SUPERNAL", ignoreCase = true) }) {
+                            profileViewModel.switchActiveRole("SUPERNAL")
+                            navController.navigate(AppDestination.Profile.route)
+                        } else {
+                            navController.navigate(AppDestination.SupernalOnboarding.route)
+                        }
+                    }
                 )
             }
             composable(AppDestination.BackerDirectory.route) {
                 BackerDirectoryScreen(
                     onBack = { navController.popBackStack() },
-                    onJoin = { navController.navigate(AppDestination.BackerOnboarding.route) }
+                    onJoin = { navController.navigate(AppDestination.BackerOnboarding.route) },
+                    onOpenQuestionBoard = {
+                        if (profileViewModel.uiState.value.availableRoles.any { it.key.equals("BACKER", ignoreCase = true) }) {
+                            profileViewModel.switchActiveRole("BACKER")
+                            navController.navigate(AppDestination.Profile.route)
+                        } else {
+                            navController.navigate(AppDestination.BackerOnboarding.route)
+                        }
+                    }
                 )
             }
             composable(AppDestination.AmbassadorDirectory.route) {
@@ -507,6 +536,29 @@ fun ParagonApp(
                         }
                     },
                     onOpenFeed = goHome,
+                    onOpenVideoCall = { recipientUid, recipientName, recipientRole ->
+                        privateVideoCallViewModel.updateRecipient(recipientUid, recipientName, recipientRole)
+                        navController.navigate(AppDestination.PrivateVideoCall.route)
+                    },
+                )
+            }
+            composable(AppDestination.Live.route) {
+                val authState by authViewModel.uiState.collectAsState()
+                val profileState by profileViewModel.uiState.collectAsState()
+                LaunchedEffect(authState.uid) {
+                    if (!authState.uid.isNullOrBlank() && profileState.profile == null) {
+                        profileViewModel.refresh()
+                    }
+                }
+                ParagonLiveScreen(
+                    currentRole = profileState.profile?.role ?: authState.role,
+                    onBackHome = goHome,
+                )
+            }
+            composable(AppDestination.PrivateVideoCall.route) {
+                PrivateVideoCallScreen(
+                    viewModel = privateVideoCallViewModel,
+                    onOpenWallet = { navController.navigate(AppDestination.Wallet.route) },
                 )
             }
         }

@@ -1,5 +1,6 @@
 package com.app.natureswayproduction.nativeapp.feature.menu
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,19 +21,26 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 private data class SimpleProfile(
@@ -40,7 +48,62 @@ private data class SimpleProfile(
     val name: String,
     val subtitle: String,
     val extra: String,
+    val fields: List<String> = emptyList(),
     val score: Int,
+)
+
+private data class RoleComment(
+    val profileId: String,
+    val author: String,
+    val relationshipKey: String,
+    val relationship: String,
+    val comment: String,
+)
+
+private data class RoleQuestion(
+    val id: String,
+    val ownerId: String,
+    val questionText: String,
+    val answeredByName: String,
+    val answered: Boolean,
+)
+
+private data class RoleAttempt(
+    val questionId: String,
+    val ownerId: String,
+    val responderId: String,
+    val isCorrect: Boolean,
+    val didTimeout: Boolean,
+)
+
+private data class ScoreStat(
+    val label: String,
+    val value: Int,
+)
+
+private data class TestimonyGroup(
+    val key: String,
+    val label: String,
+)
+
+private val superbossTestimonyGroups = listOf(
+    TestimonyGroup("students", "Students"),
+    TestimonyGroup("tutees", "Tutees"),
+    TestimonyGroup("trainees", "Trainees"),
+    TestimonyGroup("mentees", "Mentees"),
+    TestimonyGroup("followers", "Followers"),
+    TestimonyGroup("beneficiaries", "Beneficiaries"),
+    TestimonyGroup("communityMembers", "Community Members"),
+)
+
+private val backerTestimonyGroups = listOf(
+    TestimonyGroup("clients", "Clients"),
+    TestimonyGroup("customers", "Customers"),
+    TestimonyGroup("consumers", "Consumers"),
+    TestimonyGroup("patients", "Patient"),
+    TestimonyGroup("followers", "Followers"),
+    TestimonyGroup("beneficiaries", "Beneficiaries"),
+    TestimonyGroup("communityMembers", "Community Members"),
 )
 
 private val citizenCategories = listOf(
@@ -255,7 +318,7 @@ fun CitizenContestantsScreen(
     var showAbout by remember { mutableStateOf(false) }
     MenuPageFrame(onBack = onBack, dark = true) {
         item {
-            Text("The Citizen Contestants", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
+            Text("The Contestants for Paragon Planet Citizen", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
         }
         item {
             OutlinedButton(onClick = { showAbout = !showAbout }, shape = RoundedCornerShape(8.dp)) {
@@ -269,7 +332,7 @@ fun CitizenContestantsScreen(
         }
         item {
             Text(
-                "Select a field of Talent to see Citizen Contestants in that field and watch their Performs.",
+                "Select a talent category to view entertainers, or introduce your favourite entertainer. Watch their performances, share your comments, express your views, and vote for your favourite entertainers to help them qualify as Paragon Planet Citizens.",
                 color = Color.White,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
@@ -300,24 +363,33 @@ fun CitizenContestantsScreen(
 fun SuperbossDirectoryScreen(
     onBack: () -> Unit,
     onJoin: () -> Unit,
+    onOpenQuestionBoard: () -> Unit,
 ) {
+    val context = LocalContext.current
     val firestore = remember { FirebaseFirestore.getInstance() }
+    val apiService = remember { ParagonApiService() }
+    val scope = rememberCoroutineScope()
     var showAbout by remember { mutableStateOf(false) }
     var selectedField by remember { mutableStateOf<String?>(null) }
+    var searchDraft by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var profiles by remember { mutableStateOf<List<SimpleProfile>>(emptyList()) }
+    var actionNotice by remember { mutableStateOf<String?>(null) }
+    var activeCommentProfileId by remember { mutableStateOf<String?>(null) }
+    var commentText by remember { mutableStateOf("") }
+    var comments by remember { mutableStateOf<List<RoleComment>>(emptyList()) }
+    var questions by remember { mutableStateOf<List<RoleQuestion>>(emptyList()) }
+    var attempts by remember { mutableStateOf<List<RoleAttempt>>(emptyList()) }
+    var visibleSections by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
+    val visibleProfiles = profiles
+        .filter { searchQuery.isNotBlank() || selectedField.isNullOrBlank() || it.matchesField(selectedField.orEmpty()) }
+        .filter { it.matchesSearch(searchQuery) }
 
-    LaunchedEffect(selectedField) {
-        if (selectedField.isNullOrBlank()) {
-            profiles = emptyList()
-            return@LaunchedEffect
-        }
+    LaunchedEffect(Unit) {
         loading = true
         profiles = runCatching {
             firestore.collection("supernal_profiles").get().await().documents
-                .filter { doc ->
-                    collectServiceFields(doc.data.orEmpty()).any { it.equals(selectedField, ignoreCase = true) }
-                }
                 .map { doc ->
                     val data = doc.data.orEmpty()
                     SimpleProfile(
@@ -339,6 +411,7 @@ fun SuperbossDirectoryScreen(
                             "Superboss"
                         ),
                         extra = collectServiceFields(data).joinToString(", ").ifBlank { "Field not listed" },
+                        fields = collectServiceFields(data),
                         score = extractInt(data, "trustScore", "score", "superbossScore")
                     )
                 }
@@ -347,26 +420,143 @@ fun SuperbossDirectoryScreen(
         loading = false
     }
 
+    LaunchedEffect(selectedField, searchQuery) {
+        if (selectedField.isNullOrBlank() && searchQuery.isBlank()) {
+            comments = emptyList()
+            questions = emptyList()
+            attempts = emptyList()
+            return@LaunchedEffect
+        }
+        comments = loadRoleComments(firestore, "supernal", selectedField.orEmpty())
+        questions = loadRoleQuestions(firestore, "supernal", selectedField.orEmpty())
+        attempts = loadRoleAttempts(firestore, "supernal")
+    }
+
     MenuPageFrame(onBack = onBack, dark = true) {
-        item { Text("The Mentors", color = Color(0xFFC9B48A), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
         item {
-            Text("The Mentors for Superbosses", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
+            Text("The Candidates for Paragon Planet Superbosses", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
         }
         item {
             Text(
-                "Select a field of Discipline to see Superbosses in that field and their trust scores.",
+                "Select a field of discipline to find your former educators, or add an educator who positively influenced your life. Comment on their impact, express your appreciation, and vote for outstanding educators to help them qualify for the Superboss competition on Paragon Planet.",
                 color = Color(0xFFD9D4CA),
                 style = MaterialTheme.typography.bodyLarge
             )
         }
         item {
             OutlinedButton(onClick = { showAbout = !showAbout }, shape = RoundedCornerShape(8.dp)) {
-                Text(if (showAbout) "Hide About Superbosses" else "About Superbosses")
+                Text(if (showAbout) "Hide About Superbosses Candidates" else "About Superbosses Candidates")
             }
         }
         if (showAbout) {
             item {
                 SuperbossAboutPanel(onJoin = onJoin)
+            }
+        }
+        actionNotice?.let { message ->
+            item { Text(message, color = Color(0xFFC9B48A), fontWeight = FontWeight.Bold) }
+        }
+        item {
+            OutlinedTextField(
+                value = searchDraft,
+                onValueChange = { searchDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Search Superbosses") }
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { searchQuery = searchDraft }, shape = RoundedCornerShape(8.dp)) {
+                    Text("Search")
+                }
+                if (searchDraft.isNotBlank() || searchQuery.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = {
+                            searchDraft = ""
+                            searchQuery = ""
+                        },
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Clear")
+                    }
+                }
+            }
+        }
+        if (!selectedField.isNullOrBlank() || searchQuery.isNotBlank()) {
+            val field = selectedField.orEmpty()
+            item {
+                Text(
+                    if (field.isBlank()) "Superbosses matching your search" else "Superbosses in $field",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            if (loading) {
+                item { LoadingBlock(dark = true) }
+            } else if (visibleProfiles.isEmpty()) {
+                item { EmptyCard(if (profiles.isEmpty()) "No Superbosses found in this field yet." else "No matching Superbosses found.", dark = true) }
+            } else {
+                itemsIndexed(visibleProfiles) { index, profile ->
+                    ScoreCard(
+                        rank = index + 1,
+                        title = profile.name,
+                        subtitle = profile.subtitle,
+                        detail = profile.extra,
+                        scoreLabel = "Score",
+                        score = profile.score,
+                        dark = true,
+                        actionLabels = listOf("Vote", "Donate", "Comment"),
+                        onAction = { action ->
+                            if (action == "Comment") {
+                                activeCommentProfileId = if (activeCommentProfileId == profile.uid) null else profile.uid
+                                commentText = ""
+                            } else {
+                                scope.launch {
+                                    actionNotice = "$action processing for ${profile.name}..."
+                                    actionNotice = supportRoleAction(apiService, "superboss", profile.uid, action)
+                                }
+                            }
+                        },
+                        showCommentBox = activeCommentProfileId == profile.uid,
+                        commentValue = commentText,
+                        onCommentChange = { commentText = it },
+                        onSubmitComment = {
+                            scope.launch {
+                                actionNotice = submitRoleComment(
+                                    firestore = firestore,
+                                    rolePath = "supernal",
+                                    profile = profile,
+                                    field = field,
+                                    comment = commentText
+                                )
+                                if (actionNotice == "Comment submitted for ${profile.name}.") {
+                                    commentText = ""
+                                    activeCommentProfileId = null
+                                    comments = loadRoleComments(firestore, "supernal", field)
+                                }
+                            }
+                        },
+                        comments = comments.filter { it.profileId == profile.uid },
+                        questions = questions.filter { it.ownerId == profile.uid },
+                        attempts = attempts.filter { it.ownerId == profile.uid || it.responderId == profile.uid },
+                        profileId = profile.uid,
+                        testimonyGroups = superbossTestimonyGroups,
+                        visibleSections = visibleSections[profile.uid].orEmpty(),
+                        onToggleSection = { section ->
+                            val current = visibleSections[profile.uid].orEmpty()
+                            visibleSections = visibleSections + (profile.uid to if (current.contains(section)) current - section else current + section)
+                        },
+                    )
+                }
+            }
+        }
+        item {
+            OutlinedButton(
+                onClick = { context.shareMenuInvite() },
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Invite Superboss")
             }
         }
         item {
@@ -396,28 +586,6 @@ fun SuperbossDirectoryScreen(
                 }
             }
         }
-        selectedField?.let { field ->
-            item {
-                Text("Superbosses in $field", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            if (loading) {
-                item { LoadingBlock(dark = true) }
-            } else if (profiles.isEmpty()) {
-                item { EmptyCard("No Superbosses found in this field yet.", dark = true) }
-            } else {
-                itemsIndexed(profiles) { index, profile ->
-                    ScoreCard(
-                        rank = index + 1,
-                        title = profile.name,
-                        subtitle = profile.subtitle,
-                        detail = profile.extra,
-                        scoreLabel = "Score",
-                        score = profile.score,
-                        dark = true
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -425,24 +593,33 @@ fun SuperbossDirectoryScreen(
 fun BackerDirectoryScreen(
     onBack: () -> Unit,
     onJoin: () -> Unit,
+    onOpenQuestionBoard: () -> Unit,
 ) {
+    val context = LocalContext.current
     val firestore = remember { FirebaseFirestore.getInstance() }
+    val apiService = remember { ParagonApiService() }
+    val scope = rememberCoroutineScope()
     var showAbout by remember { mutableStateOf(false) }
     var selectedField by remember { mutableStateOf<String?>(null) }
+    var searchDraft by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var profiles by remember { mutableStateOf<List<SimpleProfile>>(emptyList()) }
+    var actionNotice by remember { mutableStateOf<String?>(null) }
+    var activeCommentProfileId by remember { mutableStateOf<String?>(null) }
+    var commentText by remember { mutableStateOf("") }
+    var comments by remember { mutableStateOf<List<RoleComment>>(emptyList()) }
+    var questions by remember { mutableStateOf<List<RoleQuestion>>(emptyList()) }
+    var attempts by remember { mutableStateOf<List<RoleAttempt>>(emptyList()) }
+    var visibleSections by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
+    val visibleProfiles = profiles
+        .filter { searchQuery.isNotBlank() || selectedField.isNullOrBlank() || it.matchesField(selectedField.orEmpty()) }
+        .filter { it.matchesSearch(searchQuery) }
 
-    LaunchedEffect(selectedField) {
-        if (selectedField.isNullOrBlank()) {
-            profiles = emptyList()
-            return@LaunchedEffect
-        }
+    LaunchedEffect(Unit) {
         loading = true
         profiles = runCatching {
             firestore.collection("backer_profiles").get().await().documents
-                .filter { doc ->
-                    collectServiceFields(doc.data.orEmpty()).any { it.equals(selectedField, ignoreCase = true) }
-                }
                 .map { doc ->
                     val data = doc.data.orEmpty()
                     SimpleProfile(
@@ -464,6 +641,7 @@ fun BackerDirectoryScreen(
                             "Backer Contestant"
                         ),
                         extra = collectServiceFields(data).joinToString(", ").ifBlank { "Field not listed" },
+                        fields = collectServiceFields(data),
                         score = extractInt(data, "score", "backerScore", "supportScore")
                     )
                 }
@@ -472,18 +650,136 @@ fun BackerDirectoryScreen(
         loading = false
     }
 
+    LaunchedEffect(selectedField, searchQuery) {
+        if (selectedField.isNullOrBlank() && searchQuery.isBlank()) {
+            comments = emptyList()
+            questions = emptyList()
+            attempts = emptyList()
+            return@LaunchedEffect
+        }
+        comments = loadRoleComments(firestore, "backer", selectedField.orEmpty())
+        questions = loadRoleQuestions(firestore, "backer", selectedField.orEmpty())
+        attempts = loadRoleAttempts(firestore, "backer")
+    }
+
     MenuPageFrame(onBack = onBack, dark = true) {
         item {
-            Text("The Backer Contestants", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
+            Text("The Aspirants for Paragon Planet Backer", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
         }
         item {
             OutlinedButton(onClick = { showAbout = !showAbout }, shape = RoundedCornerShape(8.dp)) {
-                Text(if (showAbout) "Hide About Backer Contestants" else "About Backer Contestants")
+                Text(if (showAbout) "Hide About Backer Aspirants" else "About Backer Aspirants")
             }
         }
         if (showAbout) {
             item {
                 BackerAboutPanel(onJoin = onJoin)
+            }
+        }
+        actionNotice?.let { message ->
+            item { Text(message, color = Color(0xFFC9B48A), fontWeight = FontWeight.Bold) }
+        }
+        item {
+            OutlinedTextField(
+                value = searchDraft,
+                onValueChange = { searchDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Search Backers") }
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { searchQuery = searchDraft }, shape = RoundedCornerShape(8.dp)) {
+                    Text("Search")
+                }
+                if (searchDraft.isNotBlank() || searchQuery.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = {
+                            searchDraft = ""
+                            searchQuery = ""
+                        },
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Clear")
+                    }
+                }
+            }
+        }
+        if (!selectedField.isNullOrBlank() || searchQuery.isNotBlank()) {
+            val field = selectedField.orEmpty()
+            item {
+                Text(
+                    if (field.isBlank()) "Backers matching your search" else "Backer Contestants in $field",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            if (loading) {
+                item { LoadingBlock(dark = true) }
+            } else if (visibleProfiles.isEmpty()) {
+                item { EmptyCard(if (profiles.isEmpty()) "No Backer Contestants found in this field yet." else "No matching Backers found.", dark = true) }
+            } else {
+                itemsIndexed(visibleProfiles) { index, profile ->
+                    ScoreCard(
+                        rank = index + 1,
+                        title = profile.name,
+                        subtitle = profile.subtitle,
+                        detail = profile.extra,
+                        scoreLabel = "Score",
+                        score = profile.score,
+                        dark = true,
+                        actionLabels = listOf("Vote", "Donate", "Comment"),
+                        onAction = { action ->
+                            if (action == "Comment") {
+                                activeCommentProfileId = if (activeCommentProfileId == profile.uid) null else profile.uid
+                                commentText = ""
+                            } else {
+                                scope.launch {
+                                    actionNotice = "$action processing for ${profile.name}..."
+                                    actionNotice = supportRoleAction(apiService, "backer", profile.uid, action)
+                                }
+                            }
+                        },
+                        showCommentBox = activeCommentProfileId == profile.uid,
+                        commentValue = commentText,
+                        onCommentChange = { commentText = it },
+                        onSubmitComment = {
+                            scope.launch {
+                                actionNotice = submitRoleComment(
+                                    firestore = firestore,
+                                    rolePath = "backer",
+                                    profile = profile,
+                                    field = field,
+                                    comment = commentText
+                                )
+                                if (actionNotice == "Comment submitted for ${profile.name}.") {
+                                    commentText = ""
+                                    activeCommentProfileId = null
+                                    comments = loadRoleComments(firestore, "backer", field)
+                                }
+                            }
+                        },
+                        comments = comments.filter { it.profileId == profile.uid },
+                        questions = questions.filter { it.ownerId == profile.uid },
+                        attempts = attempts.filter { it.ownerId == profile.uid || it.responderId == profile.uid },
+                        profileId = profile.uid,
+                        testimonyGroups = backerTestimonyGroups,
+                        visibleSections = visibleSections[profile.uid].orEmpty(),
+                        onToggleSection = { section ->
+                            val current = visibleSections[profile.uid].orEmpty()
+                            visibleSections = visibleSections + (profile.uid to if (current.contains(section)) current - section else current + section)
+                        },
+                    )
+                }
+            }
+        }
+        item {
+            OutlinedButton(
+                onClick = { context.shareMenuInvite() },
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Invite Backer")
             }
         }
         item {
@@ -495,7 +791,7 @@ fun BackerDirectoryScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        "Select a field of service to see Backer Contestants in that field and their scores.",
+                        "Select a field of service to find professionals, or introduce a professional who has made a positive impact or rendered valuable service in your life. Share your experience, express your appreciation, and vote for deserving professionals to help them qualify for the Backer competition on Paragon Planet.",
                         color = Color.White,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
@@ -515,28 +811,6 @@ fun BackerDirectoryScreen(
                             }
                         }
                     }
-                }
-            }
-        }
-        selectedField?.let { field ->
-            item {
-                Text("Backer Contestants in $field", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            if (loading) {
-                item { LoadingBlock(dark = true) }
-            } else if (profiles.isEmpty()) {
-                item { EmptyCard("No Backer Contestants found in this field yet.", dark = true) }
-            } else {
-                itemsIndexed(profiles) { index, profile ->
-                    ScoreCard(
-                        rank = index + 1,
-                        title = profile.name,
-                        subtitle = profile.subtitle,
-                        detail = profile.extra,
-                        scoreLabel = "Score",
-                        score = profile.score,
-                        dark = true
-                    )
                 }
             }
         }
@@ -606,14 +880,11 @@ fun AmbassadorDirectoryScreen(
     MenuPageFrame(onBack = onBack, dark = true) {
         item { Text("Paragon Ambassadors", color = Color(0xFFC9B48A), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
         item {
-            Text("Paragon Ambassadors", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
-        }
-        item {
-            Text("The Talent Ambassadors", color = Color(0xFFF3EFE6), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Paragon Talent Ambassadors", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.ExtraBold)
         }
         item {
             Text(
-                "Choose a talent category to see Ambassadors on that line and how many citizens came through each Ambassador.",
+                "Select a Talent Ambassador category to view its entertainers, or introduce your favorite Talent Ambassador. Watch the performances of their entertainers, share your comments, express your views, and vote for your favorite entertainers to help them qualify as Paragon Planet Citizens.",
                 color = Color(0xFFD9D4CA),
                 style = MaterialTheme.typography.bodyLarge
             )
@@ -1679,28 +1950,167 @@ private fun ScoreCard(
     scoreLabel: String,
     score: Int,
     dark: Boolean,
+    actionLabels: List<String> = emptyList(),
+    onAction: (String) -> Unit = {},
+    showCommentBox: Boolean = false,
+    commentValue: String = "",
+    onCommentChange: (String) -> Unit = {},
+    onSubmitComment: () -> Unit = {},
+    comments: List<RoleComment> = emptyList(),
+    questions: List<RoleQuestion> = emptyList(),
+    attempts: List<RoleAttempt> = emptyList(),
+    profileId: String = "",
+    testimonyGroups: List<TestimonyGroup> = superbossTestimonyGroups,
+    visibleSections: Set<String> = emptySet(),
+    onToggleSection: (String) -> Unit = {},
 ) {
+    val answeredQuestions = questions.filter { it.answered }
+    val scoreStats = buildScoreStats(profileId, questions, attempts)
+    var showScoreStats by remember { mutableStateOf(false) }
+    val counts = comments.groupingBy { it.relationshipKey }.eachCount()
     Card(colors = CardDefaults.cardColors(containerColor = if (dark) Color(0xFF111111) else Color.White), shape = RoundedCornerShape(14.dp)) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("#$rank", color = if (dark) Color(0xFFC9B48A) else Color(0xFF6B5F4B), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                Text(title, color = if (dark) Color.White else Color(0xFF111827), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(subtitle, color = if (dark) Color(0xFFD9D4CA) else Color(0xFF6B7280), style = MaterialTheme.typography.bodyMedium)
-                Text(detail, color = if (dark) Color(0xFFF3EFE6) else Color(0xFF233142), style = MaterialTheme.typography.bodySmall)
-            }
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EFE6)), shape = RoundedCornerShape(12.dp)) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("#$rank", color = if (dark) Color(0xFFC9B48A) else Color(0xFF6B5F4B), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Text(title, color = if (dark) Color.White else Color(0xFF111827), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(subtitle, color = if (dark) Color(0xFFD9D4CA) else Color(0xFF6B7280), style = MaterialTheme.typography.bodyMedium)
+                    Text(detail, color = if (dark) Color(0xFFF3EFE6) else Color(0xFF233142), style = MaterialTheme.typography.bodySmall)
+                }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EFE6)),
+                    shape = RoundedCornerShape(12.dp),
+                    onClick = { showScoreStats = !showScoreStats }
                 ) {
-                    Text(scoreLabel, color = Color(0xFF101828), style = MaterialTheme.typography.labelSmall)
-                    Text(score.toString(), color = Color(0xFF101828), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (profileId.isBlank()) {
+                            Text(scoreLabel, color = Color(0xFF101828), style = MaterialTheme.typography.labelSmall)
+                            Text(score.toString(), color = Color(0xFF101828), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                        }
+                        Text(if (showScoreStats) "Hide scores" else "View scores", color = Color(0xFF101828), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            if (showScoreStats) {
+                scoreStats.chunked(2).forEach { rowStats ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowStats.forEach { stat ->
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF080808)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(stat.label, color = Color(0xFFF3EFE6), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text(stat.value.toString(), color = Color.White, fontWeight = FontWeight.ExtraBold)
+                                }
+                            }
+                        }
+                        repeat(2 - rowStats.size) {
+                            Box(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            if (actionLabels.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    actionLabels.forEach { label ->
+                        OutlinedButton(onClick = { onAction(label) }, shape = RoundedCornerShape(8.dp)) {
+                            Text(label)
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onToggleSection("comments") }, shape = RoundedCornerShape(8.dp)) {
+                    Text(if (visibleSections.contains("comments")) "Hide Comments" else "View Comments")
+                }
+                OutlinedButton(onClick = { onToggleSection("testimonies") }, shape = RoundedCornerShape(8.dp)) {
+                    Text(if (visibleSections.contains("testimonies")) "Hide Testimonies" else "Testimonies")
+                }
+            }
+            if (visibleSections.contains("testimonies")) {
+                testimonyGroups.chunked(2).forEach { rowGroups ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowGroups.forEach { group ->
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF080808)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(group.label, color = Color(0xFFF3EFE6), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text((counts[group.key] ?: 0).toString(), color = Color.White, fontWeight = FontWeight.ExtraBold)
+                                }
+                            }
+                        }
+                        repeat(2 - rowGroups.size) {
+                            Box(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            if (showCommentBox) {
+                OutlinedTextField(
+                    value = commentValue,
+                    onValueChange = onCommentChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Write comment") }
+                )
+                Button(onClick = onSubmitComment, shape = RoundedCornerShape(8.dp)) {
+                    Text("Submit Comment")
+                }
+            }
+            if (visibleSections.contains("comments")) {
+                if (comments.isEmpty()) {
+                    Text("No comments yet.", color = if (dark) Color(0xFFD9D4CA) else Color(0xFF6B7280))
+                } else {
+                    comments.forEach { item ->
+                        InfoCard(
+                            title = "${item.author} • ${item.relationship}",
+                            paragraphs = listOf(item.comment),
+                            dark = dark
+                        )
+                    }
+                }
+            }
+            if (visibleSections.contains("answered")) {
+                if (answeredQuestions.isEmpty()) {
+                    Text("No answered questions yet.", color = if (dark) Color(0xFFD9D4CA) else Color(0xFF6B7280))
+                } else {
+                    answeredQuestions.forEach { item ->
+                        InfoCard(title = "Answered by ${item.answeredByName}", paragraphs = listOf(item.questionText), dark = dark)
+                    }
                 }
             }
         }
@@ -1776,6 +2186,169 @@ private fun firstNonBlank(vararg values: String?): String {
     return values.firstOrNull { !it.isNullOrBlank() } ?: ""
 }
 
+private fun SimpleProfile.matchesSearch(query: String): Boolean {
+    val normalized = query.trim().lowercase()
+    if (normalized.isBlank()) return true
+    return listOf(name, subtitle, extra).joinToString(" ").lowercase().contains(normalized)
+}
+
+private fun SimpleProfile.matchesField(field: String): Boolean {
+    val wanted = field.trim().lowercase()
+    if (wanted.isBlank()) return true
+    return fields.any { it.substringBefore(":").trim().lowercase() == wanted }
+}
+
+private suspend fun supportRoleAction(
+    apiService: ParagonApiService,
+    rolePath: String,
+    profileId: String,
+    action: String,
+): String {
+    val token = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+        ?: return "Login first to ${action.lowercase()}."
+    val actionKey = if (action == "Vote") "vote" else "donate"
+    return runCatching {
+        apiService.supportRoleProfile(
+            idToken = token,
+            rolePath = rolePath,
+            profileId = profileId,
+            actionKey = actionKey,
+            amountParag = 1
+        )
+    }.fold(
+        onSuccess = { "$action completed with 1 PARAG from your wallet." },
+        onFailure = { error -> error.message ?: "$action could not be completed." }
+    )
+}
+
+private suspend fun submitRoleComment(
+    firestore: FirebaseFirestore,
+    rolePath: String,
+    profile: SimpleProfile,
+    field: String,
+    comment: String,
+): String {
+    val user = FirebaseAuth.getInstance().currentUser
+        ?: return "Login first to comment."
+    val trimmed = comment.trim()
+    if (trimmed.length < 3) {
+        return "Write at least 3 characters before submitting."
+    }
+    if (user.uid == profile.uid) {
+        return "You cannot comment on your own profile."
+    }
+
+    val collectionName = if (rolePath == "supernal") "supernal_testimonials" else "backer_testimonials"
+    val idKey = if (rolePath == "supernal") "supernalId" else "backerId"
+    val nameKey = if (rolePath == "supernal") "supernalName" else "backerName"
+
+    return runCatching {
+        firestore.collection(collectionName).add(
+            mapOf(
+                idKey to profile.uid,
+                nameKey to profile.name,
+                "field" to field,
+                "relationship" to "communityMembers",
+                "relationshipLabel" to "Community Members",
+                "comment" to trimmed,
+                "voterId" to user.uid,
+                "voterName" to (user.displayName ?: user.email ?: "Paragon Member"),
+                "status" to "published",
+                "createdAt" to FieldValue.serverTimestamp(),
+            )
+        ).await()
+    }.fold(
+        onSuccess = { "Comment submitted for ${profile.name}." },
+        onFailure = { error -> error.message ?: "Comment could not be submitted." }
+    )
+}
+
+private suspend fun loadRoleComments(
+    firestore: FirebaseFirestore,
+    rolePath: String,
+    field: String,
+): List<RoleComment> {
+    val collectionName = if (rolePath == "supernal") "supernal_testimonials" else "backer_testimonials"
+    val idKey = if (rolePath == "supernal") "supernalId" else "backerId"
+    return runCatching {
+        firestore.collection(collectionName).get().await().documents.mapNotNull { doc ->
+            val data = doc.data.orEmpty()
+            if (data["status"]?.toString() != "published") return@mapNotNull null
+            if (field.isNotBlank() && data["field"]?.toString()?.equals(field, ignoreCase = true) != true) return@mapNotNull null
+            RoleComment(
+                profileId = data[idKey]?.toString().orEmpty(),
+                author = data["voterName"]?.toString().orEmpty().ifBlank { "Paragon Member" },
+                relationshipKey = data["relationship"]?.toString().orEmpty().ifBlank { "communityMembers" },
+                relationship = data["relationshipLabel"]?.toString().orEmpty().ifBlank { "Community Members" },
+                comment = data["comment"]?.toString().orEmpty(),
+            )
+        }
+    }.getOrDefault(emptyList())
+}
+
+private suspend fun loadRoleQuestions(
+    firestore: FirebaseFirestore,
+    rolePath: String,
+    field: String,
+): List<RoleQuestion> {
+    val collectionName = if (rolePath == "supernal") "superboss_challenges" else "backer_questions"
+    return runCatching {
+        firestore.collection(collectionName).get().await().documents.mapNotNull { doc ->
+            val data = doc.data.orEmpty()
+            val questionFields = collectServiceFields(data) + listOfNotNull(data["field"]?.toString(), data["serviceField"]?.toString())
+            if (
+                field.isNotBlank() &&
+                questionFields.isNotEmpty() &&
+                questionFields.none { it.substringBefore(":").trim().equals(field, ignoreCase = true) }
+            ) return@mapNotNull null
+            RoleQuestion(
+                id = doc.id,
+                ownerId = data["ownerId"]?.toString().orEmpty(),
+                questionText = data["questionText"]?.toString().orEmpty().ifBlank { "Untitled question" },
+                answeredByName = data["answeredByName"]?.toString().orEmpty().ifBlank { "Member" },
+                answered = data["answeredCorrectly"] == true || !data["answeredBy"]?.toString().isNullOrBlank(),
+            )
+        }
+    }.getOrDefault(emptyList())
+}
+
+private suspend fun loadRoleAttempts(
+    firestore: FirebaseFirestore,
+    rolePath: String,
+): List<RoleAttempt> {
+    val collectionName = if (rolePath == "supernal") "superboss_challenge_attempts" else "backer_question_attempts"
+    return runCatching {
+        firestore.collection(collectionName).get().await().documents.map { doc ->
+            val data = doc.data.orEmpty()
+            RoleAttempt(
+                questionId = data["questionId"]?.toString().orEmpty(),
+                ownerId = data["ownerId"]?.toString().orEmpty(),
+                responderId = data["responderId"]?.toString().orEmpty(),
+                isCorrect = data["isCorrect"] == true,
+                didTimeout = data["didTimeout"] == true,
+            )
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun buildScoreStats(
+    profileId: String,
+    questions: List<RoleQuestion>,
+    attempts: List<RoleAttempt>,
+): List<ScoreStat> {
+    val ownAttempts = attempts.filter { it.ownerId == profileId }
+    val otherAttempts = attempts.filter { it.responderId == profileId && it.ownerId != profileId }
+    val touchedQuestionIds = ownAttempts.map { it.questionId }.filter { it.isNotBlank() }.toSet()
+    return listOf(
+        ScoreStat("Set", questions.size),
+        ScoreStat("Solved", questions.count { it.answered }),
+        ScoreStat("Failed", ownAttempts.count { it.didTimeout || !it.isCorrect }),
+        ScoreStat("Untouched", questions.count { !it.answered && !touchedQuestionIds.contains(it.id) }),
+        ScoreStat("My Fails", otherAttempts.count { it.didTimeout || !it.isCorrect }),
+        ScoreStat("My Solves", otherAttempts.count { it.isCorrect }),
+    )
+}
+
 private fun talentEmoji(talent: String): String {
     return when (talent) {
         "Cultural Performer" -> "🌍"
@@ -1791,5 +2364,25 @@ private fun talentEmoji(talent: String): String {
         "Artist & Designer" -> "🎨"
         "Actor" -> "🎭"
         else -> "⭐"
+    }
+}
+
+private const val MENU_INVITE_APP_URL = "https://play.google.com/store/apps/details?id=com.app.natureswayproduction"
+
+private fun android.content.Context.shareMenuInvite() {
+    runCatching {
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "Join me on Paragon Planet on Google Play: $MENU_INVITE_APP_URL"
+                    )
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+                "Share invite"
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }

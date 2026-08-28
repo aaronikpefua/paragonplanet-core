@@ -244,15 +244,33 @@ service cloud.firestore {
     match /merchant_order_messages/{messageId} {
       allow create: if request.auth != null
         && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.orderId is string
+        && exists(/databases/$(database)/documents/merchant_orders/$(request.resource.data.orderId))
+        && get(/databases/$(database)/documents/merchant_orders/$(request.resource.data.orderId)).data.buyerId == request.resource.data.buyerId
+        && get(/databases/$(database)/documents/merchant_orders/$(request.resource.data.orderId)).data.merchantId == request.resource.data.merchantId
         && (
-          request.resource.data.buyerId == request.auth.uid ||
-          request.resource.data.merchantId == request.auth.uid
+          (
+            request.resource.data.buyerId == request.auth.uid &&
+            get(/databases/$(database)/documents/merchant_orders/$(request.resource.data.orderId)).data.buyerId == request.auth.uid
+          ) ||
+          (
+            request.resource.data.merchantId == request.auth.uid &&
+            get(/databases/$(database)/documents/merchant_orders/$(request.resource.data.orderId)).data.merchantId == request.auth.uid
+          )
         );
 
       allow read: if request.auth != null
         && (
-          resource.data.buyerId == request.auth.uid ||
-          resource.data.merchantId == request.auth.uid ||
+          (
+            resource.data.orderId is string &&
+            exists(/databases/$(database)/documents/merchant_orders/$(resource.data.orderId)) &&
+            get(/databases/$(database)/documents/merchant_orders/$(resource.data.orderId)).data.buyerId == request.auth.uid
+          ) ||
+          (
+            resource.data.orderId is string &&
+            exists(/databases/$(database)/documents/merchant_orders/$(resource.data.orderId)) &&
+            get(/databases/$(database)/documents/merchant_orders/$(resource.data.orderId)).data.merchantId == request.auth.uid
+          ) ||
           isAdmin()
         );
 
@@ -461,6 +479,54 @@ service cloud.firestore {
         && request.resource.data.comment is string
         && request.resource.data.comment.size() >= 3
         && request.resource.data.comment.size() <= 800;
+
+      allow update, delete: if isAdmin();
+    }
+
+    match /backer_testimonials/{testimonialId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.voterId == request.auth.uid
+        && request.resource.data.backerId is string
+        && request.resource.data.backerId != request.auth.uid
+        && request.resource.data.status == "published"
+        && request.resource.data.relationship in [
+          "students",
+          "tutees",
+          "trainees",
+          "mentees",
+          "followers",
+          "beneficiaries",
+          "communityMembers"
+        ]
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() >= 3
+        && request.resource.data.comment.size() <= 800;
+
+      allow update, delete: if isAdmin();
+    }
+
+    match /supernal_votes/{voteId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.voterId == request.auth.uid
+        && request.resource.data.supernalId is string
+        && request.resource.data.supernalId != request.auth.uid
+        && request.resource.data.status == "published";
+
+      allow update, delete: if isAdmin();
+    }
+
+    match /backer_votes/{voteId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.voterId == request.auth.uid
+        && request.resource.data.backerId is string
+        && request.resource.data.backerId != request.auth.uid
+        && request.resource.data.status == "published";
 
       allow update, delete: if isAdmin();
     }

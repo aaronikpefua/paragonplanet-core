@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
-export default function VideoPlayer({ streamUrl }) {
+export default function VideoPlayer({ streamUrl, active = true }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const hasStartedRef = useRef(false);
@@ -227,6 +227,20 @@ export default function VideoPlayer({ streamUrl }) {
 
     const isHlsUrl = streamUrl?.includes(".m3u8");
 
+    if (!active) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      setLoading(false);
+      setError(false);
+      setPaused(true);
+      return;
+    }
+
     hasStartedRef.current = false;
     playPromiseRef.current = null;
 
@@ -262,7 +276,7 @@ export default function VideoPlayer({ streamUrl }) {
     video.muted = true;
     video.playsInline = true;
     video.autoplay = true;
-    video.preload = isHlsUrl ? "metadata" : "auto";
+    video.preload = "metadata";
     video.loop = true;
 
     if (hlsRef.current) {
@@ -410,7 +424,7 @@ export default function VideoPlayer({ streamUrl }) {
       video.load();
     } else if (!isHlsUrl) {
       video.src = streamUrl;
-      video.preload = "auto";
+      video.preload = "metadata";
       video.load();
       void safePlay();
     } else {
@@ -437,7 +451,7 @@ export default function VideoPlayer({ streamUrl }) {
 
       if (hls) hls.destroy();
     };
-  }, [streamUrl, error]);
+  }, [streamUrl, active, error]);
 
   useEffect(() => {
     scheduleControlsHide();

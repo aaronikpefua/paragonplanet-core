@@ -3,6 +3,9 @@
     "source": "functions",
     "runtime": "nodejs20"
   },
+  "firestore": {
+    "rules": "backend/firestore.rules"
+  },
   "hosting": {
     "public": "frontend/build",
     "ignore": [
