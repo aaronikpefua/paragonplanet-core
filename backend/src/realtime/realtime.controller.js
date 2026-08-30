@@ -1,6 +1,7 @@
 import admin from "../config/firebase.js";
 import { CALL_STATUSES, TERMINAL_STATUSES, callExpiresAt, getCallPlan, listCallPlans } from "./callPlans.js";
 import { createParticipantToken, createRealtimeRoom, realtimeProviderStatus } from "./cloudflareRealtime.js";
+import { measureAsync, measureFirestore } from "../observability/perf.js";
 
 const REQUEST_EXPIRY_MS = 90 * 1000;
 
@@ -38,7 +39,11 @@ function historyCollection(db) {
 
 async function releaseReservation(db, callId, nextStatus, actorId, reason) {
   const callRef = callCollection(db).doc(callId);
-  await db.runTransaction(async (transaction) => {
+  await measureAsync({
+    event: "firestore.transaction",
+    domain: "realtime",
+    operation: `release-reservation-${nextStatus}`,
+  }, () => db.runTransaction(async (transaction) => {
     const callSnap = await transaction.get(callRef);
     if (!callSnap.exists) throw Object.assign(new Error("Call not found"), { status: 404 });
     const call = callSnap.data() || {};
@@ -71,12 +76,16 @@ async function releaseReservation(db, callId, nextStatus, actorId, reason) {
       releaseReason: reason,
       updatedAt: nowField(),
     }, { merge: true });
-  });
+  }));
 }
 
 async function finalizeChargeIfReady(db, callId) {
   const callRef = callCollection(db).doc(callId);
-  await db.runTransaction(async (transaction) => {
+  await measureAsync({
+    event: "firestore.transaction",
+    domain: "realtime",
+    operation: "finalize-call-charge",
+  }, () => db.runTransaction(async (transaction) => {
     const callSnap = await transaction.get(callRef);
     if (!callSnap.exists) throw Object.assign(new Error("Call not found"), { status: 404 });
     const call = callSnap.data() || {};
@@ -136,12 +145,18 @@ async function finalizeChargeIfReady(db, callId) {
       recipientShareParag: recipientShare,
       updatedAt: nowField(),
     }, { merge: true });
-  });
+  }));
 }
 
 export async function getRealtimePlans(req, res) {
   try {
-    const plans = await listCallPlans();
+    const plans = await measureFirestore({
+      domain: "realtime",
+      operation: "list-call-plans",
+      collection: "realtime_call_plans",
+      operationType: "query",
+      requestId: req.requestId,
+    }, () => listCallPlans());
     return res.json({ plans, provider: realtimeProviderStatus() });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not load call plans" });
@@ -167,7 +182,12 @@ export async function requestPrivateCall(req, res) {
       profileName(db, recipientId, "Recipient"),
     ]);
 
-    await db.runTransaction(async (transaction) => {
+    await measureAsync({
+      event: "firestore.transaction",
+      domain: "realtime",
+      operation: "request-private-call",
+      requestId: req.requestId,
+    }, () => db.runTransaction(async (transaction) => {
       const [callSnap, walletSnap] = await Promise.all([transaction.get(callRef), transaction.get(walletRef)]);
       if (callSnap.exists) return;
       const wallet = walletSnap.data() || {};
@@ -219,7 +239,7 @@ export async function requestPrivateCall(req, res) {
         callId,
         createdAt: nowField(),
       });
-    });
+    }));
 
     const snap = await callRef.get();
     return res.status(201).json({ call: { id: callId, ...snap.data() } });
@@ -233,8 +253,20 @@ export async function listMyCalls(req, res) {
     const uid = assertAuth(req);
     const db = admin.firestore();
     const [incoming, outgoing] = await Promise.all([
-      callCollection(db).where("recipientId", "==", uid).limit(40).get(),
-      callCollection(db).where("requesterId", "==", uid).limit(40).get(),
+      measureFirestore({
+        domain: "realtime",
+        operation: "list-incoming-calls",
+        collection: "realtime_call_sessions",
+        operationType: "query",
+        requestId: req.requestId,
+      }, () => callCollection(db).where("recipientId", "==", uid).limit(40).get()),
+      measureFirestore({
+        domain: "realtime",
+        operation: "list-outgoing-calls",
+        collection: "realtime_call_sessions",
+        operationType: "query",
+        requestId: req.requestId,
+      }, () => callCollection(db).where("requesterId", "==", uid).limit(40).get()),
     ]);
     const calls = [...incoming.docs, ...outgoing.docs]
       .map((doc) => ({ id: doc.id, ...doc.data() }))
@@ -261,11 +293,16 @@ export async function acceptCall(req, res) {
     let providerMessage = "";
     if (!room) {
       try {
-        room = await createRealtimeRoom({
+        room = await measureAsync({
+          event: "realtime.room.create",
+          domain: "realtime",
+          operation: "create-cloudflare-realtime-room",
+          requestId: req.requestId,
+        }, () => createRealtimeRoom({
           callId: snap.id,
           durationMinutes: call.durationMinutes,
           participantLimit: call.participantLimit || 2,
-        });
+        }));
       } catch (error) {
         if (error.status !== 503) throw error;
         providerMessage = "Cloudflare Realtime is not configured yet.";
@@ -337,12 +374,17 @@ export async function joinCall(req, res) {
     if (!call.roomId) return res.status(409).json({ error: "Realtime room has not been created" });
 
     const participantName = uid === call.requesterId ? call.requesterName : call.recipientName;
-    const token = await createParticipantToken({
+    const token = await measureAsync({
+      event: "realtime.token.create",
+      domain: "realtime",
+      operation: "create-cloudflare-participant-token",
+      requestId: req.requestId,
+    }, () => createParticipantToken({
       roomId: call.roomId,
       participantId: uid,
       participantName,
       callId: snap.id,
-    });
+    }));
     await callRef.set({ status: CALL_STATUSES.CONNECTING, updatedAt: nowField() }, { merge: true });
     return res.json({ call: { id: snap.id, ...call, status: CALL_STATUSES.CONNECTING }, token });
   } catch (error) {

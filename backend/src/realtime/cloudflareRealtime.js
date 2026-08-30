@@ -1,3 +1,5 @@
+import { measureAsync } from "../observability/perf.js";
+
 export class RealtimeProviderError extends Error {
   constructor(message, status = 500) {
     super(message);
@@ -31,14 +33,18 @@ async function cloudflareRequest(path, options = {}) {
     throw new RealtimeProviderError("Cloudflare Realtime is not configured yet.", 503);
   }
 
-  const response = await fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}${path}`, {
+  const response = await measureAsync({
+    event: "upstream.request",
+    domain: "realtime",
+    operation: `cloudflare.realtime.${options.method || "GET"} ${path}`,
+  }, () => fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${config.apiToken}`,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
-  });
+  }));
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {

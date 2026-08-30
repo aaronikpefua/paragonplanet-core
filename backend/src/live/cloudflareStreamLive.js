@@ -1,3 +1,5 @@
+import { measureAsync } from "../observability/perf.js";
+
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 export function getCloudflareStreamLiveConfig() {
@@ -35,14 +37,18 @@ async function cloudflareRequest(path, options = {}) {
     throw new CloudflareStreamLiveError("Cloudflare Stream Live is not configured yet.", 503);
   }
 
-  const response = await fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}${path}`, {
+  const response = await measureAsync({
+    event: "upstream.request",
+    domain: "live",
+    operation: `cloudflare.stream.${options.method || "GET"} ${path}`,
+  }, () => fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${config.apiToken}`,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
-  });
+  }));
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     const message = payload.errors?.[0]?.message || payload.error || "Cloudflare Stream Live request failed";

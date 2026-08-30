@@ -1,13 +1,24 @@
 import { useEffect, useState } from "react";
 import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { logPerf } from "../lib/perf";
 
 export default function useVideos() {
   const [videos, setVideos] = useState([]);
   const [profilesByUid, setProfilesByUid] = useState({});
 
   useEffect(() => {
+    const start = performance.now();
     const unsubscribeProfiles = onSnapshot(collection(db, "public_profiles"), (snap) => {
+      logPerf("firestore.operation", {
+        platform: "web",
+        domain: "feed",
+        operation: "listen-public-profiles",
+        collection: "public_profiles",
+        operationType: "listen",
+        resultCount: snap.docs.length,
+        durationMs: Math.round(performance.now() - start),
+      });
       const profiles = {};
       snap.docs.forEach((profileDoc) => {
         profiles[profileDoc.id] = profileDoc.data() || {};
@@ -25,6 +36,7 @@ export default function useVideos() {
       limit(40)
     );
 
+    const start = performance.now();
     const unsubscribe = onSnapshot(q, (snap) => {
       const data = snap.docs
         .map((doc) => ({
@@ -48,6 +60,15 @@ export default function useVideos() {
         .filter((video) => isHomeFeedVideo(video));
 
       setVideos(data);
+      logPerf("feed.snapshot", {
+        platform: "web",
+        domain: "feed",
+        operation: "listen-home-videos",
+        collection: "videos",
+        resultCount: snap.docs.length,
+        usableItemCount: data.length,
+        durationMs: Math.round(performance.now() - start),
+      });
     });
 
     return () => unsubscribe();

@@ -1,5 +1,6 @@
 import admin from "../config/firebase.js";
 import { createStreamLiveInput, getStreamLiveInputPlayback, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { measureAsync, measureFirestore } from "../observability/perf.js";
 
 const HOST_ROLES = new Set(["CITIZEN", "AMBASSADOR", "PROMOTER", "BACKER", "SUPERBOSS", "SUPERNAL", "MERCHANT"]);
 const LIVE_STATUSES = new Set(["ACTIVE", "LIVE", "STARTING"]);
@@ -182,11 +183,23 @@ export async function listLiveSessions(req, res) {
     if (tab.includes("following")) {
       const viewerUid = await optionalAuthUid(req);
       if (!viewerUid) return res.json({ sessions: [], provider: streamLiveProviderStatus() });
-      const followSnap = await db.collection("creator_follows").where("followerId", "==", viewerUid).limit(200).get();
+      const followSnap = await measureFirestore({
+        domain: "live",
+        operation: "list-following-live-hosts",
+        collection: "creator_follows",
+        operationType: "query",
+        requestId: req.requestId,
+      }, () => db.collection("creator_follows").where("followerId", "==", viewerUid).limit(200).get());
       followedCreatorIds = new Set(followSnap.docs.map((doc) => doc.data()?.creatorId).filter(Boolean));
       if (!followedCreatorIds.size) return res.json({ sessions: [], provider: streamLiveProviderStatus() });
     }
-    const snap = await liveCollection(db).where("status", "in", statuses).limit(50).get();
+    const snap = await measureFirestore({
+      domain: "live",
+      operation: `list-live-sessions-${tab}`,
+      collection: "live_sessions",
+      operationType: "query",
+      requestId: req.requestId,
+    }, () => liveCollection(db).where("status", "in", statuses).limit(50).get());
     const sessions = [];
     const now = Date.now();
     for (const doc of snap.docs) {
@@ -283,7 +296,13 @@ export async function startLiveSession(req, res) {
     const sessionRef = liveCollection(db).doc();
     const sessionId = sessionRef.id;
 
-    await sessionRef.set({
+    await measureFirestore({
+      domain: "live",
+      operation: "start-live-session-initial-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => sessionRef.set({
       liveSessionId: sessionId,
       hostUid,
       hostUsername: profile.username,
@@ -300,12 +319,18 @@ export async function startLiveSession(req, res) {
       createdAt: nowField(),
       lastHeartbeatAt: nowField(),
       updatedAt: nowField(),
-    });
+    }));
 
     const liveInput = await createStreamLiveInput({ title, sessionId });
     const normalizedPublisherTransport = String(publisherTransport || "").toLowerCase() === "whip" ? "whip" : "rtmps";
     const playbackTransport = normalizedPublisherTransport === "whip" ? "whep" : "hls";
-    await sessionRef.set({
+    await measureFirestore({
+      domain: "live",
+      operation: "start-live-session-ingest-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => sessionRef.set({
       status: "STARTING",
       publisherTransport: normalizedPublisherTransport,
       playbackTransport,
@@ -321,7 +346,7 @@ export async function startLiveSession(req, res) {
       providerConfigured: true,
       startedAt: nowField(),
       updatedAt: nowField(),
-    }, { merge: true });
+    }, { merge: true }));
 
     const snap = await sessionRef.get();
     return res.status(201).json({
@@ -345,12 +370,24 @@ export async function markLiveSessionActive(req, res) {
     const hostUid = assertAuth(req);
     const db = admin.firestore();
     const ref = liveCollection(db).doc(req.params.sessionId);
-    const snap = await ref.get();
+    const snap = await measureFirestore({
+      domain: "live",
+      operation: "mark-live-active-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => ref.get());
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can update this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not starting." });
-    await ref.set({ status: "ACTIVE", wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true });
+    await measureFirestore({
+      domain: "live",
+      operation: "mark-live-active-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => ref.set({ status: "ACTIVE", wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -363,12 +400,24 @@ export async function heartbeatLiveSession(req, res) {
     const hostUid = assertAuth(req);
     const db = admin.firestore();
     const ref = liveCollection(db).doc(req.params.sessionId);
-    const snap = await ref.get();
+    const snap = await measureFirestore({
+      domain: "live",
+      operation: "heartbeat-live-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => ref.get());
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can heartbeat this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not active." });
-    await ref.set({ status: "ACTIVE", lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true });
+    await measureFirestore({
+      domain: "live",
+      operation: "heartbeat-live-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => ref.set({ status: "ACTIVE", lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -397,7 +446,13 @@ export async function scheduleLiveSession(req, res) {
     const profile = await profileForHost(db, hostUid);
     const sessionRef = liveCollection(db).doc();
     const sessionId = sessionRef.id;
-    await sessionRef.set({
+    await measureFirestore({
+      domain: "live",
+      operation: "schedule-live-session-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => sessionRef.set({
       liveSessionId: sessionId,
       hostUid,
       hostUsername: profile.username,
@@ -414,7 +469,7 @@ export async function scheduleLiveSession(req, res) {
       peakViewerCount: 0,
       createdAt: nowField(),
       updatedAt: nowField(),
-    });
+    }));
     const snap = await sessionRef.get();
     return res.status(201).json({ session: serializeLiveSession({ id: snap.id, ...snap.data() }) });
   } catch (error) {
@@ -427,15 +482,27 @@ export async function endLiveSession(req, res) {
     const hostUid = assertAuth(req);
     const db = admin.firestore();
     const ref = liveCollection(db).doc(req.params.sessionId);
-    const snap = await ref.get();
+    const snap = await measureFirestore({
+      domain: "live",
+      operation: "end-live-session-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => ref.get());
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can end this Live." });
-    await ref.set({
+    await measureFirestore({
+      domain: "live",
+      operation: "end-live-session-set",
+      collection: "live_sessions",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => ref.set({
       status: "ENDED",
       endedAt: nowField(),
       updatedAt: nowField(),
-    }, { merge: true });
+    }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -448,16 +515,28 @@ export async function listLiveChatMessages(req, res) {
     const db = admin.firestore();
     const sessionId = String(req.params.sessionId || "").trim();
     if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
-    const sessionSnap = await liveCollection(db).doc(sessionId).get();
+    const sessionSnap = await measureFirestore({
+      domain: "live",
+      operation: "list-live-chat-session-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => liveCollection(db).doc(sessionId).get());
     if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
-    const snap = await liveChatCollection(db, sessionId)
+    const snap = await measureFirestore({
+      domain: "live",
+      operation: "list-live-chat",
+      collection: "live_sessions/{id}/chat_messages",
+      operationType: "query",
+      requestId: req.requestId,
+    }, () => liveChatCollection(db, sessionId)
       .orderBy("createdAt", "desc")
       .limit(50)
-      .get();
+      .get());
     const messages = snap.docs
       .map((doc) => ({ id: doc.id, ...doc.data(), createdAt: timestampIso(doc.data()?.createdAt) }))
       .reverse();
-    return res.json({ messages });
+    return res.json({ messages, resultCount: messages.length });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not load Live chat" });
   }
@@ -471,7 +550,13 @@ export async function postLiveChatMessage(req, res) {
     const text = String(req.body?.text || "").trim().slice(0, 280);
     if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
     if (!text) return res.status(400).json({ error: "Write a message first" });
-    const sessionSnap = await liveCollection(db).doc(sessionId).get();
+    const sessionSnap = await measureFirestore({
+      domain: "live",
+      operation: "post-live-chat-session-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => liveCollection(db).doc(sessionId).get());
     if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = sessionSnap.data() || {};
     if (!isFreshActiveSession(session) && !["ACTIVE", "LIVE", "STARTING"].includes(session.status)) {
@@ -487,7 +572,13 @@ export async function postLiveChatMessage(req, res) {
       text,
       createdAt: nowField(),
     };
-    await ref.set(payload);
+    await measureFirestore({
+      domain: "live",
+      operation: "post-live-chat-message-set",
+      collection: "live_sessions/{id}/chat_messages",
+      operationType: "set",
+      requestId: req.requestId,
+    }, () => ref.set(payload));
     return res.status(201).json({
       message: {
         id: ref.id,
@@ -519,7 +610,12 @@ export async function supportLiveSession(req, res) {
   const hostLedgerRef = db.collection("ledger_entries").doc();
 
   try {
-    await db.runTransaction(async (transaction) => {
+    await measureAsync({
+      event: "firestore.transaction",
+      domain: "live",
+      operation: `live-support-${actionKey}`,
+      requestId: req.requestId,
+    }, () => db.runTransaction(async (transaction) => {
       const [sessionSnap, supporterWalletSnap] = await Promise.all([
         transaction.get(sessionRef),
         transaction.get(supporterWalletRef),
@@ -628,7 +724,7 @@ export async function supportLiveSession(req, res) {
           createdAt,
         });
       }
-    });
+    }));
 
     return res.json({ ok: true, sessionId, actionKey, amountParag, amountGbazilo });
   } catch (error) {

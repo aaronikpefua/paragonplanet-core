@@ -1,5 +1,7 @@
 package com.app.natureswayproduction.nativeapp.data.api
 
+import android.os.SystemClock
+import android.util.Log
 import com.app.natureswayproduction.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -9,8 +11,11 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 class ParagonApiService {
+    private val perfRunId = "android_" + SystemClock.elapsedRealtime().toString(36)
+
     private val bottleActionKeys = listOf(
         "mineral",
         "malt",
@@ -883,11 +888,14 @@ class ParagonApiService {
         appCheckToken: String? = null,
         jsonBody: String? = null,
     ): ApiResponse {
+        val startedAt = SystemClock.elapsedRealtime()
+        val requestId = "${perfRunId}_${UUID.randomUUID().toString().take(8)}"
         val connection = (URL(BuildConfig.BACKEND_URL + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15000
             readTimeout = 15000
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-Request-Id", requestId)
             authorization?.let { setRequestProperty("Authorization", it) }
             appCheckToken?.let { setRequestProperty("X-Firebase-AppCheck", it) }
             if (jsonBody != null) {
@@ -902,13 +910,50 @@ class ParagonApiService {
             }
         }
 
-        val statusCode = connection.responseCode
-        val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
-        val body = stream?.use { input ->
-            BufferedReader(InputStreamReader(input)).readText()
-        }.orEmpty()
+        return try {
+            val statusCode = connection.responseCode
+            val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.use { input ->
+                BufferedReader(InputStreamReader(input)).readText()
+            }.orEmpty()
 
-        return ApiResponse(statusCode = statusCode, body = body)
+            Log.i(
+                "ParagonPerf",
+                "event=api.request platform=android method=$method route=${normalizeRoute(path)} statusCode=$statusCode statusClass=${classifyStatus(statusCode)} durationMs=${SystemClock.elapsedRealtime() - startedAt} requestId=$requestId"
+            )
+            ApiResponse(statusCode = statusCode, body = body)
+        } catch (error: Exception) {
+            Log.w(
+                "ParagonPerf",
+                "event=api.request platform=android method=$method route=${normalizeRoute(path)} status=failure errorClass=${classifyException(error)} durationMs=${SystemClock.elapsedRealtime() - startedAt} requestId=$requestId"
+            )
+            throw error
+        }
+    }
+}
+
+private fun normalizeRoute(path: String): String =
+    path
+        .replace(Regex("/[A-Za-z0-9_-]{16,}(?=/|$)"), "/:id")
+        .replace(Regex("/[A-Za-z0-9_-]{8,}(?=/|$)"), "/:id")
+
+private fun classifyStatus(statusCode: Int): String = when {
+    statusCode == 429 -> "RATE_LIMIT"
+    statusCode == 401 -> "AUTH"
+    statusCode == 403 -> "PERMISSION"
+    statusCode == 404 -> "NOT_FOUND"
+    statusCode == 409 -> "CONFLICT"
+    statusCode >= 500 -> "SERVER"
+    statusCode >= 400 -> "VALIDATION"
+    else -> "OK"
+}
+
+private fun classifyException(error: Exception): String {
+    val message = error.message.orEmpty().lowercase()
+    return when {
+        message.contains("timed out") || message.contains("timeout") -> "TIMEOUT"
+        message.contains("network") || message.contains("failed") -> "NETWORK"
+        else -> "UNKNOWN"
     }
 }
 

@@ -1,4 +1,5 @@
 import { getAppCheckHeader } from "../config/firebase";
+import { classifyStatus, logPerf, normalizedPath, perfRunId } from "./perf";
 
 const configuredApiUrl = import.meta.env.VITE_BACKEND_URL?.trim();
 
@@ -6,15 +7,42 @@ export const API_URL =
   configuredApiUrl || "https://backend-fafgci45ha-uc.a.run.app";
 
 export async function appCheckFetch(url, options = {}) {
+  const start = performance.now();
   const appCheckHeaders = await getAppCheckHeader();
+  const method = String(options.method || "GET").toUpperCase();
+  const requestId = `web_${perfRunId()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  return fetch(url, {
-    ...options,
-    headers: {
-      ...(options.headers || {}),
-      ...appCheckHeaders,
-    },
-  });
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        ...appCheckHeaders,
+        "X-Request-Id": requestId,
+      },
+    });
+    logPerf("api.request", {
+      platform: "web",
+      method,
+      route: `${method} ${normalizedPath(url)}`,
+      statusCode: response.status,
+      statusClass: classifyStatus(response.status),
+      durationMs: Math.round(performance.now() - start),
+      requestId,
+    });
+    return response;
+  } catch (error) {
+    logPerf("api.request", {
+      platform: "web",
+      method,
+      route: `${method} ${normalizedPath(url)}`,
+      status: "failure",
+      errorClass: error?.name === "AbortError" ? "TIMEOUT" : "NETWORK",
+      durationMs: Math.round(performance.now() - start),
+      requestId,
+    });
+    throw error;
+  }
 }
 
 export const SUPPORT_ACTIONS = {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
+import { logPerf } from "../lib/perf";
 
 export default function VideoPlayer({ streamUrl, active = true }) {
   const videoRef = useRef(null);
@@ -8,6 +9,8 @@ export default function VideoPlayer({ streamUrl, active = true }) {
   const playPromiseRef = useRef(null);
   const controlsTimerRef = useRef(null);
   const tapTimeoutRef = useRef(null);
+  const playerInstanceRef = useRef(`feed_player_${Math.random().toString(36).slice(2, 10)}`);
+  const sourceStartRef = useRef(0);
   const lastTapRef = useRef({ time: 0, side: null });
   const isScrubbingRef = useRef(false);
 
@@ -226,6 +229,14 @@ export default function VideoPlayer({ streamUrl, active = true }) {
     if (!video) return;
 
     const isHlsUrl = streamUrl?.includes(".m3u8");
+    sourceStartRef.current = performance.now();
+    logPerf("feed.player.source_assigned", {
+      platform: "web",
+      domain: "feed",
+      playerInstanceId: playerInstanceRef.current,
+      transport: isHlsUrl ? "hls" : "file",
+      active,
+    });
 
     if (!active) {
       video.pause();
@@ -293,12 +304,26 @@ export default function VideoPlayer({ streamUrl, active = true }) {
       detectOrientation();
       syncTimeline();
       setLoading(false);
+      logPerf("feed.player.metadata", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+        durationMs: Math.round(performance.now() - sourceStartRef.current),
+      });
     };
 
     const handleCanPlay = () => {
       detectOrientation();
       syncTimeline();
       setLoading(false);
+      logPerf("feed.player.ready", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+        durationMs: Math.round(performance.now() - sourceStartRef.current),
+      });
       void safePlay();
     };
 
@@ -306,6 +331,12 @@ export default function VideoPlayer({ streamUrl, active = true }) {
       if (!hasStartedRef.current) {
         setLoading(true);
       }
+      logPerf("feed.player.waiting", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+      });
     };
 
     const handlePlaying = () => {
@@ -316,6 +347,13 @@ export default function VideoPlayer({ streamUrl, active = true }) {
       setPaused(false);
       setEnded(false);
       scheduleControlsHide();
+      logPerf("feed.video.first_frame_ms", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+        durationMs: Math.round(performance.now() - sourceStartRef.current),
+      });
     };
 
     const handlePause = () => {
@@ -350,6 +388,13 @@ export default function VideoPlayer({ streamUrl, active = true }) {
       setLoading(false);
       setShowControls(true);
       clearControlsTimer();
+      logPerf("feed.player.error", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+        errorClass: "PLAYER",
+      });
     };
 
     const handleTimeUpdate = () => {
@@ -387,6 +432,12 @@ export default function VideoPlayer({ streamUrl, active = true }) {
 
       hlsRef.current = hls;
       hls.attachMedia(video);
+      logPerf("feed.player.create", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: "hls",
+      });
 
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
         hls.loadSource(streamUrl);
@@ -394,10 +445,25 @@ export default function VideoPlayer({ streamUrl, active = true }) {
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setLoading(false);
+        logPerf("feed.player.manifest_ready", {
+          platform: "web",
+          domain: "feed",
+          playerInstanceId: playerInstanceRef.current,
+          transport: "hls",
+          durationMs: Math.round(performance.now() - sourceStartRef.current),
+        });
         void safePlay();
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        logPerf("feed.player.error", {
+          platform: "web",
+          domain: "feed",
+          playerInstanceId: playerInstanceRef.current,
+          transport: "hls",
+          errorClass: data?.type || "PLAYER",
+          fatal: Boolean(data?.fatal),
+        });
         if (data.fatal) {
           console.error("HLS fatal error:", data);
         }
@@ -422,10 +488,22 @@ export default function VideoPlayer({ streamUrl, active = true }) {
     } else if (isHlsUrl && video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = streamUrl;
       video.load();
+      logPerf("feed.player.create", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: "native-hls",
+      });
     } else if (!isHlsUrl) {
       video.src = streamUrl;
       video.preload = "metadata";
       video.load();
+      logPerf("feed.player.create", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: "file",
+      });
       void safePlay();
     } else {
       setError(true);
@@ -450,6 +528,12 @@ export default function VideoPlayer({ streamUrl, active = true }) {
       }
 
       if (hls) hls.destroy();
+      logPerf("feed.player.release", {
+        platform: "web",
+        domain: "feed",
+        playerInstanceId: playerInstanceRef.current,
+        transport: isHlsUrl ? "hls" : "file",
+      });
     };
   }, [streamUrl, active, error]);
 

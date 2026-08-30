@@ -17,6 +17,7 @@ import {
 } from "./middlewares/appcheck.middleware.js";
 import { authenticate } from "./middlewares/auth.middleware.js";
 import { rateLimit } from "./middlewares/rateLimit.middleware.js";
+import { requestObservability } from "./middlewares/observability.middleware.js";
 import {
   requestUploadUrl,
   listVideos,
@@ -28,11 +29,16 @@ import { initializeDeposit, verifyDeposit } from "./controllers/deposit.controll
 import { listBanks, resolveBankAccount, requestWithdraw } from "./controllers/bank.controller.js";
 
 const app = express();
+const additionalCorsOrigins = (process.env.ADDITIONAL_CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const allowedOrigins = new Set(
   [
     "https://www.paragonplanet.com",
     "https://paragonplanet.com",
-    process.env.FRONTEND_ORIGIN
+    process.env.FRONTEND_ORIGIN,
+    ...additionalCorsOrigins
   ].filter(Boolean)
 );
 
@@ -49,10 +55,11 @@ app.use(
       callback(new Error("Origin not allowed"));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Firebase-AppCheck"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Firebase-AppCheck", "X-Request-Id"],
   })
 );
 app.use(express.json({ limit: "1mb" }));
+app.use(requestObservability);
 app.use(rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
