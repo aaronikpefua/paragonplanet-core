@@ -60,6 +60,7 @@ export default function ParagonLive() {
   const heartbeatRef = useRef(null);
   const webLiveResultRef = useRef(null);
   const startInFlightRef = useRef(false);
+  const sessionsLoadRef = useRef(null);
   const lastStartAttemptRef = useRef(0);
   const [tab, setTab] = useState("Live Now");
   const [currentUser, setCurrentUser] = useState(null);
@@ -111,8 +112,8 @@ export default function ParagonLive() {
   }, []);
 
   useEffect(() => {
-    loadLiveSessions(tab);
     if (!currentUser || selectedSession || previewing) return undefined;
+    loadLiveSessions(tab);
     const interval = window.setInterval(() => {
       loadLiveSessions(tab, { silent: true });
     }, LIVE_SESSION_POLL_MS[tab] || 15000);
@@ -150,8 +151,9 @@ export default function ParagonLive() {
       setSessions([]);
       return;
     }
+    if (sessionsLoadRef.current) return sessionsLoadRef.current;
     if (!silent) setSessionsLoading(true);
-    try {
+    const request = (async () => {
       const token = await currentUser.getIdToken();
       const response = await appCheckFetchWithTimeout(`${API_URL}/api/live/sessions?tab=${encodeURIComponent(nextTab)}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -167,12 +169,17 @@ export default function ParagonLive() {
         return nextTab === "Live Now" ? { ...current, status: "ENDED" } : current;
       });
       setLiveProvider(payload.provider || null);
+    })();
+    sessionsLoadRef.current = request;
+    try {
+      await request;
     } catch (error) {
       if (!silent) {
         setSessions([]);
         setStatus(error.message || "Could not load Live sessions.");
       }
     } finally {
+      if (sessionsLoadRef.current === request) sessionsLoadRef.current = null;
       if (!silent) setSessionsLoading(false);
     }
   }
@@ -565,19 +572,27 @@ function LiveViewer({ session, onClose }) {
   const playbackUrl = session.playbackHlsUrl || session.playbackUrl;
   const webRtcPlaybackUrl = session.webRtcPlaybackUrl || session.playbackWebRtcUrl;
   const playbackTransport = String(session.playbackTransport || "").toLowerCase();
-  const useWhep = playbackTransport === "whep" && Boolean(webRtcPlaybackUrl);
+  const preferredWhep = playbackTransport === "whep" && Boolean(webRtcPlaybackUrl);
+  const [whepFallback, setWhepFallback] = useState(false);
+  const useWhep = preferredWhep && !whepFallback;
   const playerRef = useRef(null);
   const whepPeerRef = useRef(null);
   const whepResourceRef = useRef("");
   const startupTimerRef = useRef(null);
+  const firstFrameTimerRef = useRef(null);
   const timingRef = useRef(null);
   const [playerMessage, setPlayerMessage] = useState("Loading Live stream...");
   const [supportMode, setSupportMode] = useState("");
 
   useEffect(() => {
+    setWhepFallback(false);
+  }, [session.id, webRtcPlaybackUrl]);
+
+  useEffect(() => {
     const video = playerRef.current;
     if (!video) return undefined;
     window.clearTimeout(startupTimerRef.current);
+    window.clearTimeout(firstFrameTimerRef.current);
     setPlayerMessage("Connecting Live...");
     timingRef.current = createLiveTiming("web-viewer", session.id || session.liveSessionId || "");
     logLiveTiming(timingRef.current, "T0_watch_selected", {
@@ -593,27 +608,61 @@ function LiveViewer({ session, onClose }) {
     }, 1800);
     if (useWhep) {
       let cancelled = false;
+      firstFrameTimerRef.current = window.setTimeout(() => {
+        if (!cancelled && playbackUrl) {
+          logLiveTiming(timingRef.current, "whep_first_frame_timeout", {
+            hasHlsFallback: true,
+          });
+          setPlayerMessage("Switching Live playback...");
+          setWhepFallback(true);
+        }
+      }, 10000);
       connectWhepPlayback({
         video,
         whepUrl: webRtcPlaybackUrl,
         onPeerConnection: (peerConnection) => {
           whepPeerRef.current = peerConnection;
+          peerConnection.addEventListener("iceconnectionstatechange", () => {
+            logLiveTiming(timingRef.current, "whep_ice_connection_state", {
+              state: peerConnection.iceConnectionState,
+            });
+          });
+          peerConnection.addEventListener("connectionstatechange", () => {
+            logLiveTiming(timingRef.current, "whep_peer_connection_state", {
+              state: peerConnection.connectionState,
+            });
+          });
         },
-        onRemoteTrack: () => logLiveTiming(timingRef.current, "T5_first_remote_track"),
+        onRemoteTrack: () => {
+          logLiveTiming(timingRef.current, "T5_first_remote_track");
+          if (!cancelled) setPlayerMessage("Starting Live video...");
+        },
         onWhepResource: (resourceUrl) => {
           whepResourceRef.current = resourceUrl;
         },
+        timing: timingRef.current,
       }).then(() => {
         if (!cancelled) {
           window.clearTimeout(startupTimerRef.current);
-          setPlayerMessage("");
+          setPlayerMessage("Starting Live video...");
         }
-      }).catch(() => {
+      }).catch((error) => {
         window.clearTimeout(startupTimerRef.current);
+        window.clearTimeout(firstFrameTimerRef.current);
+        logLiveTiming(timingRef.current, "whep_startup_failed", {
+          message: error?.message || "WHEP startup failed",
+          hasHlsFallback: Boolean(playbackUrl),
+        });
+        if (!cancelled && playbackUrl) {
+          setPlayerMessage("Switching Live playback...");
+          setWhepFallback(true);
+          return;
+        }
         if (!cancelled) setPlayerMessage("Live playback unavailable. Please try again.");
       });
       return () => {
         window.clearTimeout(startupTimerRef.current);
+        window.clearTimeout(firstFrameTimerRef.current);
         cancelled = true;
         const resource = whepResourceRef.current;
         whepResourceRef.current = "";
@@ -634,6 +683,7 @@ function LiveViewer({ session, onClose }) {
       video.play?.().catch(() => undefined);
       return () => {
         window.clearTimeout(startupTimerRef.current);
+        window.clearTimeout(firstFrameTimerRef.current);
         video.removeAttribute("src");
         video.load?.();
       };
@@ -682,11 +732,12 @@ function LiveViewer({ session, onClose }) {
       });
       return () => {
         window.clearTimeout(startupTimerRef.current);
+        window.clearTimeout(firstFrameTimerRef.current);
         hls.destroy();
       };
     }
     return undefined;
-  }, [playbackUrl, useWhep, webRtcPlaybackUrl]);
+  }, [playbackUrl, session.id, useWhep, webRtcPlaybackUrl]);
 
   if (!playbackUrl && !useWhep) {
     return <p style={noticeStyle}>Playback is not available yet. Try again after Cloudflare activates the stream.</p>;
@@ -707,6 +758,7 @@ function LiveViewer({ session, onClose }) {
         }}
         onPlaying={() => {
           window.clearTimeout(startupTimerRef.current);
+          window.clearTimeout(firstFrameTimerRef.current);
           setPlayerMessage("");
           logLiveTiming(timingRef.current, "T6_first_frame_playing");
         }}
@@ -871,7 +923,10 @@ function LiveChatPanel({
   useEffect(() => {
     if (!sessionId || !currentUser) return undefined;
     let cancelled = false;
+    let requestInFlight = false;
     async function loadChat() {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
         const token = await currentUser.getIdToken();
         const response = await appCheckFetch(`${API_URL}/api/live/sessions/${encodeURIComponent(sessionId)}/chat`, {
@@ -882,6 +937,8 @@ function LiveChatPanel({
         if (!cancelled) setMessages(Array.isArray(payload.messages) ? payload.messages : []);
       } catch {
         if (!cancelled) setNotice("Live chat is reconnecting...");
+      } finally {
+        requestInFlight = false;
       }
     }
     loadChat();
@@ -942,7 +999,7 @@ function LiveChatPanel({
   );
 }
 
-async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepResource, onRemoteTrack }) {
+async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepResource, onRemoteTrack, timing }) {
   const peerConnection = new RTCPeerConnection();
   peerConnection.addTransceiver("video", { direction: "recvonly" });
   peerConnection.addTransceiver("audio", { direction: "recvonly" });
@@ -957,7 +1014,12 @@ async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepRes
   onPeerConnection?.(peerConnection);
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
-  await waitForIceGatheringComplete(peerConnection);
+  logLiveTiming(timing, "T2_whep_offer_created");
+  await waitForInitialIceCandidate(peerConnection);
+  logLiveTiming(timing, "T3_whep_offer_posting", {
+    iceGatheringState: peerConnection.iceGatheringState,
+  });
+  const requestStartedAt = performance.now();
   const response = await fetchWithTimeout(whepUrl, {
     method: "POST",
     headers: {
@@ -966,6 +1028,10 @@ async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepRes
     },
     body: peerConnection.localDescription?.sdp || offer.sdp,
   }, 30000, "Cloudflare Live playback timed out.");
+  logLiveTiming(timing, "T4_whep_response", {
+    status: response.status,
+    durationMs: Math.round(performance.now() - requestStartedAt),
+  });
   const answer = await response.text();
   if (!response.ok) throw new Error("Cloudflare Live playback connection failed.");
   const location = response.headers.get("Location") || response.headers.get("location") || "";
@@ -1054,6 +1120,30 @@ function waitForIceGatheringComplete(peerConnection) {
         resolve();
       }
     });
+  });
+}
+
+function waitForInitialIceCandidate(peerConnection, timeoutMs = 350) {
+  if (peerConnection.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      peerConnection.removeEventListener("icecandidate", onCandidate);
+      peerConnection.removeEventListener("icegatheringstatechange", onGatheringChange);
+      resolve();
+    };
+    const onCandidate = (event) => {
+      if (event.candidate || peerConnection.iceGatheringState === "complete") finish();
+    };
+    const onGatheringChange = () => {
+      if (peerConnection.iceGatheringState === "complete") finish();
+    };
+    const timeout = window.setTimeout(finish, timeoutMs);
+    peerConnection.addEventListener("icecandidate", onCandidate);
+    peerConnection.addEventListener("icegatheringstatechange", onGatheringChange);
   });
 }
 

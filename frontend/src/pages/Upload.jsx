@@ -4,11 +4,10 @@ import { auth, db } from "../config/firebase";
 import {
   doc,
   getDoc,
-  serverTimestamp,
-  setDoc,
 } from "firebase/firestore";
 import { API_URL as BACKEND_URL, appCheckFetch } from "../lib/supportActions";
 import { getStoredActiveRole } from "../lib/activeRole";
+import { logPerf } from "../lib/perf";
 
 const ADMIN_EMAIL = "natureswaypro2@gmail.com";
 const ADMIN_PHONE = "+2348146626688";
@@ -16,6 +15,7 @@ const MAX_VIDEO_UPLOAD_MB = Number(import.meta.env.VITE_MAX_VIDEO_UPLOAD_MB || 2
 const MAX_VIDEO_DURATION_SECONDS = Number(
   import.meta.env.VITE_MAX_VIDEO_DURATION_SECONDS || 900
 );
+const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
 
 const CATEGORIES = [
   "Dancer",
@@ -205,6 +205,12 @@ export default function Upload() {
       setLoading(true);
       setProgress(0);
       setStatusText("Preparing upload...");
+      const uploadStart = performance.now();
+      logPerf("upload.web.T0_upload_submit", {
+        platform: "web",
+        domain: "upload",
+        uploadPurpose: isMeetUpMode ? "meet_up_video" : "home_video",
+      });
 
       const user = auth.currentUser;
       if (!user) throw new Error("Not authenticated");
@@ -247,6 +253,9 @@ export default function Upload() {
           fileSize: file.size,
           durationSeconds,
           uploadPurpose,
+          title: effectiveTitle,
+          description: effectiveDescription,
+          category: effectiveCategory,
         }),
       });
 
@@ -255,6 +264,20 @@ export default function Upload() {
 
       const { uploadUrl, fileName, fileUrl } = data;
       if (!fileUrl) throw new Error("Backend did not return original video URL");
+      const cleanName = fileName.split("/").pop();
+      const backendVideoId = data.video?.videoId || cleanName.split("-")[0];
+      logPerf("upload.web.T1_upload_url_ready", {
+        platform: "web",
+        domain: "upload",
+        videoId: backendVideoId,
+        durationMs: Math.round(performance.now() - uploadStart),
+      });
+      logPerf("upload.web.T5_feed_record_created", {
+        platform: "web",
+        domain: "upload",
+        videoId: backendVideoId,
+        durationMs: Math.round(performance.now() - uploadStart),
+      });
 
       setStatusText("Uploading video...");
 
@@ -274,53 +297,54 @@ export default function Upload() {
         xhr.onerror = () => reject(new Error("Upload error"));
         xhr.send(file);
       });
-
-      const cleanName = fileName.split("/").pop();
-      const videoId = cleanName.split("-")[0];
-      const videoRef = doc(db, "videos", videoId);
-
-      const baseVideoData = {
-        uid: user.uid,
-        title: effectiveTitle,
-        description: effectiveDescription,
-        about: effectiveDescription,
-        category: effectiveCategory,
-        genre: effectiveCategory,
-        fileName,
-        videoId,
-        originalUrl: fileUrl,
-        durationSeconds,
-        fileSize: file.size,
-        streamUrl: fileUrl,
-        status: "processing",
-        processingStatus: "queued",
-        votes: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-
-      const videoData = isMeetUpMode
-        ? {
-            ...baseVideoData,
-            uploadedBy: user.uid,
-            uploadedByRole: "admin",
-            source: "admin_meetup_area_upload",
-            visibility: "meet_up",
+      logPerf("upload.web.T2_media_upload_complete", {
+        platform: "web",
+        domain: "upload",
+        videoId: backendVideoId,
+        durationMs: Math.round(performance.now() - uploadStart),
+      });
+      try {
+        window.sessionStorage?.setItem(
+          RECENT_UPLOAD_STORAGE_KEY,
+          JSON.stringify({
+            id: backendVideoId,
+            uid: user.uid,
+            title: effectiveTitle,
+            description: effectiveDescription,
+            about: effectiveDescription,
+            category: effectiveCategory,
+            genre: effectiveCategory,
+            fileName,
+            originalUrl: fileUrl,
+            fileUrl,
+            streamUrl: fileUrl,
+            durationSeconds,
+            fileSize: file.size,
+            status: "processing",
+            processingStatus: "queued",
+            source: isMeetUpMode ? "admin_meetup_area_upload" : "citizen_upload",
+            visibility: isMeetUpMode ? "meet_up" : "home",
             uploadPurpose,
-            mealMode,
-            areaTitle: selectedArea.title,
-            areaIcon: selectedArea.icon,
-            areaPitch: selectedArea.pitch,
-          }
-        : {
-            ...baseVideoData,
-            source: "citizen_upload",
-            visibility: "home",
-            uploadPurpose,
-          };
+            votes: 0,
+            createdAtMs: Date.now(),
+          })
+        );
+      } catch {}
 
       setStatusText("Saving video details...");
-      await setDoc(videoRef, videoData, { merge: true });
+      logPerf("upload.web.T3_metadata_save_start", {
+        platform: "web",
+        domain: "upload",
+        videoId: backendVideoId,
+        writer: "backend-upload-url",
+      });
+      logPerf("upload.web.T4_metadata_save_complete", {
+        platform: "web",
+        domain: "upload",
+        videoId: backendVideoId,
+        writer: "backend-upload-url",
+        durationMs: Math.round(performance.now() - uploadStart),
+      });
 
       setStatusText("Starting background processing...");
       appCheckFetch(`${BACKEND_URL}/trigger-compression`, {
@@ -332,6 +356,7 @@ export default function Upload() {
         body: JSON.stringify({
           fileName,
           originalUrl: fileUrl,
+          videoId: backendVideoId,
           durationSeconds,
           title: effectiveTitle,
           description: effectiveDescription,

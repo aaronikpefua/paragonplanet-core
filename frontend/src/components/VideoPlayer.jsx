@@ -2,7 +2,143 @@ import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { logPerf } from "../lib/perf";
 
-export default function VideoPlayer({ streamUrl, active = true }) {
+export function FeedNextVideoPreloader({ streamUrl, mediaId = "" }) {
+  const videoRef = useRef(null);
+  const hlsRef = useRef(null);
+  const startRef = useRef(0);
+  const sourceRef = useRef("");
+  const readyRef = useRef(false);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !streamUrl || sourceRef.current === streamUrl) return undefined;
+
+    const isHlsUrl = streamUrl.includes(".m3u8");
+    let hls = null;
+    let released = false;
+
+    startRef.current = performance.now();
+    sourceRef.current = streamUrl;
+    readyRef.current = false;
+
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = false;
+    video.preload = "metadata";
+
+    logPerf("feed.preload.next.start", {
+      platform: "web",
+      domain: "feed",
+      mediaId,
+      transport: isHlsUrl ? "hls" : "file",
+    });
+
+    const markReady = (event = "metadata") => {
+      if (released || readyRef.current) return;
+      readyRef.current = true;
+      logPerf("feed.preload.next.ready", {
+        platform: "web",
+        domain: "feed",
+        mediaId,
+        transport: isHlsUrl ? "hls" : "file",
+        readyEvent: event,
+        durationMs: Math.round(performance.now() - startRef.current),
+      });
+    };
+
+    const handleMetadata = () => markReady("metadata");
+    const handleCanPlay = () => markReady("canplay");
+    const handleError = () => {
+      logPerf("feed.preload.next.error", {
+        platform: "web",
+        domain: "feed",
+        mediaId,
+        transport: isHlsUrl ? "hls" : "file",
+        reason: "native-media-error",
+        durationMs: Math.round(performance.now() - startRef.current),
+      });
+    };
+
+    video.addEventListener("loadedmetadata", handleMetadata);
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("error", handleError);
+
+    if (isHlsUrl && Hls.isSupported()) {
+      hls = new Hls({
+        autoStartLoad: false,
+        enableWorker: true,
+        lowLatencyMode: false,
+      });
+      hlsRef.current = hls;
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls.loadSource(streamUrl);
+      });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        markReady("manifest");
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        logPerf("feed.preload.next.error", {
+          platform: "web",
+          domain: "feed",
+          mediaId,
+          transport: "hls",
+          reason: data?.type || "hls-error",
+          fatal: Boolean(data?.fatal),
+          durationMs: Math.round(performance.now() - startRef.current),
+        });
+      });
+    } else {
+      video.src = streamUrl;
+      video.load();
+    }
+
+    return () => {
+      released = true;
+      video.removeEventListener("loadedmetadata", handleMetadata);
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("error", handleError);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+
+      if (hls) {
+        hls.destroy();
+      }
+
+      hlsRef.current = null;
+      logPerf("feed.preload.next.release", {
+        platform: "web",
+        domain: "feed",
+        mediaId,
+        transport: isHlsUrl ? "hls" : "file",
+        reason: "source-changed-or-unmounted",
+        wasReady: readyRef.current,
+        durationMs: Math.round(performance.now() - startRef.current),
+      });
+    };
+  }, [streamUrl, mediaId]);
+
+  return (
+    <video
+      ref={videoRef}
+      muted
+      playsInline
+      preload="metadata"
+      aria-hidden="true"
+      tabIndex={-1}
+      style={preloadVideoStyle}
+    />
+  );
+}
+
+export default function VideoPlayer({
+  streamUrl,
+  thumbnailUrl = "",
+  mediaId = "",
+  recentUploadOptimistic = false,
+  active = true,
+}) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const hasStartedRef = useRef(false);
@@ -19,6 +155,7 @@ export default function VideoPlayer({ streamUrl, active = true }) {
   const [loading, setLoading] = useState(Boolean(streamUrl));
   const [error, setError] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [hasVisibleFrame, setHasVisibleFrame] = useState(false);
   const [isVertical, setIsVertical] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -254,6 +391,7 @@ export default function VideoPlayer({ streamUrl, active = true }) {
 
     hasStartedRef.current = false;
     playPromiseRef.current = null;
+    setHasVisibleFrame(false);
 
     if (!streamUrl) {
       setLoading(false);
@@ -341,6 +479,7 @@ export default function VideoPlayer({ streamUrl, active = true }) {
 
     const handlePlaying = () => {
       hasStartedRef.current = true;
+      setHasVisibleFrame(true);
       syncTimeline();
       setLoading(false);
       setError(false);
@@ -351,9 +490,18 @@ export default function VideoPlayer({ streamUrl, active = true }) {
         platform: "web",
         domain: "feed",
         playerInstanceId: playerInstanceRef.current,
+        mediaId,
         transport: isHlsUrl ? "hls" : "file",
         durationMs: Math.round(performance.now() - sourceStartRef.current),
       });
+      if (recentUploadOptimistic) {
+        logPerf("upload.web.T9_media_playable", {
+          platform: "web",
+          domain: "upload",
+          videoId: mediaId,
+          durationMs: Math.round(performance.now() - sourceStartRef.current),
+        });
+      }
     };
 
     const handlePause = () => {
@@ -586,6 +734,18 @@ export default function VideoPlayer({ streamUrl, active = true }) {
         }}
       />
 
+      {thumbnailUrl && !hasVisibleFrame && !error && (
+        <img
+          src={thumbnailUrl}
+          alt=""
+          aria-hidden="true"
+          style={{
+            ...thumbnailBridgeStyle,
+            objectFit,
+          }}
+        />
+      )}
+
       {shouldShowMobileBackdrop && (
         <video
           src={streamUrl}
@@ -678,7 +838,18 @@ const loaderLogoStyle = {
 const touchAreaStyle = {
   position: "absolute",
   inset: 0,
+  zIndex: 5,
+};
+
+const thumbnailBridgeStyle = {
+  position: "absolute",
+  inset: 0,
+  width: "100%",
+  height: "100%",
+  objectPosition: "center",
+  backgroundColor: "#000",
   zIndex: 3,
+  pointerEvents: "none",
 };
 
 const mobileBackdropVideoStyle = {
@@ -692,6 +863,16 @@ const mobileBackdropVideoStyle = {
   transform: "scale(1.08)",
   opacity: 0.56,
   zIndex: 0,
+  pointerEvents: "none",
+};
+
+const preloadVideoStyle = {
+  position: "fixed",
+  width: 1,
+  height: 1,
+  left: -10,
+  top: -10,
+  opacity: 0,
   pointerEvents: "none",
 };
 

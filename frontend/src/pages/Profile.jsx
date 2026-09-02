@@ -61,6 +61,8 @@ export default function Profile() {
   const [showSponsorInvestorAbout, setShowSponsorInvestorAbout] = useState(false);
   const [showBackerAspirantAbout, setShowBackerAspirantAbout] = useState(false);
   const [showSupernalCandidateAbout, setShowSupernalCandidateAbout] = useState(false);
+  const [showBackerInformation, setShowBackerInformation] = useState(false);
+  const [showSupernalInformation, setShowSupernalInformation] = useState(false);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -876,12 +878,15 @@ export default function Profile() {
       return (
         <ActionRow>
           <Button onClick={() => navigate("/onboarding/backer")}>Edit Profile</Button>
-          <Button onClick={openInviteSupportPanel}>Invite Supporters</Button>
           <Button onClick={openGeneralInvitePanel}>Invite</Button>
           <Button onClick={() => navigate("/inbox")}>{renderActionLabel("Inbox", inboxUnreadCount)}</Button>
           <Button onClick={() => navigate("/wallet")}>Wallet</Button>
-          <Button onClick={() => window.location = `mailto:${emailTarget}`}>Email</Button>
-          <Button onClick={() => window.open(`https://wa.me/${whatsappTarget}`)}>WhatsApp</Button>
+          <Button onClick={() => navigate("/meet-up")}>📹 Video Call</Button>
+          <Button onClick={() => navigate("/roles?step=earn")}>Add Role</Button>
+          <Button onClick={() => setShowBackerInformation((value) => !value)}>Information</Button>
+          <Button onClick={() => setShowBackerAspirantAbout((value) => !value)}>
+            {showBackerAspirantAbout ? "Hide About Backer Contestants" : "About Backer Contestants"}
+          </Button>
         </ActionRow>
       );
     }
@@ -890,12 +895,15 @@ export default function Profile() {
       return (
         <ActionRow>
           <Button onClick={() => navigate("/onboarding/supernal")}>Edit Profile</Button>
-          <Button onClick={openInviteSupportPanel}>Invite Supporters</Button>
           <Button onClick={openGeneralInvitePanel}>Invite</Button>
           <Button onClick={() => navigate("/inbox")}>{renderActionLabel("Inbox", inboxUnreadCount)}</Button>
           <Button onClick={() => navigate("/wallet")}>Wallet</Button>
-          <Button onClick={() => window.location = `mailto:${emailTarget}`}>Email</Button>
-          <Button onClick={() => window.open(`https://wa.me/${whatsappTarget}`)}>WhatsApp</Button>
+          <Button onClick={() => navigate("/meet-up")}>📹 Video Call</Button>
+          <Button onClick={() => navigate("/roles?step=earn")}>Add Role</Button>
+          <Button onClick={() => setShowSupernalInformation((value) => !value)}>Information</Button>
+          <Button onClick={() => setShowSupernalCandidateAbout((value) => !value)}>
+            {showSupernalCandidateAbout ? "Hide About Superbosses" : "About Superbosses"}
+          </Button>
         </ActionRow>
       );
     }
@@ -1158,42 +1166,6 @@ export default function Profile() {
           </div>
         )}
 
-        {role === "BACKER" && (
-          <div style={cardStyle}>
-            <button
-              type="button"
-              onClick={() => setShowBackerAspirantAbout((value) => !value)}
-              style={buttonStyle}
-            >
-              {showBackerAspirantAbout ? "Hide About Backer Contestants" : "About Backer Contestants"}
-            </button>
-
-            {showBackerAspirantAbout && (
-              <div style={aboutBackerProfileStyle}>
-                <BackerAboutContent />
-              </div>
-            )}
-          </div>
-        )}
-
-        {role === "SUPERNAL" && (
-          <div style={cardStyle}>
-            <button
-              type="button"
-              onClick={() => setShowSupernalCandidateAbout((value) => !value)}
-              style={buttonStyle}
-            >
-              {showSupernalCandidateAbout ? "Hide About Superbosses" : "About Superbosses"}
-            </button>
-
-            {showSupernalCandidateAbout && (
-              <div style={aboutBackerProfileStyle}>
-                <SuperbossAboutContent />
-              </div>
-            )}
-          </div>
-        )}
-
       <div style={cardStyle}>
 
         {/* ================= CITIZEN ================= */}
@@ -1394,22 +1366,32 @@ export default function Profile() {
         {/* ================= BACKER ================= */}
         {role === "BACKER" && (
           <>
-            <Info label="Real Name" value={profile.realName} />
-            <Info label="Age" value={profile.age} />
-            <Info label="Gender" value={profile.gender} />
-            <Info label="Marital Status" value={profile.maritalStatus} />
-            <Info label="Profession" value={profile.profession} />
-            <Info label="Phone" value={profile.phone} />
-            <Info label="Country" value={profile.country} />
-            <Info label="State" value={profile.state} />
-            <Info label="Tribe" value={profile.tribe} />
-            <Info label="Employment Status" value={profile.employmentStatus} />
-            <Info label="Employment Type" value={profile.employmentType} />
-            <Info label="Business Name" value={profile.businessName || profile.placeOfEmployment} />
-            <Info
-              label="Fields of Service"
-              value={formatServiceDisplay(profile.serviceCategories, profile.serviceFields || profile.knowledgeFields)}
-            />
+            {showBackerAspirantAbout && (
+              <div style={aboutBackerProfileStyle}>
+                <BackerAboutContent />
+              </div>
+            )}
+
+            {showBackerInformation && (
+              <div style={sectionCardStyle}>
+                <Info label="Real Name" value={profile.realName} />
+                <Info label="Age" value={profile.age} />
+                <Info label="Gender" value={profile.gender} />
+                <Info label="Marital Status" value={profile.maritalStatus} />
+                <Info label="Profession" value={profile.profession} />
+                <Info label="Phone" value={profile.phone} />
+                <Info label="Country" value={profile.country} />
+                <Info label="State" value={profile.state} />
+                <Info label="Tribe" value={profile.tribe} />
+                <Info label="Employment Status" value={profile.employmentStatus} />
+                <Info label="Employment Type" value={profile.employmentType} />
+                <Info label="Business Name" value={profile.businessName || profile.placeOfEmployment} />
+                <Info
+                  label="Fields of Service"
+                  value={formatServiceDisplay(profile.serviceCategories, profile.serviceFields || profile.knowledgeFields)}
+                />
+              </div>
+            )}
 
             <div style={sectionCardStyle}>
               <div style={supernalVoteCardStyle}>
@@ -1692,22 +1674,32 @@ export default function Profile() {
         {/* ================= SUPERNAL ================= */}
         {role === "SUPERNAL" && (
           <>
-            <Info label="Real Name" value={profile.realName} />
-            <Info label="Age" value={profile.age} />
-            <Info label="Gender" value={profile.gender} />
-            <Info label="Marital Status" value={profile.maritalStatus} />
-            <Info label="Profession" value={profile.profession} />
-            <Info label="Phone" value={profile.phone} />
-            <Info label="Country" value={profile.country} />
-            <Info label="State" value={profile.state} />
-            <Info label="Tribe" value={profile.tribe} />
-            <Info label="Employment Status" value={profile.employmentStatus} />
-            <Info label="Employment Type" value={profile.employmentType} />
-            <Info label="Business Name" value={profile.businessName || profile.placeOfEmployment} />
-            <Info
-              label="Fields of Discipline"
-              value={formatServiceDisplay(profile.serviceCategories, profile.serviceFields || profile.knowledgeFields)}
-            />
+            {showSupernalCandidateAbout && (
+              <div style={aboutBackerProfileStyle}>
+                <SuperbossAboutContent />
+              </div>
+            )}
+
+            {showSupernalInformation && (
+              <div style={sectionCardStyle}>
+                <Info label="Real Name" value={profile.realName} />
+                <Info label="Age" value={profile.age} />
+                <Info label="Gender" value={profile.gender} />
+                <Info label="Marital Status" value={profile.maritalStatus} />
+                <Info label="Profession" value={profile.profession} />
+                <Info label="Phone" value={profile.phone} />
+                <Info label="Country" value={profile.country} />
+                <Info label="State" value={profile.state} />
+                <Info label="Tribe" value={profile.tribe} />
+                <Info label="Employment Status" value={profile.employmentStatus} />
+                <Info label="Employment Type" value={profile.employmentType} />
+                <Info label="Business Name" value={profile.businessName || profile.placeOfEmployment} />
+                <Info
+                  label="Fields of Discipline"
+                  value={formatServiceDisplay(profile.serviceCategories, profile.serviceFields || profile.knowledgeFields)}
+                />
+              </div>
+            )}
 
             <div id="role-question-board">
               <SuperbossChallengeStudio

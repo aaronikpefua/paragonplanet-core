@@ -3,6 +3,9 @@ import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestor
 import { db } from "../config/firebase";
 import { logPerf } from "../lib/perf";
 
+const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
+const RECENT_UPLOAD_TTL_MS = 10 * 60 * 1000;
+
 export default function useVideos() {
   const [videos, setVideos] = useState([]);
   const [profilesByUid, setProfilesByUid] = useState({});
@@ -43,38 +46,87 @@ export default function useVideos() {
           id: doc.id,
           ...doc.data()
         }))
-        .map((video) => ({
-          ...video,
-          displayName: resolveVideoDisplayName(video, profilesByUid),
-          performerName: resolveVideoDisplayName(video, profilesByUid),
-          creatorName: resolveVideoDisplayName(video, profilesByUid),
-          thumbnailUrl:
-            video.thumbnailUrl ||
-            video.coverImage ||
-            video.posterUrl ||
-            video.poster ||
-            video.coverUrl ||
-            video.thumbnail ||
-            "",
-        }))
+        .map((video) => normalizeFeedVideo(video, profilesByUid))
         .filter((video) => isHomeFeedVideo(video));
 
-      setVideos(data);
+      const recentUpload = readRecentHomeUpload();
+      const snapshotHasRecentUpload = Boolean(
+        recentUpload?.id && data.some((video) => video.id === recentUpload.id)
+      );
+      const mergedData =
+        recentUpload && !snapshotHasRecentUpload && isHomeFeedVideo(recentUpload)
+          ? [normalizeFeedVideo(recentUpload, profilesByUid, true), ...data]
+          : data;
+
+      setVideos(mergedData);
       logPerf("feed.snapshot", {
         platform: "web",
         domain: "feed",
         operation: "listen-home-videos",
         collection: "videos",
         resultCount: snap.docs.length,
-        usableItemCount: data.length,
+        usableItemCount: mergedData.length,
         durationMs: Math.round(performance.now() - start),
       });
+      if (recentUpload?.id && snapshotHasRecentUpload) {
+        logPerf("upload.web.T6_feed_api_visible", {
+          platform: "web",
+          domain: "upload",
+          videoId: recentUpload.id,
+          durationMs: Date.now() - recentUpload.createdAtMs,
+        });
+      }
+      if (recentUpload?.id && mergedData.some((video) => video.id === recentUpload.id)) {
+        logPerf("upload.web.T7_home_feed_received", {
+          platform: "web",
+          domain: "upload",
+          videoId: recentUpload.id,
+          source: snapshotHasRecentUpload ? "firestore-snapshot" : "recent-upload-handoff",
+          durationMs: Date.now() - recentUpload.createdAtMs,
+        });
+      }
     });
 
     return () => unsubscribe();
   }, [profilesByUid]);
 
   return videos;
+}
+
+function normalizeFeedVideo(video, profilesByUid, recentUploadOptimistic = false) {
+  return {
+    ...video,
+    recentUploadOptimistic,
+    displayName: resolveVideoDisplayName(video, profilesByUid),
+    performerName: resolveVideoDisplayName(video, profilesByUid),
+    creatorName: resolveVideoDisplayName(video, profilesByUid),
+    thumbnailUrl:
+      video.thumbnailUrl ||
+      video.coverImage ||
+      video.posterUrl ||
+      video.poster ||
+      video.coverUrl ||
+      video.thumbnail ||
+      "",
+  };
+}
+
+function readRecentHomeUpload() {
+  try {
+    const raw = window.sessionStorage?.getItem(RECENT_UPLOAD_STORAGE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const createdAtMs = Number(parsed?.createdAtMs || 0);
+    if (!parsed?.id || !createdAtMs || Date.now() - createdAtMs > RECENT_UPLOAD_TTL_MS) {
+      window.sessionStorage?.removeItem(RECENT_UPLOAD_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function resolveVideoDisplayName(video, profilesByUid) {

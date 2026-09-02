@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import useVideos from "../hooks/useVideos";
-import VideoPlayer from "./VideoPlayer";
+import VideoPlayer, { FeedNextVideoPreloader } from "./VideoPlayer";
 import { auth, db } from "../config/firebase";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -27,6 +27,7 @@ import {
   appCheckFetch,
   formatSupportCost,
 } from "../lib/supportActions";
+import { logPerf } from "../lib/perf";
 
 const HOME_MODES = [
   { id: "explore", label: "Explore", icon: "🧭" },
@@ -230,6 +231,18 @@ export default function Explore() {
 
     setSprayPickerVideoId("");
     void ensureActionStateLoaded(activeVideo);
+  }, [activeIndex, visibleVideos]);
+
+  useEffect(() => {
+    const activeVideo = visibleVideos[activeIndex];
+    if (!activeVideo?.recentUploadOptimistic) return;
+
+    logPerf("upload.web.T8_home_post_rendered", {
+      platform: "web",
+      domain: "upload",
+      videoId: activeVideo.id,
+      source: "recent-upload-handoff",
+    });
   }, [activeIndex, visibleVideos]);
 
   useEffect(() => {
@@ -867,6 +880,23 @@ export default function Explore() {
   const supportVideo =
     supportModal?.videoId ? videos.find((item) => item.id === supportModal.videoId) : null;
   const supportPlayableUrl = supportVideo ? getPlayableUrl(supportVideo) : "";
+  const nextVideoToPrepare = useMemo(() => {
+    if (mode !== "spotlight") return null;
+
+    for (let index = activeIndex + 1; index < visibleVideos.length; index += 1) {
+      const video = visibleVideos[index];
+      const streamUrl = getPlayableUrl(video);
+
+      if (streamUrl) {
+        return {
+          id: video.id || streamUrl,
+          streamUrl,
+        };
+      }
+    }
+
+    return null;
+  }, [activeIndex, visibleVideos, mode]);
 
   const formatBottleBadge = (action) => {
     if (!action) return "";
@@ -941,6 +971,9 @@ export default function Explore() {
                 {playableUrl && index === activeIndex ? (
                     <VideoPlayer
                       streamUrl={playableUrl}
+                      thumbnailUrl={video.thumbnailUrl}
+                      mediaId={video.id}
+                      recentUploadOptimistic={Boolean(video.recentUploadOptimistic)}
                       active={Math.abs(index - activeIndex) <= 1}
                     />
                 ) : playableUrl ? (
@@ -1094,6 +1127,13 @@ export default function Explore() {
               </div>
             );
           })}
+          {nextVideoToPrepare && (
+            <FeedNextVideoPreloader
+              key={nextVideoToPrepare.id}
+              streamUrl={nextVideoToPrepare.streamUrl}
+              mediaId={nextVideoToPrepare.id}
+            />
+          )}
         </div>
       )}
 

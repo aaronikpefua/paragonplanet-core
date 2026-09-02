@@ -127,6 +127,8 @@ fun ProfileScreen(
     val profileScope = rememberCoroutineScope()
     var deletingVideoId by remember { mutableStateOf<String?>(null) }
     var deleteVideoError by remember { mutableStateOf<String?>(null) }
+    var showBackerInformation by remember { mutableStateOf(false) }
+    var showSuperbossInformation by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -208,6 +210,8 @@ fun ProfileScreen(
                             onOpenWallet = onOpenWallet,
                             onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
+                            showInformation = showBackerInformation,
+                            onToggleInformation = { showBackerInformation = !showBackerInformation },
                         )
                     } else if (isPromoterProfile) {
                         AmbassadorProfileHero(
@@ -227,6 +231,8 @@ fun ProfileScreen(
                             onOpenWallet = onOpenWallet,
                             onOpenVideoCall = onOpenVideoCall,
                             onOpenEarnRoles = onOpenEarnRoles,
+                            showInformation = showSuperbossInformation,
+                            onToggleInformation = { showSuperbossInformation = !showSuperbossInformation },
                         )
                     } else {
                         AboutRoleButton(role = profile?.role ?: "USER")
@@ -285,15 +291,15 @@ fun ProfileScreen(
                 }
 
                 item {
-                    if (isBackerProfile) {
+                    if (isBackerProfile && showBackerInformation) {
                         BackerDetailsCard(profile = it)
                     } else if (isPromoterProfile) {
                         AmbassadorDetailsCard(profile = it)
                     } else if (isSponsorInvestorProfile) {
                         SponsorInvestorDetailsCard(profile = it)
-                    } else if (isSuperbossProfile) {
+                    } else if (isSuperbossProfile && showSuperbossInformation) {
                         SuperbossDetailsCard(profile = it)
-                    } else {
+                    } else if (!isBackerProfile && !isSuperbossProfile) {
                         CitizenLikeDetailsCard(profile = it)
                     }
                 }
@@ -1140,6 +1146,8 @@ private fun BackerProfileHero(
     onOpenWallet: () -> Unit,
     onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
+    showInformation: Boolean,
+    onToggleInformation: () -> Unit,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -1176,22 +1184,8 @@ private fun BackerProfileHero(
                 onOpenVideoCall = onOpenVideoCall,
                 onOpenEarnRoles = onOpenEarnRoles,
                 inboxUnreadCount = inboxUnreadCount,
-                isCreatingInvite = isCreatingInvite,
-                onInviteSupporters = {
-                    if (isCreatingInvite) return@BackerProfileQuickActions
-                    isCreatingInvite = true
-                    inviteError = null
-                    scope.launch {
-                        runCatching {
-                            profileViewModel.createSupportInviteLink(
-                                role = profile.role,
-                                targetName = profile.realName ?: profile.displayName
-                            )
-                        }.onSuccess { inviteLink = it }
-                            .onFailure { inviteError = it.message ?: "Could not create invite link." }
-                        isCreatingInvite = false
-                    }
-                }
+                showInformation = showInformation,
+                onToggleInformation = onToggleInformation,
             )
             inviteError?.let {
                 Text(
@@ -1232,6 +1226,8 @@ private fun SuperbossProfileHero(
     onOpenWallet: () -> Unit,
     onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
+    showInformation: Boolean,
+    onToggleInformation: () -> Unit,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -1263,22 +1259,8 @@ private fun SuperbossProfileHero(
                 onOpenVideoCall = onOpenVideoCall,
                 onOpenEarnRoles = onOpenEarnRoles,
                 inboxUnreadCount = inboxUnreadCount,
-                isCreatingInvite = isCreatingInvite,
-                onInviteSupporters = {
-                    if (isCreatingInvite) return@BackerProfileQuickActions
-                    isCreatingInvite = true
-                    inviteError = null
-                    scope.launch {
-                        runCatching {
-                            profileViewModel.createSupportInviteLink(
-                                role = profile.role,
-                                targetName = profile.realName ?: profile.displayName
-                            )
-                        }.onSuccess { inviteLink = it }
-                            .onFailure { inviteError = it.message ?: "Could not create invite link." }
-                        isCreatingInvite = false
-                    }
-                }
+                showInformation = showInformation,
+                onToggleInformation = onToggleInformation,
             )
             inviteError?.let {
                 Text(it, color = Color(0xFFB00020), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
@@ -1312,8 +1294,8 @@ private fun BackerProfileQuickActions(
     onOpenVideoCall: () -> Unit,
     onOpenEarnRoles: () -> Unit,
     inboxUnreadCount: Int,
-    isCreatingInvite: Boolean,
-    onInviteSupporters: () -> Unit,
+    showInformation: Boolean,
+    onToggleInformation: () -> Unit,
 ) {
     val context = LocalContext.current
     FlowRow(
@@ -1321,15 +1303,15 @@ private fun BackerProfileQuickActions(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         ProfileActionChip("Edit Profile", onClick = onOpenEditProfile)
-        ProfileActionChip(
-            label = if (isCreatingInvite) "Preparing..." else "Invite Supporters",
-            onClick = onInviteSupporters
-        )
         ProfileActionChip("Invite", onClick = {
             context.shareText(buildPlayStoreInviteMessage())
         })
         ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
         ProfileActionChip("Wallet", onClick = onOpenWallet)
+        ProfileActionChip(
+            label = if (showInformation) "Hide Information" else "Information",
+            onClick = onToggleInformation
+        )
         ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
         ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
     }

@@ -78,6 +78,7 @@ import com.pedro.library.view.OpenGlView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -240,6 +241,10 @@ fun ParagonLiveScreen(
         val user = firebaseAuth.currentUser ?: return@LaunchedEffect
         var firstLoad = true
         while (true) {
+            if (selectedViewerSession != null) {
+                delay(LIVE_SLOW_REFRESH_MS)
+                continue
+            }
             if (firstLoad) isLoadingSessions = true
             runCatching {
                 val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
@@ -952,7 +957,8 @@ private fun LiveRoomViewer(
     val firebaseAuth = remember { FirebaseAuth.getInstance() }
     val playback = session.playbackHlsUrl ?: session.playbackUrl
     val whepPlayback = session.webRtcPlaybackUrl ?: session.playbackWebRtcUrl
-    val usesWhep = session.playbackTransport.equals("whep", ignoreCase = true) && !whepPlayback.isNullOrBlank()
+    var whepFallback by remember(session.id) { mutableStateOf(false) }
+    val usesWhep = !whepFallback && session.playbackTransport.equals("whep", ignoreCase = true) && !whepPlayback.isNullOrBlank()
     val usesHls = !usesWhep && !playback.isNullOrBlank()
     val viewerPath = when {
         usesWhep -> "WHEP/WebRTC"
@@ -1012,6 +1018,9 @@ private fun LiveRoomViewer(
             usesWhep -> NativeWhepPlaybackPlayer(
                 whepUrl = whepPlayback.orEmpty(),
                 modifier = Modifier.fillMaxSize(),
+                onPlaybackUnavailable = {
+                    if (!playback.isNullOrBlank()) whepFallback = true
+                },
             )
             usesHls -> LivePlaybackPlayer(
                 playbackUrl = playback.orEmpty(),
@@ -1585,6 +1594,7 @@ private fun NativeWhepPlaybackPlayer(
     modifier: Modifier = Modifier
         .fillMaxWidth()
         .height(430.dp),
+    onPlaybackUnavailable: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1619,6 +1629,7 @@ private fun NativeWhepPlaybackPlayer(
                         renderer = this,
                         scope = scope,
                         onState = { playerState = it },
+                        onPlaybackUnavailable = onPlaybackUnavailable,
                         timingStartMs = timingStartMs,
                     ).also { it.connect(whepUrl) }
                 }
@@ -1636,13 +1647,16 @@ private class NativeWhepClient(
     private val renderer: SurfaceViewRenderer,
     private val scope: CoroutineScope,
     private val onState: (String) -> Unit,
+    private val onPlaybackUnavailable: () -> Unit,
     private val timingStartMs: Long,
 ) {
     private val released = AtomicBoolean(false)
     private var factory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var requestJob: Job? = null
+    private var startupTimeoutJob: Job? = null
     private var videoTrack: VideoTrack? = null
+    private val firstTrackAttached = AtomicBoolean(false)
 
     fun connect(whepUrl: String) {
         if (whepUrl.isBlank()) {
@@ -1651,6 +1665,14 @@ private class NativeWhepClient(
         }
         initializeFactory(context)
         logLiveTiming("android-whep", "selected", "T3_peer_factory_start", timingStartMs)
+        startupTimeoutJob = scope.launch {
+            delay(10_000)
+            if (!released.get() && !firstTrackAttached.get()) {
+                logLiveTiming("android-whep", "selected", "whep_first_frame_timeout", timingStartMs)
+                onState("Switching Live playback...")
+                onPlaybackUnavailable()
+            }
+        }
         val audioModule = JavaAudioDeviceModule.builder(context).createAudioDeviceModule()
         val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
         val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
@@ -1672,7 +1694,10 @@ private class NativeWhepClient(
                     }
                     PeerConnection.IceConnectionState.FAILED,
                     PeerConnection.IceConnectionState.DISCONNECTED,
-                    PeerConnection.IceConnectionState.CLOSED -> onState("Live playback unavailable.")
+                    PeerConnection.IceConnectionState.CLOSED -> {
+                        onState("Live playback unavailable.")
+                        onPlaybackUnavailable()
+                    }
                     else -> onState("Connecting Live...")
                 }
             }
@@ -1728,12 +1753,15 @@ private class NativeWhepClient(
             override fun onCreateFailure(error: String) {
                 if (BuildConfig.DEBUG) Log.d("ParagonLiveViewer", "WHEP offer failed")
                 onState("Live playback unavailable.")
+                onPlaybackUnavailable()
             }
         }, MediaConstraintsProvider.offerConstraints())
     }
 
     private fun attachVideoTrack(track: VideoTrack) {
         if (videoTrack === track) return
+        firstTrackAttached.set(true)
+        startupTimeoutJob?.cancel()
         videoTrack?.removeSink(renderer)
         videoTrack = track
         track.addSink(renderer)
@@ -1780,6 +1808,7 @@ private class NativeWhepClient(
                 override fun onSetFailure(error: String) {
                     if (BuildConfig.DEBUG) Log.d("ParagonLiveViewer", "WHEP answer failed")
                     onState("Live playback unavailable.")
+                    onPlaybackUnavailable()
                 }
             },
             SessionDescription(SessionDescription.Type.ANSWER, answer),
@@ -1789,6 +1818,7 @@ private class NativeWhepClient(
     fun release() {
         if (!released.compareAndSet(false, true)) return
         requestJob?.cancel()
+        startupTimeoutJob?.cancel()
         videoTrack?.removeSink(renderer)
         videoTrack = null
         peerConnection?.close()
@@ -1960,7 +1990,19 @@ private fun LivePlaybackPlayer(
     var playerState by remember(playbackUrl) { mutableStateOf("Connecting Live...") }
     val timingStartMs = remember(playbackUrl) { System.currentTimeMillis() }
     val player = remember(playbackUrl) {
-        ExoPlayer.Builder(context).build().apply {
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                1_000,
+                5_000,
+                500,
+                1_000,
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
             logLiveTiming("android-hls", "selected", "T3_player_created", timingStartMs)
             setMediaItem(MediaItem.fromUri(playbackUrl))
             playWhenReady = true
