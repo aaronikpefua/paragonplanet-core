@@ -81,15 +81,21 @@ export async function createStreamLiveInput({ title, sessionId, recordingMode })
 
   return {
     liveInputId,
+    rtmps: result.rtmps?.url && (result.rtmps?.streamKey || result.rtmps?.stream_key)
+      ? `${result.rtmps.url.replace(/\/$/, "")}/${String(result.rtmps.streamKey || result.rtmps.stream_key).replace(/^\//, "")}`
+      : "",
     rtmpsUrl: result.rtmps?.url || "",
     rtmpsStreamKey: result.rtmps?.streamKey || result.rtmps?.stream_key || "",
     srtUrl: result.srt?.url || "",
     srtStreamId: result.srt?.streamId || result.srt?.stream_id || "",
+    webRtcPublishUrl: result.webRTC?.url || result.webrtc?.url || "",
     webRtcUrl: result.webRTC?.url || result.webrtc?.url || "",
     playbackOrigin,
     playbackId: liveInputId,
+    hlsPlaybackUrl: result.playback?.hls || liveInputHlsUrl,
     playbackHlsUrl: result.playback?.hls || liveInputHlsUrl,
     playbackDashUrl: result.playback?.dash || liveInputDashUrl,
+    whepPlaybackUrl: result.webRTCPlayback?.url || result.webrtcPlayback?.url || "",
     playbackWebRtcUrl: result.webRTCPlayback?.url || result.webrtcPlayback?.url || "",
     raw: result,
   };
@@ -140,24 +146,72 @@ function videoIdFromLifecycle(payload) {
   );
 }
 
-async function getLiveInputLifecyclePlayback(liveInputId, playbackOrigin) {
-  if (!liveInputId || !playbackOrigin) return null;
+function lifecycleStatusFromPayload(payload) {
+  return firstText(
+    payload?.status,
+    payload?.state,
+    payload?.result?.status,
+    payload?.result?.state,
+    payload?.live?.status,
+    payload?.live?.state,
+    payload?.current?.status,
+    payload?.current?.state
+  ).toLowerCase();
+}
+
+async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
+  if (!liveInputId || !playbackOrigin) {
+    return {
+      status: "",
+      activeVideoUid: "",
+      viewerPlayable: false,
+      reason: "missing_lifecycle_origin",
+      playback: null,
+    };
+  }
   try {
     const response = await fetch(`${playbackOrigin}/${encodeURIComponent(liveInputId)}/lifecycle`, {
       headers: { Accept: "application/json" },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return {
+        status: "",
+        activeVideoUid: "",
+        viewerPlayable: false,
+        reason: `lifecycle_http_${response.status}`,
+        playback: null,
+      };
+    }
     const payload = await response.json().catch(() => null);
+    const status = lifecycleStatusFromPayload(payload);
     const videoId = videoIdFromLifecycle(payload);
-    if (!videoId || videoId === liveInputId) return null;
+    const activeVideoUid = videoId && videoId !== liveInputId ? videoId : "";
+    const viewerPlayable = Boolean(activeVideoUid && ["live", "ready"].some((value) => status.includes(value)));
     return {
-      playbackId: videoId,
-      playbackHlsUrl: `https://videodelivery.net/${videoId}/manifest/video.m3u8`,
-      playbackDashUrl: `https://videodelivery.net/${videoId}/manifest/video.mpd`,
+      status,
+      activeVideoUid,
+      viewerPlayable,
+      reason: viewerPlayable ? "viewer_ready" : "lifecycle_not_viewer_ready",
+      playback: activeVideoUid ? {
+        playbackId: activeVideoUid,
+        playbackHlsUrl: `https://videodelivery.net/${activeVideoUid}/manifest/video.m3u8`,
+        playbackDashUrl: `https://videodelivery.net/${activeVideoUid}/manifest/video.mpd`,
+      } : null,
     };
   } catch {
-    return null;
+    return {
+      status: "",
+      activeVideoUid: "",
+      viewerPlayable: false,
+      reason: "lifecycle_lookup_failed",
+      playback: null,
+    };
   }
+}
+
+async function getLiveInputLifecyclePlayback(liveInputId, playbackOrigin) {
+  const lifecycle = await getLiveInputLifecycle(liveInputId, playbackOrigin);
+  return lifecycle.playback;
 }
 
 export async function getStreamLiveInputPlayback(liveInputId, playbackOrigin = "") {
@@ -180,4 +234,118 @@ export async function getStreamLiveInputPlayback(liveInputId, playbackOrigin = "
     playbackHlsUrl: preferred.playback?.hls || (videoId ? `https://videodelivery.net/${videoId}/manifest/video.m3u8` : ""),
     playbackDashUrl: preferred.playback?.dash || (videoId ? `https://videodelivery.net/${videoId}/manifest/video.mpd` : ""),
   };
+}
+
+export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") {
+  if (!liveInputId) {
+    return {
+      providerStatus: "",
+      providerState: "WAITING_FOR_INGEST",
+      providerLive: false,
+      viewerPlayable: false,
+      activeVideoUid: "",
+      lifecycleStatus: "",
+      reason: "missing_live_input_id",
+      playback: null,
+    };
+  }
+
+  let liveInput = null;
+  try {
+    liveInput = await cloudflareRequest(`/stream/live_inputs/${encodeURIComponent(liveInputId)}`, {
+      method: "GET",
+    });
+  } catch (error) {
+    return {
+      providerStatus: "",
+      providerState: "FAILED_TO_CONNECT",
+      providerLive: false,
+      viewerPlayable: false,
+      activeVideoUid: "",
+      lifecycleStatus: "",
+      reason: "cloudflare_live_input_lookup_failed",
+      error: error.message || "",
+      playback: null,
+    };
+  }
+
+  const origin = firstText(playbackOrigin, streamPlaybackOrigin(liveInput));
+  const providerStatus = String(liveInput?.status || "").trim().toLowerCase();
+  const providerState = mapLiveInputProviderState(providerStatus);
+  const providerLive = providerState === "INGEST_CONNECTED";
+  const lifecycle = await getLiveInputLifecycle(liveInputId, origin);
+  const viewerPlayable = providerLive && lifecycle.viewerPlayable;
+  logProviderDiagnostic("live.provider.input_status", {
+    liveInputId,
+    providerStatus,
+    providerState,
+    providerLive,
+  });
+  logProviderDiagnostic("live.provider.lifecycle", {
+    liveInputId,
+    lifecycleStatus: lifecycle.status,
+    hasVideoUid: Boolean(lifecycle.activeVideoUid),
+    viewerPlayable,
+  });
+  if (viewerPlayable) {
+    logProviderDiagnostic("live.provider.viewer_ready", {
+      liveInputId,
+      providerStatus,
+      lifecycleStatus: lifecycle.status,
+    });
+  } else if (providerLive) {
+    logProviderDiagnostic("live.provider.ingest_connected", {
+      liveInputId,
+      providerStatus,
+      lifecycleStatus: lifecycle.status,
+      hasVideoUid: Boolean(lifecycle.activeVideoUid),
+    });
+  } else if (["DISCONNECTED", "FAILED_TO_CONNECT", "FAILED_TO_RECONNECT", "EXPIRED"].includes(providerState)) {
+    logProviderDiagnostic("live.provider.ingest_failed", {
+      liveInputId,
+      providerStatus,
+      providerState,
+    });
+  }
+
+  return {
+    providerStatus,
+    providerState,
+    providerLive,
+    viewerPlayable,
+    activeVideoUid: lifecycle.activeVideoUid,
+    lifecycleStatus: lifecycle.status,
+    reason: viewerPlayable ? "viewer_ready" : providerState.toLowerCase(),
+    playback: viewerPlayable ? lifecycle.playback : null,
+  };
+}
+
+function logProviderDiagnostic(event, details) {
+  console.info(JSON.stringify({
+    event,
+    domain: "live",
+    ...details,
+  }));
+}
+
+export function mapLiveInputProviderState(status) {
+  switch (String(status || "").trim().toLowerCase()) {
+    case "connected":
+    case "reconnected":
+      return "INGEST_CONNECTED";
+    case "reconnecting":
+      return "RECONNECTING";
+    case "new_configuration_accepted":
+      return "WAITING_FOR_INGEST";
+    case "client_disconnect":
+      return "DISCONNECTED";
+    case "failed_to_connect":
+      return "FAILED_TO_CONNECT";
+    case "failed_to_reconnect":
+      return "FAILED_TO_RECONNECT";
+    case "ttl_exceeded":
+      return "EXPIRED";
+    default:
+      return "WAITING_FOR_INGEST";
+  }
 }

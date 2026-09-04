@@ -18,3 +18,5 @@ This directory is reserved for the real native iPhone application for Paragon Pl
 ## Notes
 - iPhone should mirror the product structure of Android, not the website route structure.
 - Billing and digital goods policy may differ from Android and should be handled as a platform-specific concern.
+- Live room realtime should use the backend-issued `GET /api/live/sessions/{sessionId}/room-token` contract and connect with `URLSessionWebSocketTask` to the returned `wsUrl`.
+- Cloudflare Stream remains the media path; the Durable Object room is for presence, chat fanout, and authorized room events only.

@@ -332,6 +332,18 @@ data class LiveSession(
     val playbackWebRtcUrl: String? = null,
     val publisherTransport: String? = null,
     val playbackTransport: String? = null,
+    val primaryPlayback: String? = null,
+    val fallbackPlayback: String? = null,
+    val selectedPlaybackUrl: String? = null,
+    val selectedPlaybackTransport: String? = null,
+    val playbackPolicyReason: String? = null,
+    val providerLive: Boolean = false,
+    val viewerPlayable: Boolean = false,
+    val providerStatus: String? = null,
+    val providerState: String? = null,
+    val lifecycleStatus: String? = null,
+    val activeVideoUid: String? = null,
+    val providerLiveReason: String? = null,
     val scheduledAt: String? = null,
     val actualStartedAt: String? = null,
     val wentLiveAt: String? = null,
@@ -341,11 +353,15 @@ data class LiveSession(
 )
 
 data class LiveIngestInfo(
+    val rtmps: String,
     val rtmpsUrl: String,
     val rtmpsStreamKey: String,
     val srtUrl: String,
     val srtStreamId: String,
+    val webRtcPublishUrl: String,
     val webRtcUrl: String,
+    val whepPlaybackUrl: String,
+    val hlsPlaybackUrl: String,
 )
 
 data class StartLiveResult(
@@ -357,6 +373,15 @@ data class StartLiveResult(
 data class LiveSessionsResponse(
     val sessions: List<LiveSession>,
     val provider: LiveProviderInfo,
+)
+
+data class LiveRoomTokenResponse(
+    val provider: String,
+    val configured: Boolean,
+    val transport: String,
+    val authority: String,
+    val wsUrl: String? = null,
+    val expiresAt: String? = null,
 )
 
 data class LiveChatMessage(

@@ -110,3 +110,10 @@ Implemented locally:
 
 Frontend build passed in 12.57s. This visibility follow-up is not deployed yet.
 
+# Live Reliability Restructure Update
+
+- Added a standard Cloudflare Durable Object room layer for Live presence/chat fanout without replacing Cloudflare Stream media delivery.
+- Backend remains the authority for auth, session correctness, chat persistence, support actions, wallet, and ledger behavior.
+- Web can use the room websocket when configured and falls back to existing REST polling when not configured.
+- Android now has the backend room-token API contract available; future native websocket hookup can use the same signed `wsUrl`.
+- iOS has no native implementation yet, so the shared contract is documented for future `URLSessionWebSocketTask` use.

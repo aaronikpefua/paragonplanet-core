@@ -3,6 +3,7 @@ import { authenticate } from "../../middlewares/auth.middleware.js";
 import { rateLimit } from "../../middlewares/rateLimit.middleware.js";
 import {
   endLiveSession,
+  getLiveRoomToken,
   getLiveStatus,
   heartbeatLiveSession,
   listLiveChatMessages,
@@ -28,6 +29,7 @@ router.post(
 router.post("/sessions/:sessionId/active", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "live-active" }), markLiveSessionActive);
 router.post("/sessions/:sessionId/heartbeat", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "live-heartbeat" }), heartbeatLiveSession);
 router.post("/sessions/:sessionId/end", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "live-end" }), endLiveSession);
+router.get("/sessions/:sessionId/room-token", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "live-room-token" }), getLiveRoomToken);
 router.get("/sessions/:sessionId/chat", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-chat-list" }), listLiveChatMessages);
 router.post("/sessions/:sessionId/chat", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 30, keyPrefix: "live-chat-post" }), postLiveChatMessage);
 router.post("/sessions/:sessionId/support", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 30, keyPrefix: "live-support" }), supportLiveSession);

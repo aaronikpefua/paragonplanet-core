@@ -282,7 +282,7 @@ fun ParagonLiveScreen(
             }.onSuccess { activeSession ->
                 startLiveResult = startLiveResult?.copy(session = activeSession)
             }
-            delay(30_000)
+            delay(15_000)
         }
     }
 
@@ -452,16 +452,29 @@ fun ParagonLiveScreen(
                 val sessionId = startLiveResult?.session?.id.orEmpty()
                 if (broadcastState == LiveBroadcastState.LIVE && sessionId.isNotBlank() && !activeSessionMarked) {
                     activeSessionMarked = true
-                    runCatching {
-                        val user = firebaseAuth.currentUser ?: error("Sign in first.")
-                        val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
-                        val appCheck = appCheckRepository.getToken(forceRefresh = false)
-                        apiService.markParagonLiveActive(token, appCheck, sessionId)
-                    }.onSuccess { activeSession ->
-                        startLiveResult = startLiveResult?.copy(session = activeSession)
-                        statusMessage = "You are Live."
-                    }.onFailure {
-                        statusMessage = "Live stream connected. Could not update Live directory yet."
+                    statusMessage = "Cloudflare is confirming your Live stream..."
+                    var markedLive = false
+                    var lastError: Throwable? = null
+                    repeat(10) { attempt ->
+                        if (markedLive) return@repeat
+                        runCatching {
+                            val user = firebaseAuth.currentUser ?: error("Sign in first.")
+                            val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
+                            val appCheck = appCheckRepository.getToken(forceRefresh = false)
+                            apiService.markParagonLiveActive(token, appCheck, sessionId)
+                        }.onSuccess { activeSession ->
+                            markedLive = true
+                            startLiveResult = startLiveResult?.copy(session = activeSession)
+                            statusMessage = "You are Live."
+                        }.onFailure { error ->
+                            lastError = error
+                            statusMessage = "Waiting for Cloudflare Live confirmation... ${attempt + 1}/10"
+                            delay(3_000)
+                        }
+                    }
+                    if (!markedLive) {
+                        activeSessionMarked = false
+                        statusMessage = lastError?.message ?: "Cloudflare has not confirmed this Live input is active yet."
                     }
                 }
             }
@@ -787,10 +800,20 @@ private fun LivePreviewPanel(
             }
             startLiveResult?.let { result ->
                 Text("Session: ${result.session.status}", color = Color(0xFF8BFFB0), fontWeight = FontWeight.Bold)
+                Text(
+                    "Provider: ${result.session.providerState ?: if (result.session.providerLive) "INGEST_CONNECTED" else "WAITING_FOR_INGEST"}",
+                    color = Color(0xFF8BFFB0),
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Viewer: ${if (result.session.viewerPlayable) "READY" else "PREPARING"}",
+                    color = Color(0xFF8BFFB0),
+                    fontWeight = FontWeight.Bold,
+                )
             }
-            Text("Broadcast: ${broadcastState.name}", color = Color(0xFF8BFFB0), fontWeight = FontWeight.Bold)
+            Text("Local publisher: ${broadcastState.name}", color = Color(0xFF8BFFB0), fontWeight = FontWeight.Bold)
             Text(statusMessage, color = Color(0xFFFFD166), fontWeight = FontWeight.Bold)
-            if (broadcastState == LiveBroadcastState.LIVE) {
+            if (startLiveResult?.session?.viewerPlayable == true) {
                 startLiveResult?.session?.id?.takeIf { it.isNotBlank() }?.let { sessionId ->
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -845,19 +868,17 @@ private fun LiveSessionsPanel(
         ) {
             Text(tab, color = Color(0xFFD8A928), fontWeight = FontWeight.Black)
             selectedViewerSession?.let { selectedSession ->
-                val playback = selectedSession.playbackHlsUrl ?: selectedSession.playbackUrl
-                val whepPlayback = selectedSession.webRtcPlaybackUrl ?: selectedSession.playbackWebRtcUrl
-                val usesWhep = tab != "Replays" &&
-                    selectedSession.playbackTransport.equals("whep", ignoreCase = true) &&
-                    !whepPlayback.isNullOrBlank()
-                val usesHls = !usesWhep && !playback.isNullOrBlank()
+                val selectedPlayback = selectedSession.selectedPlaybackUrl.orEmpty()
+                val selectedTransport = selectedSession.selectedPlaybackTransport.orEmpty().lowercase()
+                val usesWhep = tab != "Replays" && selectedTransport == "whep" && selectedPlayback.isNotBlank()
+                val usesHls = selectedTransport == "hls" && selectedPlayback.isNotBlank()
                 val viewerPath = when {
                     usesWhep -> "WHEP/WebRTC"
                     usesHls -> "HLS/Media3"
                     else -> "unavailable"
                 }
                 LaunchedEffect(selectedSession.id, viewerPath) {
-                    logLiveViewerSelection(selectedSession, playback, whepPlayback, viewerPath)
+                    logLiveViewerSelection(selectedSession, selectedPlayback.takeIf { usesHls }, selectedPlayback.takeIf { usesWhep }, viewerPath)
                 }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -868,11 +889,11 @@ private fun LiveSessionsPanel(
                         LiveViewerHeader(tab = tab, session = selectedSession)
                         if (usesWhep) {
                             NativeWhepPlaybackPlayer(
-                                whepUrl = whepPlayback.orEmpty(),
+                                whepUrl = selectedPlayback,
                             )
                         } else if (usesHls) {
-                            LivePlaybackPlayer(playbackUrl = playback.orEmpty())
-                        } else if (playback.isNullOrBlank()) {
+                            LivePlaybackPlayer(playbackUrl = selectedPlayback)
+                        } else if (selectedPlayback.isBlank()) {
                             Text(
                                 "Playback is not available yet. Try again after Cloudflare finishes activating the stream.",
                                 color = Color(0xFFFFD166),
@@ -955,11 +976,10 @@ private fun LiveRoomViewer(
     val apiService = remember { ParagonApiService() }
     val appCheckRepository = remember { AppCheckRepository() }
     val firebaseAuth = remember { FirebaseAuth.getInstance() }
-    val playback = session.playbackHlsUrl ?: session.playbackUrl
-    val whepPlayback = session.webRtcPlaybackUrl ?: session.playbackWebRtcUrl
-    var whepFallback by remember(session.id) { mutableStateOf(false) }
-    val usesWhep = !whepFallback && session.playbackTransport.equals("whep", ignoreCase = true) && !whepPlayback.isNullOrBlank()
-    val usesHls = !usesWhep && !playback.isNullOrBlank()
+    val selectedPlayback = session.selectedPlaybackUrl.orEmpty()
+    val selectedTransport = session.selectedPlaybackTransport.orEmpty().lowercase()
+    val usesWhep = selectedTransport == "whep" && selectedPlayback.isNotBlank()
+    val usesHls = selectedTransport == "hls" && selectedPlayback.isNotBlank()
     val viewerPath = when {
         usesWhep -> "WHEP/WebRTC"
         usesHls -> "HLS/Media3"
@@ -978,7 +998,7 @@ private fun LiveRoomViewer(
     }
 
     LaunchedEffect(session.id, viewerPath) {
-        logLiveViewerSelection(session, playback, whepPlayback, viewerPath)
+        logLiveViewerSelection(session, selectedPlayback.takeIf { usesHls }, selectedPlayback.takeIf { usesWhep }, viewerPath)
     }
 
     fun sendLiveSupport(actionKey: String, label: String, customParagAmount: Int? = null, customGbaziloAmount: Int? = null) {
@@ -1016,14 +1036,12 @@ private fun LiveRoomViewer(
     ) {
         when {
             usesWhep -> NativeWhepPlaybackPlayer(
-                whepUrl = whepPlayback.orEmpty(),
+                whepUrl = selectedPlayback,
                 modifier = Modifier.fillMaxSize(),
-                onPlaybackUnavailable = {
-                    if (!playback.isNullOrBlank()) whepFallback = true
-                },
+                onPlaybackUnavailable = {},
             )
             usesHls -> LivePlaybackPlayer(
-                playbackUrl = playback.orEmpty(),
+                playbackUrl = selectedPlayback,
                 modifier = Modifier.fillMaxSize(),
                 showControls = false,
             )
@@ -1992,10 +2010,10 @@ private fun LivePlaybackPlayer(
     val player = remember(playbackUrl) {
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                1_000,
-                5_000,
                 500,
-                1_000,
+                3_000,
+                250,
+                500,
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -2004,7 +2022,18 @@ private fun LivePlaybackPlayer(
             .build()
             .apply {
             logLiveTiming("android-hls", "selected", "T3_player_created", timingStartMs)
-            setMediaItem(MediaItem.fromUri(playbackUrl))
+            setMediaItem(
+                MediaItem.Builder()
+                    .setUri(playbackUrl)
+                    .setLiveConfiguration(
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(1_500)
+                            .setMinPlaybackSpeed(0.97f)
+                            .setMaxPlaybackSpeed(1.05f)
+                            .build()
+                    )
+                    .build()
+            )
             playWhenReady = true
             prepare()
         }

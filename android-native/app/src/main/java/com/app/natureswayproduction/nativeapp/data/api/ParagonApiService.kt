@@ -227,6 +227,21 @@ class ParagonApiService {
         }
     }
 
+    suspend fun fetchParagonLiveRoomToken(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): LiveRoomTokenResponse = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId/room-token",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        JSONObject(response).toLiveRoomTokenResponse()
+    }
+
     suspend fun postParagonLiveChat(
         idToken: String,
         appCheckToken: String?,
@@ -1024,6 +1039,26 @@ private fun JSONObject.toLiveSession(): LiveSession {
         playbackWebRtcUrl = optString("playbackWebRtcUrl").ifBlank { null },
         publisherTransport = optString("publisherTransport").ifBlank { null },
         playbackTransport = optString("playbackTransport").ifBlank { null },
+        primaryPlayback = optString("primaryPlayback").ifBlank {
+            optJSONObject("playbackPolicy")?.optString("primaryPlayback").orEmpty().ifBlank { null }
+        },
+        fallbackPlayback = optString("fallbackPlayback").ifBlank {
+            optJSONObject("playbackPolicy")?.optString("fallbackPlayback").orEmpty().ifBlank { null }
+        },
+        selectedPlaybackUrl = optString("selectedPlaybackUrl").ifBlank {
+            optJSONObject("playbackPolicy")?.optString("selectedPlaybackUrl").orEmpty().ifBlank { null }
+        },
+        selectedPlaybackTransport = optString("selectedPlaybackTransport").ifBlank {
+            optJSONObject("playbackPolicy")?.optString("selectedPlaybackTransport").orEmpty().ifBlank { null }
+        },
+        playbackPolicyReason = optJSONObject("playbackPolicy")?.optString("reason").orEmpty().ifBlank { null },
+        providerLive = optBoolean("providerLive", false),
+        viewerPlayable = optBoolean("viewerPlayable", false),
+        providerStatus = optString("providerStatus").ifBlank { null },
+        providerState = optString("providerState").ifBlank { null },
+        lifecycleStatus = optString("lifecycleStatus").ifBlank { null },
+        activeVideoUid = optString("activeVideoUid").ifBlank { null },
+        providerLiveReason = optString("providerLiveReason").ifBlank { null },
         scheduledAt = optString("scheduledAt").ifBlank { null },
         actualStartedAt = optString("actualStartedAt").ifBlank { null },
         wentLiveAt = optString("wentLiveAt").ifBlank { null },
@@ -1035,18 +1070,22 @@ private fun JSONObject.toLiveSession(): LiveSession {
 
 private fun JSONObject.toLiveIngestInfo(): LiveIngestInfo {
     return LiveIngestInfo(
+        rtmps = optString("rtmps"),
         rtmpsUrl = optString("rtmpsUrl"),
         rtmpsStreamKey = optString("rtmpsStreamKey"),
         srtUrl = optString("srtUrl"),
         srtStreamId = optString("srtStreamId"),
+        webRtcPublishUrl = optString("webRtcPublishUrl").ifBlank { optString("webRtcUrl") },
         webRtcUrl = optString("webRtcUrl"),
+        whepPlaybackUrl = optString("whepPlaybackUrl"),
+        hlsPlaybackUrl = optString("hlsPlaybackUrl"),
     )
 }
 
 private fun JSONObject.toStartLiveResult(): StartLiveResult {
     return StartLiveResult(
         session = getJSONObject("session").toLiveSession(),
-        ingest = optJSONObject("ingest")?.toLiveIngestInfo() ?: LiveIngestInfo("", "", "", "", ""),
+        ingest = optJSONObject("ingest")?.toLiveIngestInfo() ?: LiveIngestInfo("", "", "", "", "", "", "", "", ""),
         provider = optJSONObject("provider")?.toLiveProviderInfo() ?: LiveProviderInfo("cloudflare-stream-live", false, "automatic"),
     )
 }
@@ -1061,6 +1100,17 @@ private fun JSONObject.toLiveSessionsResponse(): LiveSessionsResponse {
             }
         },
         provider = optJSONObject("provider")?.toLiveProviderInfo() ?: LiveProviderInfo("cloudflare-stream-live", false, "automatic"),
+    )
+}
+
+private fun JSONObject.toLiveRoomTokenResponse(): LiveRoomTokenResponse {
+    return LiveRoomTokenResponse(
+        provider = optString("provider").ifBlank { "cloudflare-durable-object" },
+        configured = optBoolean("configured", false),
+        transport = optString("transport").ifBlank { "websocket" },
+        authority = optString("authority").ifBlank { "backend" },
+        wsUrl = optString("wsUrl").ifBlank { null },
+        expiresAt = optString("expiresAt").ifBlank { null },
     )
 }
 

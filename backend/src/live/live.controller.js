@@ -1,12 +1,14 @@
 import admin from "../config/firebase.js";
-import { createStreamLiveInput, getStreamLiveInputPlayback, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { createStreamLiveInput, getStreamLiveInputPlayback, getStreamLiveInputState, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { liveRoomRealtimeStatus, publishLiveRoomEvent, signLiveRoomToken } from "./liveRoomRealtime.js";
 import { measureAsync, measureFirestore } from "../observability/perf.js";
 
 const HOST_ROLES = new Set(["CITIZEN", "AMBASSADOR", "PROMOTER", "BACKER", "SUPERBOSS", "SUPERNAL", "MERCHANT"]);
 const LIVE_STATUSES = new Set(["ACTIVE", "LIVE", "STARTING"]);
-const ACTIVE_HEARTBEAT_WINDOW_MS = 90 * 1000;
+const ACTIVE_HEARTBEAT_WINDOW_MS = 5 * 60 * 1000;
 const STARTING_WINDOW_MS = 5 * 60 * 1000;
 const UPCOMING_GRACE_MS = 30 * 60 * 1000;
+const LIVE_HLS_PRIMARY_AFTER_MS = 45 * 1000;
 const LIVE_SUPPORT_ACTIONS = {
   vote: { parag: 1, gbazilo: 0, group: "vote" },
   pour_me_water: { parag: 5, gbazilo: 0, group: "spray" },
@@ -84,8 +86,21 @@ function originFromUrl(value) {
 }
 
 function serializeLiveSession(session) {
+  const playbackPolicy = livePlaybackPolicy(session);
   return {
     ...session,
+    playbackPolicy,
+    primaryPlayback: playbackPolicy.primaryPlayback,
+    fallbackPlayback: playbackPolicy.fallbackPlayback,
+    selectedPlaybackUrl: playbackPolicy.selectedPlaybackUrl,
+    selectedPlaybackTransport: playbackPolicy.selectedPlaybackTransport,
+    providerLive: Boolean(session.providerLive),
+    viewerPlayable: Boolean(session.viewerPlayable),
+    providerStatus: session.providerStatus || "",
+    providerState: session.providerState || "",
+    lifecycleStatus: session.lifecycleStatus || "",
+    activeVideoUid: session.activeVideoUid || "",
+    providerLiveReason: session.providerLiveReason || "",
     createdAt: timestampIso(session.createdAt) || session.createdAt || "",
     updatedAt: timestampIso(session.updatedAt) || session.updatedAt || "",
     startedAt: timestampIso(session.startedAt) || session.startedAt || "",
@@ -98,16 +113,55 @@ function serializeLiveSession(session) {
   };
 }
 
+function livePlaybackPolicy(session, now = Date.now()) {
+  const hlsUrl = session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "";
+  const whepUrl = session.whepPlaybackUrl || session.webRtcPlaybackUrl || session.playbackWebRtcUrl || "";
+  const hasHls = Boolean(hlsUrl);
+  const hasWhep = Boolean(whepUrl);
+  const startedMs = timestampMillis(session.actualStartedAt || session.wentLiveAt || session.startedAt || session.createdAt || session.updatedAt);
+  const liveAgeMs = startedMs ? Math.max(0, now - startedMs) : 0;
+  const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
+  if (ended && hasHls) {
+    return { primaryPlayback: "hls", fallbackPlayback: "none", selectedPlaybackTransport: "hls", selectedPlaybackUrl: hlsUrl, liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "replay_uses_hls" };
+  }
+  if (!session.viewerPlayable) {
+    return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: session.providerLiveReason || "cloudflare_viewer_not_ready_yet" };
+  }
+  if (hasWhep && (!hasHls || liveAgeMs < LIVE_HLS_PRIMARY_AFTER_MS)) {
+    return {
+      primaryPlayback: "whep",
+      fallbackPlayback: "none",
+      selectedPlaybackTransport: "whep",
+      selectedPlaybackUrl: whepUrl,
+      liveAgeMs,
+      hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
+      reason: hasHls ? "fresh_live_whep_until_hls_edge_ready" : "whep_only",
+    };
+  }
+  if (hasHls) {
+    return {
+      primaryPlayback: "hls",
+      fallbackPlayback: "none",
+      selectedPlaybackTransport: "hls",
+      selectedPlaybackUrl: hlsUrl,
+      liveAgeMs,
+      hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
+      reason: hasWhep ? "stable_live_hls_cloudflare_selected" : "hls_only",
+    };
+  }
+  return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "no_playback_url" };
+}
+
 function isFreshActiveSession(session, now = Date.now()) {
   if (session.endedAt || ["ENDED", "REPLAY_READY", "CANCELLED", "FAILED", "MISSED", "EXPIRED"].includes(session.status)) return false;
   if (session.status === "STARTING") {
     const startedMs = timestampMillis(session.startedAt || session.createdAt || session.updatedAt);
     const hasFreshStartup = startedMs > 0 && now - startedMs <= STARTING_WINDOW_MS;
-    return hasFreshStartup && Boolean(session.playbackHlsUrl || session.playbackDashUrl || session.playbackUrl) && Boolean(session.lastHeartbeatAt);
+    return hasFreshStartup && Boolean(session.viewerPlayable) && Boolean(session.playbackHlsUrl || session.playbackDashUrl || session.playbackUrl || session.whepPlaybackUrl || session.webRtcPlaybackUrl);
   }
   if (["ACTIVE", "LIVE"].includes(session.status)) {
     const heartbeatMs = timestampMillis(session.lastHeartbeatAt || session.lastProviderActivityAt || session.wentLiveAt || session.updatedAt);
-    return heartbeatMs > 0 && now - heartbeatMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
+    return Boolean(session.viewerPlayable) && heartbeatMs > 0 && now - heartbeatMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
   }
   return false;
 }
@@ -165,7 +219,45 @@ async function profileForHost(db, uid) {
 }
 
 export async function getLiveStatus(req, res) {
-  return res.json({ provider: streamLiveProviderStatus() });
+  return res.json({ provider: streamLiveProviderStatus(), realtime: liveRoomRealtimeStatus() });
+}
+
+export async function getLiveRoomToken(req, res) {
+  try {
+    const userId = assertAuth(req);
+    const db = admin.firestore();
+    const sessionId = String(req.params.sessionId || "").trim();
+    if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
+    const sessionSnap = await measureFirestore({
+      domain: "live",
+      operation: "live-room-token-session-get",
+      collection: "live_sessions",
+      operationType: "get",
+      requestId: req.requestId,
+    }, () => liveCollection(db).doc(sessionId).get());
+    if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
+    const session = sessionSnap.data() || {};
+    if (!isFreshActiveSession(session) && !hasReplayPlayback(session)) {
+      return res.status(409).json({ error: "This Live room is not active." });
+    }
+    const profile = await profileForHost(db, userId);
+    const signed = signLiveRoomToken({
+      sessionId,
+      uid: userId,
+      displayName: profile.displayName,
+      role: profile.role || "VIEWER",
+    });
+    const realtime = liveRoomRealtimeStatus();
+    if (!signed || !realtime.configured) return res.json({ ...realtime, configured: false });
+    return res.json({
+      ...realtime,
+      configured: true,
+      wsUrl: signed.wsUrl,
+      expiresAt: signed.expiresAt,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not create Live room token" });
+  }
 }
 
 export async function listLiveSessions(req, res) {
@@ -227,26 +319,42 @@ export async function listLiveSessions(req, res) {
 
 async function hydrateLivePlayback(db, doc) {
   const session = { id: doc.id, ...doc.data() };
-  const currentPlayback = String(session.playbackHlsUrl || session.playbackUrl || "");
+  const currentPlayback = String(session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "");
   const hasLiveInputPlayback = session.liveInputId && currentPlayback.includes(`${session.liveInputId}/manifest/`);
   const needsPlayback = !currentPlayback || hasLiveInputPlayback || session.playbackId === session.liveInputId;
-  if (!session.liveInputId || !needsPlayback) return session;
+  if (!session.liveInputId) return session;
 
   try {
     const playbackOrigin = firstText(
       session.playbackOrigin,
+      originFromUrl(session.whepPlaybackUrl),
       originFromUrl(session.playbackWebRtcUrl),
       originFromUrl(currentPlayback)
     );
-    const playback = await getStreamLiveInputPlayback(session.liveInputId, playbackOrigin);
-    if (!playback?.playbackHlsUrl && !playback?.playbackDashUrl) return session;
+    const providerState = await getStreamLiveInputState(session.liveInputId, playbackOrigin);
+    const playback = providerState.playback || (providerState.viewerPlayable && needsPlayback ? await getStreamLiveInputPlayback(session.liveInputId, playbackOrigin) : null);
     const patch = {
-      playbackId: playback.playbackId || session.playbackId || "",
-      playbackUrl: playback.playbackHlsUrl || playback.playbackDashUrl || "",
-      playbackHlsUrl: playback.playbackHlsUrl || "",
-      playbackDashUrl: playback.playbackDashUrl || "",
+      providerStatus: providerState.providerStatus || "",
+      providerState: providerState.providerState || "",
+      providerLive: Boolean(providerState.providerLive),
+      viewerPlayable: Boolean(providerState.viewerPlayable),
+      activeVideoUid: providerState.activeVideoUid || "",
+      lifecycleStatus: providerState.lifecycleStatus || "",
+      providerLiveReason: providerState.reason || "",
+      lastProviderCheckedAt: nowField(),
       updatedAt: nowField(),
     };
+    if (providerState.providerLive) patch.lastProviderActivityAt = nowField();
+    if (playback?.playbackHlsUrl || playback?.playbackDashUrl) {
+      patch.playbackId = playback.playbackId || session.playbackId || "";
+      patch.playbackUrl = playback.playbackHlsUrl || playback.playbackDashUrl || "";
+      patch.hlsPlaybackUrl = playback.playbackHlsUrl || "";
+      patch.playbackHlsUrl = playback.playbackHlsUrl || "";
+      patch.playbackDashUrl = playback.playbackDashUrl || "";
+    }
+    if (!providerState.viewerPlayable && ["ACTIVE", "LIVE"].includes(String(session.status || "").toUpperCase())) {
+      patch.status = "STARTING";
+    }
     await liveCollection(db).doc(doc.id).set(patch, { merge: true });
     return { ...session, ...patch };
   } catch {
@@ -335,13 +443,25 @@ export async function startLiveSession(req, res) {
       publisherTransport: normalizedPublisherTransport,
       playbackTransport,
       liveInputId: liveInput.liveInputId,
+      rtmps: liveInput.rtmps,
+      rtmpsUrl: liveInput.rtmpsUrl,
+      rtmpsStreamKey: liveInput.rtmpsStreamKey,
+      webRtcPublishUrl: liveInput.webRtcPublishUrl,
+      webRtcUrl: liveInput.webRtcUrl,
       playbackOrigin: liveInput.playbackOrigin,
       playbackId: liveInput.playbackId,
       playbackUrl: liveInput.playbackHlsUrl || liveInput.playbackDashUrl || "",
+      hlsPlaybackUrl: liveInput.hlsPlaybackUrl || liveInput.playbackHlsUrl || "",
       playbackHlsUrl: liveInput.playbackHlsUrl,
       playbackDashUrl: liveInput.playbackDashUrl,
+      whepPlaybackUrl: liveInput.whepPlaybackUrl || liveInput.playbackWebRtcUrl || "",
       playbackWebRtcUrl: liveInput.playbackWebRtcUrl,
       webRtcPlaybackUrl: liveInput.playbackWebRtcUrl,
+      providerLive: false,
+      viewerPlayable: false,
+      providerStatus: "new_configuration_accepted",
+      providerState: "WAITING_FOR_INGEST",
+      providerLiveReason: "waiting_for_cloudflare_ingest",
       provider: provider.provider,
       providerConfigured: true,
       startedAt: nowField(),
@@ -352,11 +472,15 @@ export async function startLiveSession(req, res) {
     return res.status(201).json({
       session: serializeLiveSession({ id: snap.id, ...snap.data() }),
       ingest: {
+        rtmps: liveInput.rtmps,
         rtmpsUrl: liveInput.rtmpsUrl,
         rtmpsStreamKey: liveInput.rtmpsStreamKey,
         srtUrl: liveInput.srtUrl,
         srtStreamId: liveInput.srtStreamId,
+        webRtcPublishUrl: liveInput.webRtcPublishUrl,
         webRtcUrl: liveInput.webRtcUrl,
+        whepPlaybackUrl: liveInput.whepPlaybackUrl,
+        hlsPlaybackUrl: liveInput.hlsPlaybackUrl,
       },
       provider,
     });
@@ -381,13 +505,47 @@ export async function markLiveSessionActive(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can update this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not starting." });
+    const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
+    if (!providerState.viewerPlayable) {
+      await ref.set({
+        providerStatus: providerState.providerStatus || "",
+        providerState: providerState.providerState || "",
+        providerLive: Boolean(providerState.providerLive),
+        viewerPlayable: Boolean(providerState.viewerPlayable),
+        activeVideoUid: providerState.activeVideoUid || "",
+        lifecycleStatus: providerState.lifecycleStatus || "",
+        providerLiveReason: providerState.reason || "cloudflare_not_live_yet",
+        lastProviderCheckedAt: nowField(),
+        ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}),
+        updatedAt: nowField(),
+      }, { merge: true });
+      return res.status(409).json({
+        error: providerState.providerLive
+          ? "Cloudflare ingest is connected. Viewer playback is still preparing."
+          : "Cloudflare has not confirmed this Live input is active yet.",
+        providerStatus: providerState.providerStatus || "",
+        providerState: providerState.providerState || "",
+        providerLive: Boolean(providerState.providerLive),
+        viewerPlayable: Boolean(providerState.viewerPlayable),
+        lifecycleStatus: providerState.lifecycleStatus || "",
+        activeVideoUid: providerState.activeVideoUid || "",
+        providerLiveReason: providerState.reason || "cloudflare_not_live_yet",
+      });
+    }
+    const playbackPatch = providerState.playback ? {
+      playbackId: providerState.playback.playbackId || session.playbackId || "",
+      playbackUrl: providerState.playback.playbackHlsUrl || providerState.playback.playbackDashUrl || session.playbackUrl || "",
+      hlsPlaybackUrl: providerState.playback.playbackHlsUrl || session.hlsPlaybackUrl || "",
+      playbackHlsUrl: providerState.playback.playbackHlsUrl || session.playbackHlsUrl || "",
+      playbackDashUrl: providerState.playback.playbackDashUrl || session.playbackDashUrl || "",
+    } : {};
     await measureFirestore({
       domain: "live",
       operation: "mark-live-active-set",
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => ref.set({ status: "ACTIVE", wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true }));
+    }, () => ref.set({ ...playbackPatch, status: "ACTIVE", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: true, viewerPlayable: true, activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", providerLiveReason: providerState.reason || "viewer_ready", wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), lastProviderActivityAt: nowField(), lastProviderCheckedAt: nowField(), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -411,13 +569,22 @@ export async function heartbeatLiveSession(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can heartbeat this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not active." });
+    const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
+    const nextStatus = providerState.viewerPlayable ? "ACTIVE" : "STARTING";
+    const playbackPatch = providerState.playback ? {
+      playbackId: providerState.playback.playbackId || session.playbackId || "",
+      playbackUrl: providerState.playback.playbackHlsUrl || providerState.playback.playbackDashUrl || session.playbackUrl || "",
+      hlsPlaybackUrl: providerState.playback.playbackHlsUrl || session.hlsPlaybackUrl || "",
+      playbackHlsUrl: providerState.playback.playbackHlsUrl || session.playbackHlsUrl || "",
+      playbackDashUrl: providerState.playback.playbackDashUrl || session.playbackDashUrl || "",
+    } : {};
     await measureFirestore({
       domain: "live",
       operation: "heartbeat-live-set",
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => ref.set({ status: "ACTIVE", lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true }));
+    }, () => ref.set({ ...playbackPatch, status: nextStatus, providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: Boolean(providerState.providerLive), viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", providerLiveReason: providerState.reason || "cloudflare_not_live_yet", lastHeartbeatAt: nowField(), lastProviderCheckedAt: nowField(), ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -579,13 +746,13 @@ export async function postLiveChatMessage(req, res) {
       operationType: "set",
       requestId: req.requestId,
     }, () => ref.set(payload));
-    return res.status(201).json({
-      message: {
-        id: ref.id,
-        ...payload,
-        createdAt: new Date().toISOString(),
-      },
-    });
+    const message = {
+      id: ref.id,
+      ...payload,
+      createdAt: new Date().toISOString(),
+    };
+    publishLiveRoomEvent(sessionId, { type: "chat.message", message }).catch(() => undefined);
+    return res.status(201).json({ message });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not post Live chat" });
   }

@@ -125,7 +125,7 @@ class ParagonLiveBroadcaster(
     }
 
     override fun onConnectionSuccess() {
-        onStateChanged(LiveBroadcastState.LIVE, "You are Live.")
+        onStateChanged(LiveBroadcastState.LIVE, "Local publisher connected. Preparing viewers.")
     }
 
     override fun onConnectionFailed(reason: String) {

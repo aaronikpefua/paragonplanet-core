@@ -4,6 +4,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
 import { API_URL, appCheckFetch } from "../lib/supportActions";
+import { openLiveRoomClient } from "../lib/liveRoomClient";
 import Hls from "hls.js";
 
 const LIVE_TABS = ["Live Now", "Upcoming", "Following", "Replays"];
@@ -288,9 +289,10 @@ async function startWebBroadcast() {
       }
       logLiveTiming(startTiming, "T1_session_created", {
         status: response.status,
-        hasWhip: Boolean(payload.ingest?.webRtcUrl),
+        hasWhip: Boolean(payload.ingest?.webRtcPublishUrl || payload.ingest?.webRtcUrl),
       });
-      if (!payload.ingest?.webRtcUrl) throw new Error("Browser Live publishing is not available for this session.");
+      const webRtcPublishUrl = payload.ingest?.webRtcPublishUrl || payload.ingest?.webRtcUrl;
+      if (!webRtcPublishUrl) throw new Error("Browser Live publishing is not available for this session.");
       const normalizedSession = { ...payload.session, id: payload.session?.id || payload.session?.liveSessionId };
       const nextResult = { ...payload, session: normalizedSession };
       setStartBlockedUntil(0);
@@ -300,7 +302,7 @@ async function startWebBroadcast() {
       setStatus("Connecting browser broadcast...");
       await publishStreamWithWhip({
         stream: streamRef.current,
-        whipUrl: payload.ingest.webRtcUrl,
+        whipUrl: webRtcPublishUrl,
         timing: startTiming,
         onPeerConnection: (peerConnection) => {
           peerConnectionRef.current = peerConnection;
@@ -311,16 +313,18 @@ async function startWebBroadcast() {
         onConnected: async () => {
           logLiveTiming(startTiming, "T4_whip_connected");
           setBroadcastLive(true);
-          setStatus("You are Live.");
-          await markWebLiveActive(normalizedSession.id, token);
+          setStatus("Provider connected. Preparing viewers...");
+          const activeSession = await waitForWebLiveActive(normalizedSession.id, token, startTiming);
           logLiveTiming(startTiming, "T5_directory_active");
           const activeResult = {
             ...nextResult,
             session: {
               ...normalizedSession,
-              status: "ACTIVE",
+              ...activeSession,
+              status: activeSession?.status || "ACTIVE",
             },
           };
+          setStatus("You are Live.");
           setWebLiveResult(activeResult);
           webLiveResultRef.current = activeResult;
           setTab("Live Now");
@@ -351,6 +355,34 @@ async function startWebBroadcast() {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "Live connected, but directory update failed.");
     }
+    const payload = await response.json().catch(() => ({}));
+    return payload.session;
+  }
+
+  async function waitForWebLiveActive(sessionId, token, timing) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 10; attempt += 1) {
+      try {
+        const session = await markWebLiveActive(sessionId, token);
+        if (session?.viewerPlayable === true) return session;
+      } catch (error) {
+        lastError = error;
+        logLiveTiming(timing, "cloudflare_active_wait", { attempt, message: error?.message || "" });
+      }
+      setStatusFromProviderWait(errorProviderWaitMessage(lastError, attempt));
+      await new Promise((resolve) => window.setTimeout(resolve, attempt <= 5 ? 1500 : 3000));
+    }
+    throw lastError || new Error("Cloudflare has not confirmed this Live input is active yet.");
+  }
+
+  function setStatusFromProviderWait(message) {
+    setStatus(message);
+  }
+
+  function errorProviderWaitMessage(error, attempt) {
+    const raw = String(error?.message || "");
+    if (raw.includes("Viewer playback is still preparing")) return `Provider connected. Preparing viewers... ${attempt}/10`;
+    return `Waiting for Cloudflare ingest confirmation... ${attempt}/10`;
   }
 
   function startWebLiveHeartbeat(sessionId, token) {
@@ -360,7 +392,7 @@ async function startWebBroadcast() {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       }).catch(() => undefined);
-    }, 30000);
+    }, 15000);
   }
 
   async function stopWebBroadcast({ keepPreview = false } = {}) {
@@ -569,12 +601,10 @@ function LiveSessionCard({ session, tab, selected, onSelect }) {
 }
 
 function LiveViewer({ session, onClose }) {
-  const playbackUrl = session.playbackHlsUrl || session.playbackUrl;
-  const webRtcPlaybackUrl = session.webRtcPlaybackUrl || session.playbackWebRtcUrl;
-  const playbackTransport = String(session.playbackTransport || "").toLowerCase();
-  const preferredWhep = playbackTransport === "whep" && Boolean(webRtcPlaybackUrl);
-  const [whepFallback, setWhepFallback] = useState(false);
-  const useWhep = preferredWhep && !whepFallback;
+  const selectedPlaybackUrl = session.playbackPolicy?.selectedPlaybackUrl || session.selectedPlaybackUrl || "";
+  const selectedPlaybackTransport = String(session.playbackPolicy?.selectedPlaybackTransport || session.selectedPlaybackTransport || "").toLowerCase();
+  const useWhep = selectedPlaybackTransport === "whep" && Boolean(selectedPlaybackUrl);
+  const useHls = selectedPlaybackTransport === "hls" && Boolean(selectedPlaybackUrl);
   const playerRef = useRef(null);
   const whepPeerRef = useRef(null);
   const whepResourceRef = useRef("");
@@ -585,10 +615,6 @@ function LiveViewer({ session, onClose }) {
   const [supportMode, setSupportMode] = useState("");
 
   useEffect(() => {
-    setWhepFallback(false);
-  }, [session.id, webRtcPlaybackUrl]);
-
-  useEffect(() => {
     const video = playerRef.current;
     if (!video) return undefined;
     window.clearTimeout(startupTimerRef.current);
@@ -596,9 +622,13 @@ function LiveViewer({ session, onClose }) {
     setPlayerMessage("Connecting Live...");
     timingRef.current = createLiveTiming("web-viewer", session.id || session.liveSessionId || "");
     logLiveTiming(timingRef.current, "T0_watch_selected", {
-      transport: useWhep ? "whep" : "hls",
-      hasHls: Boolean(playbackUrl),
-      hasWhep: Boolean(webRtcPlaybackUrl),
+      transport: selectedPlaybackTransport || "none",
+      requestedTransport: selectedPlaybackTransport || "none",
+      primaryPlayback: session.playbackPolicy?.primaryPlayback || session.primaryPlayback || "none",
+      fallbackPlayback: "none",
+      policyReason: session.playbackPolicy?.reason || "",
+      providerLive: Boolean(session.providerLive),
+      hasSelectedPlayback: Boolean(selectedPlaybackUrl),
     });
     video.preload = "auto";
     video.autoplay = true;
@@ -608,18 +638,9 @@ function LiveViewer({ session, onClose }) {
     }, 1800);
     if (useWhep) {
       let cancelled = false;
-      firstFrameTimerRef.current = window.setTimeout(() => {
-        if (!cancelled && playbackUrl) {
-          logLiveTiming(timingRef.current, "whep_first_frame_timeout", {
-            hasHlsFallback: true,
-          });
-          setPlayerMessage("Switching Live playback...");
-          setWhepFallback(true);
-        }
-      }, 10000);
       connectWhepPlayback({
         video,
-        whepUrl: webRtcPlaybackUrl,
+        whepUrl: selectedPlaybackUrl,
         onPeerConnection: (peerConnection) => {
           whepPeerRef.current = peerConnection;
           peerConnection.addEventListener("iceconnectionstatechange", () => {
@@ -651,13 +672,8 @@ function LiveViewer({ session, onClose }) {
         window.clearTimeout(firstFrameTimerRef.current);
         logLiveTiming(timingRef.current, "whep_startup_failed", {
           message: error?.message || "WHEP startup failed",
-          hasHlsFallback: Boolean(playbackUrl),
+          hasHlsFallback: false,
         });
-        if (!cancelled && playbackUrl) {
-          setPlayerMessage("Switching Live playback...");
-          setWhepFallback(true);
-          return;
-        }
         if (!cancelled) setPlayerMessage("Live playback unavailable. Please try again.");
       });
       return () => {
@@ -675,13 +691,15 @@ function LiveViewer({ session, onClose }) {
         }
       };
     }
-    if (!playbackUrl) return undefined;
+    if (!useHls) return undefined;
+    let cancelled = false;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = playbackUrl;
+      video.src = selectedPlaybackUrl;
       video.load?.();
       logLiveTiming(timingRef.current, "T3_native_hls_attached");
       video.play?.().catch(() => undefined);
       return () => {
+        cancelled = true;
         window.clearTimeout(startupTimerRef.current);
         window.clearTimeout(firstFrameTimerRef.current);
         video.removeAttribute("src");
@@ -703,7 +721,7 @@ function LiveViewer({ session, onClose }) {
         manifestLoadingTimeOut: 8000,
         fragLoadingTimeOut: 12000,
       });
-      hls.loadSource(playbackUrl);
+      hls.loadSource(selectedPlaybackUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         logLiveTiming(timingRef.current, "T4_manifest_parsed");
@@ -731,15 +749,16 @@ function LiveViewer({ session, onClose }) {
         setPlayerMessage("Live playback unavailable. Please try again.");
       });
       return () => {
+        cancelled = true;
         window.clearTimeout(startupTimerRef.current);
         window.clearTimeout(firstFrameTimerRef.current);
         hls.destroy();
       };
     }
     return undefined;
-  }, [playbackUrl, session.id, useWhep, webRtcPlaybackUrl]);
+  }, [selectedPlaybackTransport, selectedPlaybackUrl, session.id, useHls, useWhep]);
 
-  if (!playbackUrl && !useWhep) {
+  if (!selectedPlaybackUrl || (!useHls && !useWhep)) {
     return <p style={noticeStyle}>Playback is not available yet. Try again after Cloudflare activates the stream.</p>;
   }
   const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
@@ -752,8 +771,13 @@ function LiveViewer({ session, onClose }) {
         playsInline
         preload="auto"
         style={liveRoomVideoStyle}
+        onLoadedData={() => {
+          window.clearTimeout(startupTimerRef.current);
+          if (playerRef.current?.readyState >= 2) setPlayerMessage("");
+        }}
         onCanPlay={() => {
           window.clearTimeout(startupTimerRef.current);
+          setPlayerMessage("");
           playerRef.current?.play?.().catch(() => undefined);
         }}
         onPlaying={() => {
@@ -764,7 +788,11 @@ function LiveViewer({ session, onClose }) {
         }}
         onWaiting={() => {
           window.clearTimeout(startupTimerRef.current);
-          startupTimerRef.current = window.setTimeout(() => setPlayerMessage("Buffering Live stream..."), 900);
+          startupTimerRef.current = window.setTimeout(() => {
+            const video = playerRef.current;
+            if (video?.readyState >= 2 && !video.paused && !video.ended) return;
+            setPlayerMessage("Buffering Live stream...");
+          }, 1400);
         }}
         onEnded={() => setPlayerMessage("This Live has ended.")}
       />
@@ -919,12 +947,23 @@ function LiveChatPanel({
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
+  const realtimeActiveRef = useRef(false);
+
+  function appendMessage(message) {
+    if (!message) return;
+    setMessages((items) => {
+      if (message.id && items.some((item) => item.id === message.id)) return items;
+      return [...items, message].filter(Boolean).slice(-40);
+    });
+  }
 
   useEffect(() => {
     if (!sessionId || !currentUser) return undefined;
     let cancelled = false;
     let requestInFlight = false;
+    let roomClient = null;
     async function loadChat() {
+      if (realtimeActiveRef.current) return;
       if (requestInFlight) return;
       requestInFlight = true;
       try {
@@ -942,9 +981,29 @@ function LiveChatPanel({
       }
     }
     loadChat();
+    openLiveRoomClient({
+      sessionId,
+      currentUser,
+      onState: (state) => {
+        if (cancelled) return;
+        realtimeActiveRef.current = state === "connected";
+      },
+      onEvent: (event) => {
+        if (cancelled) return;
+        if (event.type === "chat.message") appendMessage(event.message);
+      },
+    }).then((client) => {
+      if (cancelled) {
+        client?.close();
+        return;
+      }
+      roomClient = client;
+    }).catch(() => undefined);
     const interval = window.setInterval(loadChat, LIVE_CHAT_POLL_MS);
     return () => {
       cancelled = true;
+      realtimeActiveRef.current = false;
+      roomClient?.close();
       window.clearInterval(interval);
     };
   }, [sessionId, currentUser]);
@@ -965,7 +1024,7 @@ function LiveChatPanel({
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not send message.");
-      setMessages((items) => [...items, payload.message].filter(Boolean).slice(-40));
+      appendMessage(payload.message);
       setDraft("");
     } catch (error) {
       setNotice(error.message || "Could not send message.");
@@ -1004,7 +1063,7 @@ async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepRes
   peerConnection.addTransceiver("video", { direction: "recvonly" });
   peerConnection.addTransceiver("audio", { direction: "recvonly" });
   peerConnection.ontrack = (event) => {
-    const [stream] = event.streams;
+    const [stream] = event.streams?.length ? event.streams : [new MediaStream([event.track])];
     if (stream && video.srcObject !== stream) {
       onRemoteTrack?.();
       video.srcObject = stream;
@@ -1059,6 +1118,11 @@ async function publishStreamWithWhip({ stream, whipUrl, onPeerConnection, onWhip
     },
     body: peerConnection.localDescription?.sdp || offer.sdp,
   }, 30000, "Cloudflare browser publishing timed out.");
+  logLiveTiming(timing, "T4_whip_response", {
+    status: response.status,
+    iceConnectionState: peerConnection.iceConnectionState,
+    connectionState: peerConnection.connectionState,
+  });
   const answer = await response.text();
   if (!response.ok) throw new Error("Cloudflare browser publishing connection failed.");
   const location = response.headers.get("Location") || response.headers.get("location") || "";
