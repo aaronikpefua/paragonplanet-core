@@ -454,6 +454,7 @@ fun ParagonLiveScreen(
                     activeSessionMarked = true
                     statusMessage = "Cloudflare is confirming your Live stream..."
                     var markedLive = false
+                    var providerConnected = false
                     var lastError: Throwable? = null
                     repeat(10) { attempt ->
                         if (markedLive) return@repeat
@@ -463,18 +464,28 @@ fun ParagonLiveScreen(
                             val appCheck = appCheckRepository.getToken(forceRefresh = false)
                             apiService.markParagonLiveActive(token, appCheck, sessionId)
                         }.onSuccess { activeSession ->
-                            markedLive = true
+                            providerConnected = activeSession.providerLive
                             startLiveResult = startLiveResult?.copy(session = activeSession)
-                            statusMessage = "You are Live."
+                            if (activeSession.viewerPlayable) {
+                                markedLive = true
+                                statusMessage = "You are Live."
+                            } else if (activeSession.providerLive) {
+                                statusMessage = "Provider connected. Preparing viewers... ${attempt + 1}/10"
+                            } else {
+                                statusMessage = "Waiting for Cloudflare ingest confirmation... ${attempt + 1}/10"
+                            }
+                            if (!markedLive) delay(3_000)
                         }.onFailure { error ->
                             lastError = error
                             statusMessage = "Waiting for Cloudflare Live confirmation... ${attempt + 1}/10"
                             delay(3_000)
                         }
                     }
-                    if (!markedLive) {
+                    if (!markedLive && !providerConnected) {
                         activeSessionMarked = false
                         statusMessage = lastError?.message ?: "Cloudflare has not confirmed this Live input is active yet."
+                    } else if (!markedLive) {
+                        statusMessage = "Provider connected. Preparing viewers..."
                     }
                 }
             }
@@ -895,7 +906,7 @@ private fun LiveSessionsPanel(
                             LivePlaybackPlayer(playbackUrl = selectedPlayback)
                         } else if (selectedPlayback.isBlank()) {
                             Text(
-                                "Playback is not available yet. Try again after Cloudflare finishes activating the stream.",
+                                "Preparing Live stream...",
                                 color = Color(0xFFFFD166),
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
@@ -942,7 +953,7 @@ private fun LiveSessionsPanel(
                                     Text(formatLiveSchedule(session.scheduledAt), color = Color(0xFFFFD166), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                 } else {
                                     Text(
-                                        formatLiveDateForTab(tab, session),
+                                        if (session.providerLive && !session.viewerPlayable) "Preparing Live stream..." else formatLiveDateForTab(tab, session),
                                         color = Color(0xFFFFD166),
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
@@ -952,7 +963,7 @@ private fun LiveSessionsPanel(
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD8A928), contentColor = Color.Black),
                                     ) {
                                         Text(
-                                            if (selectedViewerSession?.id == session.id) "Hide Stream" else if (isReplay) "Watch Replay" else "Watch Live",
+                                            if (selectedViewerSession?.id == session.id) "Hide Stream" else if (isReplay) "Watch Replay" else if (session.providerLive && !session.viewerPlayable) "Open Live" else "Watch Live",
                                             fontWeight = FontWeight.Black,
                                         )
                                     }
@@ -1046,7 +1057,7 @@ private fun LiveRoomViewer(
                 showControls = false,
             )
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Live playback unavailable.", color = Color(0xFFFFD166), fontWeight = FontWeight.Black)
+                Text("Preparing Live stream...", color = Color(0xFFFFD166), fontWeight = FontWeight.Black)
             }
         }
 

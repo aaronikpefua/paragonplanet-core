@@ -146,23 +146,16 @@ function videoIdFromLifecycle(payload) {
   );
 }
 
-function lifecycleStatusFromPayload(payload) {
-  return firstText(
-    payload?.status,
-    payload?.state,
-    payload?.result?.status,
-    payload?.result?.state,
-    payload?.live?.status,
-    payload?.live?.state,
-    payload?.current?.status,
-    payload?.current?.state
-  ).toLowerCase();
+function lifecycleLiveFromPayload(payload) {
+  const value = payload?.live ?? payload?.result?.live;
+  return value === true;
 }
 
 async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
   if (!liveInputId || !playbackOrigin) {
     return {
       status: "",
+      live: false,
       activeVideoUid: "",
       viewerPlayable: false,
       reason: "missing_lifecycle_origin",
@@ -176,6 +169,7 @@ async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
     if (!response.ok) {
       return {
         status: "",
+        live: false,
         activeVideoUid: "",
         viewerPlayable: false,
         reason: `lifecycle_http_${response.status}`,
@@ -183,12 +177,13 @@ async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
       };
     }
     const payload = await response.json().catch(() => null);
-    const status = lifecycleStatusFromPayload(payload);
+    const live = lifecycleLiveFromPayload(payload);
     const videoId = videoIdFromLifecycle(payload);
     const activeVideoUid = videoId && videoId !== liveInputId ? videoId : "";
-    const viewerPlayable = Boolean(activeVideoUid && ["live", "ready"].some((value) => status.includes(value)));
+    const viewerPlayable = Boolean(live && activeVideoUid);
     return {
-      status,
+      status: live ? "live" : "not_live",
+      live,
       activeVideoUid,
       viewerPlayable,
       reason: viewerPlayable ? "viewer_ready" : "lifecycle_not_viewer_ready",
@@ -201,6 +196,7 @@ async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
   } catch {
     return {
       status: "",
+      live: false,
       activeVideoUid: "",
       viewerPlayable: false,
       reason: "lifecycle_lookup_failed",
@@ -284,6 +280,7 @@ export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") 
   logProviderDiagnostic("live.provider.lifecycle", {
     liveInputId,
     lifecycleStatus: lifecycle.status,
+    lifecycleLive: lifecycle.live,
     hasVideoUid: Boolean(lifecycle.activeVideoUid),
     viewerPlayable,
   });
@@ -292,12 +289,14 @@ export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") 
       liveInputId,
       providerStatus,
       lifecycleStatus: lifecycle.status,
+      lifecycleLive: lifecycle.live,
     });
   } else if (providerLive) {
     logProviderDiagnostic("live.provider.ingest_connected", {
       liveInputId,
       providerStatus,
       lifecycleStatus: lifecycle.status,
+      lifecycleLive: lifecycle.live,
       hasVideoUid: Boolean(lifecycle.activeVideoUid),
     });
   } else if (["DISCONNECTED", "FAILED_TO_CONNECT", "FAILED_TO_RECONNECT", "EXPIRED"].includes(providerState)) {
@@ -315,6 +314,7 @@ export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") 
     viewerPlayable,
     activeVideoUid: lifecycle.activeVideoUid,
     lifecycleStatus: lifecycle.status,
+    lifecycleLive: lifecycle.live,
     reason: viewerPlayable ? "viewer_ready" : providerState.toLowerCase(),
     playback: viewerPlayable ? lifecycle.playback : null,
   };

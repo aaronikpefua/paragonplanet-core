@@ -361,17 +361,24 @@ async function startWebBroadcast() {
 
   async function waitForWebLiveActive(sessionId, token, timing) {
     let lastError = null;
+    let lastSession = null;
     for (let attempt = 1; attempt <= 10; attempt += 1) {
       try {
         const session = await markWebLiveActive(sessionId, token);
+        lastSession = session || lastSession;
         if (session?.viewerPlayable === true) return session;
+        if (session?.providerLive === true) {
+          setWebLiveResult((current) => current ? { ...current, session: { ...current.session, ...session } } : current);
+          setStatus(`Provider connected. Preparing viewers... ${attempt}/10`);
+        }
       } catch (error) {
         lastError = error;
         logLiveTiming(timing, "cloudflare_active_wait", { attempt, message: error?.message || "" });
+        setStatusFromProviderWait(errorProviderWaitMessage(lastError, attempt));
       }
-      setStatusFromProviderWait(errorProviderWaitMessage(lastError, attempt));
       await new Promise((resolve) => window.setTimeout(resolve, attempt <= 5 ? 1500 : 3000));
     }
+    if (lastSession?.providerLive === true) return lastSession;
     throw lastError || new Error("Cloudflare has not confirmed this Live input is active yet.");
   }
 
@@ -572,6 +579,7 @@ async function startWebBroadcast() {
 }
 
 function LiveSessionCard({ session, tab, selected, onSelect }) {
+  const preparingLive = tab === "Live Now" && session.providerLive && !session.viewerPlayable;
   return (
     <article style={liveCardStyle}>
       <p style={eyebrowStyle}>{tab === "Upcoming" ? "🗓️ UPCOMING" : tab === "Replays" ? "▶️ REPLAY" : "🔴 LIVE"}</p>
@@ -590,9 +598,9 @@ function LiveSessionCard({ session, tab, selected, onSelect }) {
         </>
       ) : (
         <>
-          <p style={noticeStyle}>{formatBroadcastTime(session.actualStartedAt || session.wentLiveAt || session.startedAt || session.createdAt, "Started")}</p>
+          <p style={noticeStyle}>{preparingLive ? "Preparing Live stream..." : formatBroadcastTime(session.actualStartedAt || session.wentLiveAt || session.startedAt || session.createdAt, "Started")}</p>
           <button type="button" onClick={onSelect} style={selected ? goldButtonStyle : miniButtonStyle}>
-            {selected ? "Hide Stream" : "Watch Live"}
+            {selected ? "Hide Stream" : preparingLive ? "Open Live" : "Watch Live"}
           </button>
         </>
       )}
@@ -628,6 +636,7 @@ function LiveViewer({ session, onClose }) {
       fallbackPlayback: "none",
       policyReason: session.playbackPolicy?.reason || "",
       providerLive: Boolean(session.providerLive),
+      viewerPlayable: Boolean(session.viewerPlayable),
       hasSelectedPlayback: Boolean(selectedPlaybackUrl),
     });
     video.preload = "auto";
@@ -759,7 +768,7 @@ function LiveViewer({ session, onClose }) {
   }, [selectedPlaybackTransport, selectedPlaybackUrl, session.id, useHls, useWhep]);
 
   if (!selectedPlaybackUrl || (!useHls && !useWhep)) {
-    return <p style={noticeStyle}>Playback is not available yet. Try again after Cloudflare activates the stream.</p>;
+    return <p style={noticeStyle}>Preparing Live stream...</p>;
   }
   const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
   return (
