@@ -55,7 +55,7 @@ app.use(
       callback(new Error("Origin not allowed"));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Firebase-AppCheck", "X-Request-Id"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Firebase-AppCheck", "X-Request-Id", "Idempotency-Key"],
   })
 );
 app.use(express.json({ limit: "1mb" }));

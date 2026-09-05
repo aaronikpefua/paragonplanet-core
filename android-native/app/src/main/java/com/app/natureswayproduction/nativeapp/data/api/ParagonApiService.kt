@@ -98,6 +98,7 @@ class ParagonApiService {
         purpose: String,
         title: String,
         description: String,
+        startRequestId: String,
     ): StartLiveResult = withContext(Dispatchers.IO) {
         val response = request(
             path = "/api/live/sessions/start",
@@ -110,6 +111,7 @@ class ParagonApiService {
                 .put("purpose", purpose)
                 .put("title", title)
                 .put("description", description)
+                .put("startRequestId", startRequestId)
                 .put("audience", "Public")
                 .toString(),
         )
@@ -204,6 +206,21 @@ class ParagonApiService {
             retryWithoutAppCheckOnFailure = true,
         )
         JSONObject(response).toLiveSessionsResponse()
+    }
+
+    suspend fun getParagonLiveSession(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+    ): LiveSession = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/live/sessions/$sessionId",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        JSONObject(response).getJSONObject("session").toLiveSession()
     }
 
     suspend fun fetchParagonLiveChat(
@@ -1024,6 +1041,9 @@ private fun JSONObject.toLiveSession(): LiveSession {
     return LiveSession(
         id = optString("id").ifBlank { optString("liveSessionId") },
         status = optString("status"),
+        sessionStatus = optString("sessionStatus").ifBlank { null },
+        ingestStatus = optString("ingestStatus").ifBlank { null },
+        replayStatus = optString("replayStatus").ifBlank { null },
         hostUid = optString("hostUid"),
         hostUsername = optString("hostUsername"),
         hostRole = optString("hostRole"),

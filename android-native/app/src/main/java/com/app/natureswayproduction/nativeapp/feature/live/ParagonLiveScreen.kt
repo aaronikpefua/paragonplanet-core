@@ -114,6 +114,7 @@ import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 
 private val liveTabs = listOf("Live Now", "Upcoming", "Following", "Replays")
 private const val LIVE_NOW_REFRESH_MS = 7_000L
@@ -207,6 +208,7 @@ fun ParagonLiveScreen(
     var statusMessage by remember { mutableStateOf("") }
     var startLiveResult by remember { mutableStateOf<StartLiveResult?>(null) }
     var isStartingLive by remember { mutableStateOf(false) }
+    var startRequestId by remember { mutableStateOf("") }
     var liveBroadcaster by remember { mutableStateOf<ParagonLiveBroadcaster?>(null) }
     var broadcastState by remember { mutableStateOf(LiveBroadcastState.IDLE) }
     var activeSessionMarked by remember { mutableStateOf(false) }
@@ -242,7 +244,17 @@ fun ParagonLiveScreen(
         var firstLoad = true
         while (true) {
             if (selectedViewerSession != null) {
-                delay(LIVE_SLOW_REFRESH_MS)
+                val selected = selectedViewerSession ?: continue
+                if (!selected.viewerPlayable && selected.status.uppercase() !in setOf("ENDED", "REPLAY_READY", "FAILED", "EXPIRED")) {
+                    runCatching {
+                        val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
+                        val appCheck = appCheckRepository.getToken(forceRefresh = false)
+                        apiService.getParagonLiveSession(token, appCheck, selected.id)
+                    }.onSuccess { refreshed -> selectedViewerSession = refreshed }
+                    delay(3_000)
+                } else {
+                    delay(LIVE_SLOW_REFRESH_MS)
+                }
                 continue
             }
             if (firstLoad) isLoadingSessions = true
@@ -385,6 +397,7 @@ fun ParagonLiveScreen(
                     statusMessage = "Creating Paragon Live session..."
                     scope.launch {
                         runCatching {
+                            if (startRequestId.isBlank()) startRequestId = UUID.randomUUID().toString()
                             val user = firebaseAuth.currentUser ?: error("Sign in first.")
                             val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
                             val appCheck = appCheckRepository.getToken(forceRefresh = false)
@@ -395,8 +408,10 @@ fun ParagonLiveScreen(
                                 purpose = selectedPurpose.orEmpty(),
                                 title = liveTitle.ifBlank { selectedPurpose.orEmpty() },
                                 description = liveDescription,
+                                startRequestId = startRequestId,
                             )
                         }.onSuccess { result ->
+                            startRequestId = ""
                             startLiveResult = result
                             statusMessage = "Connecting Live broadcast..."
                             liveBroadcaster?.startPublishing(

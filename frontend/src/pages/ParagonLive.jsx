@@ -63,6 +63,7 @@ export default function ParagonLive() {
   const startInFlightRef = useRef(false);
   const sessionsLoadRef = useRef(null);
   const lastStartAttemptRef = useRef(0);
+  const startRequestIdRef = useRef("");
   const [tab, setTab] = useState("Live Now");
   const [currentUser, setCurrentUser] = useState(null);
   const [role, setRole] = useState("");
@@ -120,6 +121,35 @@ export default function ParagonLive() {
     }, LIVE_SESSION_POLL_MS[tab] || 15000);
     return () => window.clearInterval(interval);
   }, [tab, currentUser, selectedSession, previewing]);
+
+  useEffect(() => {
+    const sessionId = selectedSession?.id || selectedSession?.liveSessionId || "";
+    if (!currentUser || !sessionId || selectedSession?.viewerPlayable || ["ENDED", "REPLAY_READY", "FAILED", "EXPIRED"].includes(String(selectedSession?.status || "").toUpperCase())) {
+      return undefined;
+    }
+    let cancelled = false;
+    const refreshSelectedSession = async () => {
+      try {
+        const token = await currentUser.getIdToken();
+        const response = await appCheckFetchWithTimeout(`${API_URL}/api/live/sessions/${encodeURIComponent(sessionId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || "Could not refresh Live session.");
+        if (!cancelled && payload.session) {
+          setSelectedSession({ ...payload.session, id: payload.session.id || payload.session.liveSessionId });
+        }
+      } catch {
+        // The next bounded refresh can recover from a transient directory failure.
+      }
+    };
+    refreshSelectedSession();
+    const interval = window.setInterval(refreshSelectedSession, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [currentUser, selectedSession?.id, selectedSession?.liveSessionId, selectedSession?.viewerPlayable, selectedSession?.status]);
 
   useEffect(() => {
     if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current;
@@ -258,6 +288,7 @@ async function startWebBroadcast() {
       return;
     }
     startInFlightRef.current = true;
+    if (!startRequestIdRef.current) startRequestIdRef.current = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     lastStartAttemptRef.current = now;
     setPublishing(true);
     setStatus("Creating Paragon Live session...");
@@ -270,6 +301,7 @@ async function startWebBroadcast() {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          "Idempotency-Key": startRequestIdRef.current,
         },
         body: JSON.stringify({
           hostRole: role,
@@ -296,6 +328,7 @@ async function startWebBroadcast() {
       const normalizedSession = { ...payload.session, id: payload.session?.id || payload.session?.liveSessionId };
       const nextResult = { ...payload, session: normalizedSession };
       setStartBlockedUntil(0);
+      startRequestIdRef.current = "";
       setWebLiveResult(nextResult);
       webLiveResultRef.current = nextResult;
       startTiming.id = normalizedSession.id || startTiming.id;

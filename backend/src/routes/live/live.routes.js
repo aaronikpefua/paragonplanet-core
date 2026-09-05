@@ -4,6 +4,7 @@ import { rateLimit } from "../../middlewares/rateLimit.middleware.js";
 import {
   endLiveSession,
   getLiveRoomToken,
+  getLiveSession,
   getLiveStatus,
   heartbeatLiveSession,
   listLiveChatMessages,
@@ -19,6 +20,7 @@ const router = Router();
 
 router.get("/status", rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "live-status" }), getLiveStatus);
 router.get("/sessions", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-sessions" }), listLiveSessions);
+router.get("/sessions/:sessionId", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-session" }), getLiveSession);
 router.post("/sessions/schedule", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "live-schedule" }), scheduleLiveSession);
 router.post(
   "/sessions/start",

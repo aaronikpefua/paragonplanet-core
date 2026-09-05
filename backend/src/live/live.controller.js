@@ -9,6 +9,15 @@ const ACTIVE_HEARTBEAT_WINDOW_MS = 5 * 60 * 1000;
 const STARTING_WINDOW_MS = 5 * 60 * 1000;
 const UPCOMING_GRACE_MS = 30 * 60 * 1000;
 const LIVE_HLS_PRIMARY_AFTER_MS = 45 * 1000;
+const LIVE_PURPOSES_BY_ROLE = {
+  CITIZEN: new Set(["Campaign for Votes", "Live Performance", "Audience Q&A", "Why I Should Qualify", "Qualification Update", "Live Together"]),
+  PROMOTER: new Set(["Promote a Citizen", "Citizen Interview", "Vote Campaign", "Audience Discussion", "Live Together"]),
+  AMBASSADOR: new Set(["Promote a Citizen", "Citizen Interview", "Vote Campaign", "Audience Discussion", "Live Together"]),
+  BACKER: new Set(["Sector Discussion", "Q&A", "Knowledge Challenge", "Service Promotion", "Live Together"]),
+  SUPERNAL: new Set(["Expert Discussion", "Public Q&A", "Knowledge Challenge", "Professional Presentation", "Live Together"]),
+  SUPERBOSS: new Set(["Expert Discussion", "Public Q&A", "Knowledge Challenge", "Professional Presentation", "Live Together"]),
+  MERCHANT: new Set(["Product Demonstration", "Product Launch", "Buyer Q&A", "Marketplace Promotion"]),
+};
 const LIVE_SUPPORT_ACTIONS = {
   vote: { parag: 1, gbazilo: 0, group: "vote" },
   pour_me_water: { parag: 5, gbazilo: 0, group: "spray" },
@@ -85,10 +94,24 @@ function originFromUrl(value) {
   }
 }
 
-function serializeLiveSession(session) {
+export function serializeLiveSession(session) {
+  const {
+    rtmps: _rtmps,
+    rtmpsUrl: _rtmpsUrl,
+    rtmpsStreamKey: _rtmpsStreamKey,
+    srtUrl: _srtUrl,
+    srtStreamId: _srtStreamId,
+    webRtcPublishUrl: _webRtcPublishUrl,
+    webRtcUrl: _webRtcUrl,
+    startRequestId: _startRequestId,
+    ...publicSession
+  } = session;
   const playbackPolicy = livePlaybackPolicy(session);
   return {
-    ...session,
+    ...publicSession,
+    sessionStatus: session.sessionStatus || session.status || "",
+    ingestStatus: session.ingestStatus || session.providerState || "WAITING_FOR_INGEST",
+    replayStatus: session.replayStatus || (["ENDED", "REPLAY_READY"].includes(session.status) ? session.status : "NONE"),
     playbackPolicy,
     primaryPlayback: playbackPolicy.primaryPlayback,
     fallbackPlayback: playbackPolicy.fallbackPlayback,
@@ -154,7 +177,7 @@ function livePlaybackPolicy(session, now = Date.now()) {
   return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "no_playback_url" };
 }
 
-function isFreshActiveSession(session, now = Date.now()) {
+export function isFreshActiveSession(session, now = Date.now()) {
   if (session.endedAt || ["ENDED", "REPLAY_READY", "CANCELLED", "FAILED", "MISSED", "EXPIRED"].includes(session.status)) return false;
   if (session.status === "STARTING") {
     const startedMs = timestampMillis(session.startedAt || session.createdAt || session.updatedAt);
@@ -175,11 +198,15 @@ function isUpcomingSession(session, now = Date.now()) {
 }
 
 function hasReplayPlayback(session) {
-  return ["ENDED", "REPLAY_READY"].includes(session.status) && Boolean(session.playbackHlsUrl || session.playbackDashUrl || session.playbackUrl);
+  const playbackId = String(session.playbackId || "");
+  const hasRecordedVideo = playbackId && playbackId !== String(session.liveInputId || "");
+  return ["ENDED", "REPLAY_READY"].includes(session.status)
+    && (session.replayStatus === "READY" || hasRecordedVideo)
+    && Boolean(session.playbackHlsUrl || session.playbackDashUrl || session.playbackUrl);
 }
 
 function isRecentOpenHostSession(session, now = Date.now()) {
-  if (!["ACTIVE", "LIVE"].includes(session.status)) return false;
+  if (!["STARTING", "ACTIVE", "LIVE"].includes(session.status)) return false;
   if (session.endedAt) return false;
   const recentMs = timestampMillis(session.startedAt || session.createdAt || session.updatedAt || session.lastHeartbeatAt);
   return recentMs > 0 && now - recentMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
@@ -210,14 +237,33 @@ function getSupportAmounts(action, body = {}) {
 }
 
 async function profileForHost(db, uid) {
-  const snap = await db.collection("public_profiles").doc(uid).get();
-  const data = snap.data() || {};
+  const [publicSnap, privateSnap] = await Promise.all([
+    db.collection("public_profiles").doc(uid).get(),
+    db.collection("user_profiles").doc(uid).get(),
+  ]);
+  const data = publicSnap.exists ? publicSnap.data() || {} : privateSnap.data() || {};
   return {
     username: firstText(data.username, data.stageName, data.displayName, data.realName, data.brandName, data.email, "username"),
     displayName: firstText(data.displayName, data.stageName, data.realName, data.brandName, data.email, "Paragon Member"),
     photoUrl: firstText(data.photoUrl, data.profilePhotoUrl, data.avatarUrl, data.imageUrl, ""),
-    role: normalizeRole(data.role || data.accountRole || ""),
+    role: normalizeRole(data.role || data.activeRole || data.accountRole || ""),
   };
+}
+
+export function assertLiveHostPolicy(profile, requestedPurpose, action = "host") {
+  const role = normalizeRole(profile?.role);
+  const purposes = LIVE_PURPOSES_BY_ROLE[role];
+  if (!HOST_ROLES.has(role) || !purposes) {
+    const error = new Error(`This account cannot ${action} Paragon Live yet.`);
+    error.status = 403;
+    throw error;
+  }
+  if (!purposes.has(String(requestedPurpose || "").trim())) {
+    const error = new Error("This Live purpose is not available for your account role.");
+    error.status = 403;
+    throw error;
+  }
+  return role;
 }
 
 export async function getLiveStatus(req, res) {
@@ -297,7 +343,7 @@ export async function listLiveSessions(req, res) {
     const sessions = [];
     const now = Date.now();
     for (const doc of snap.docs) {
-      const session = await hydrateLivePlayback(db, doc);
+      const session = { id: doc.id, ...doc.data() };
       if (followedCreatorIds && !followedCreatorIds.has(session.hostUid)) continue;
       if (tab.includes("following")) {
         if (isFreshActiveSession(session, now) || isUpcomingSession(session, now)) sessions.push(session);
@@ -319,67 +365,34 @@ export async function listLiveSessions(req, res) {
   }
 }
 
-async function hydrateLivePlayback(db, doc) {
-  const session = { id: doc.id, ...doc.data() };
-  const currentPlayback = String(session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "");
-  const hasLiveInputPlayback = session.liveInputId && currentPlayback.includes(`${session.liveInputId}/manifest/`);
-  const needsPlayback = !currentPlayback || hasLiveInputPlayback || session.playbackId === session.liveInputId;
-  if (!session.liveInputId) return session;
-
+export async function getLiveSession(req, res) {
   try {
-    const playbackOrigin = firstText(
-      session.playbackOrigin,
-      originFromUrl(session.whepPlaybackUrl),
-      originFromUrl(session.playbackWebRtcUrl),
-      originFromUrl(currentPlayback)
-    );
-    const providerState = await getStreamLiveInputState(session.liveInputId, playbackOrigin);
-    const playback = providerState.playback || (providerState.viewerPlayable && needsPlayback ? await getStreamLiveInputPlayback(session.liveInputId, playbackOrigin) : null);
-    const patch = {
-      providerStatus: providerState.providerStatus || "",
-      providerState: providerState.providerState || "",
-      providerLive: Boolean(providerState.providerLive),
-      viewerPlayable: Boolean(providerState.viewerPlayable),
-      activeVideoUid: providerState.activeVideoUid || "",
-      lifecycleStatus: providerState.lifecycleStatus || "",
-      lifecycleLive: Boolean(providerState.lifecycleLive),
-      mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : providerState.providerLive ? "PREPARING" : providerState.providerState || "WAITING_FOR_INGEST",
-      providerLiveReason: providerState.reason || "",
-      lastProviderCheckedAt: nowField(),
-      updatedAt: nowField(),
-    };
-    if (providerState.providerLive) patch.lastProviderActivityAt = nowField();
-    if (playback?.playbackHlsUrl || playback?.playbackDashUrl) {
-      patch.playbackId = playback.playbackId || session.playbackId || "";
-      patch.playbackUrl = playback.playbackHlsUrl || playback.playbackDashUrl || "";
-      patch.hlsPlaybackUrl = playback.playbackHlsUrl || "";
-      patch.playbackHlsUrl = playback.playbackHlsUrl || "";
-      patch.playbackDashUrl = playback.playbackDashUrl || "";
-    }
-    if (!providerState.providerLive && ["ACTIVE", "LIVE"].includes(String(session.status || "").toUpperCase())) {
-      patch.status = "STARTING";
-    }
-    await liveCollection(db).doc(doc.id).set(patch, { merge: true });
-    return { ...session, ...patch };
-  } catch {
-    return session;
+    const sessionId = String(req.params.sessionId || "").trim();
+    if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
+    const snap = await liveCollection(admin.firestore()).doc(sessionId).get();
+    if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
+    return res.json({ session: serializeLiveSession({ id: snap.id, ...snap.data() }) });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not load Live session" });
   }
 }
 
 export async function startLiveSession(req, res) {
+  let sessionRef = null;
+  let createdLiveInputId = "";
   try {
     const hostUid = assertAuth(req);
     const db = admin.firestore();
     const {
-      hostRole,
+      hostRole: _requestedHostRole,
       purpose,
       title,
       description = "",
       audience = "Public",
       publisherTransport = "rtmps",
+      startRequestId: bodyStartRequestId = "",
     } = req.body || {};
-    const normalizedRole = normalizeRole(hostRole);
-    if (!HOST_ROLES.has(normalizedRole)) return res.status(403).json({ error: "This role cannot host Paragon Live yet." });
+    const startRequestId = String(req.get("Idempotency-Key") || bodyStartRequestId || "").trim().slice(0, 128);
     if (!purpose || !title) return res.status(400).json({ error: "Live purpose and title are required." });
 
     const provider = streamLiveProviderStatus();
@@ -391,13 +404,23 @@ export async function startLiveSession(req, res) {
     }
 
     const profile = await profileForHost(db, hostUid);
+    const normalizedRole = assertLiveHostPolicy(profile, purpose, "host");
     const openSessionSnap = await liveCollection(db)
       .where("hostUid", "==", hostUid)
-      .limit(20)
+      .where("status", "in", ["STARTING", "ACTIVE", "LIVE"])
+      .limit(10)
       .get();
-    const openSession = openSessionSnap.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .find((session) => isRecentOpenHostSession(session));
+    const hostSessions = openSessionSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const existingAttempt = startRequestId
+      ? hostSessions.find((session) => session.startRequestId === startRequestId && session.status !== "FAILED")
+      : null;
+    if (existingAttempt?.liveInputId) {
+      return res.status(200).json({ session: serializeLiveSession(existingAttempt), ingest: liveIngestResponse(existingAttempt), provider, idempotentReplay: true });
+    }
+    if (existingAttempt) {
+      return res.status(409).json({ error: "This Live start request is already being prepared.", session: serializeLiveSession(existingAttempt) });
+    }
+    const openSession = hostSessions.find((session) => isRecentOpenHostSession(session));
     if (openSession) {
       return res.status(409).json({
         error: "You already have a Live session starting or active. End it before starting another.",
@@ -405,7 +428,7 @@ export async function startLiveSession(req, res) {
       });
     }
 
-    const sessionRef = liveCollection(db).doc();
+    sessionRef = liveCollection(db).doc();
     const sessionId = sessionRef.id;
 
     await measureFirestore({
@@ -426,6 +449,11 @@ export async function startLiveSession(req, res) {
       description,
       audience,
       status: "STARTING",
+      sessionStatus: "STARTING",
+      ingestStatus: "WAITING_FOR_INGEST",
+      mediaStatus: "WAITING_FOR_INGEST",
+      replayStatus: "NONE",
+      startRequestId,
       viewerCount: 0,
       peakViewerCount: 0,
       createdAt: nowField(),
@@ -434,6 +462,7 @@ export async function startLiveSession(req, res) {
     }));
 
     const liveInput = await createStreamLiveInput({ title, sessionId });
+    createdLiveInputId = liveInput.liveInputId || "";
     const normalizedPublisherTransport = String(publisherTransport || "").toLowerCase() === "whip" ? "whip" : "rtmps";
     const playbackTransport = normalizedPublisherTransport === "whip" ? "whep" : "hls";
     await measureFirestore({
@@ -444,6 +473,8 @@ export async function startLiveSession(req, res) {
       requestId: req.requestId,
     }, () => sessionRef.set({
       status: "STARTING",
+      sessionStatus: "STARTING",
+      ingestStatus: "WAITING_FOR_INGEST",
       publisherTransport: normalizedPublisherTransport,
       playbackTransport,
       liveInputId: liveInput.liveInputId,
@@ -477,22 +508,38 @@ export async function startLiveSession(req, res) {
     const snap = await sessionRef.get();
     return res.status(201).json({
       session: serializeLiveSession({ id: snap.id, ...snap.data() }),
-      ingest: {
-        rtmps: liveInput.rtmps,
-        rtmpsUrl: liveInput.rtmpsUrl,
-        rtmpsStreamKey: liveInput.rtmpsStreamKey,
-        srtUrl: liveInput.srtUrl,
-        srtStreamId: liveInput.srtStreamId,
-        webRtcPublishUrl: liveInput.webRtcPublishUrl,
-        webRtcUrl: liveInput.webRtcUrl,
-        whepPlaybackUrl: liveInput.whepPlaybackUrl,
-        hlsPlaybackUrl: liveInput.hlsPlaybackUrl,
-      },
+      ingest: liveIngestResponse({ ...liveInput, ...snap.data() }),
       provider,
     });
   } catch (error) {
+    if (sessionRef) {
+      await sessionRef.set({
+        status: "FAILED",
+        sessionStatus: "FAILED",
+        ingestStatus: "FAILED_TO_CONNECT",
+        mediaStatus: "FAILED",
+        providerCleanupRequired: Boolean(createdLiveInputId),
+        ...(createdLiveInputId ? { liveInputId: createdLiveInputId } : {}),
+        failedAt: nowField(),
+        updatedAt: nowField(),
+      }, { merge: true }).catch(() => undefined);
+    }
     return res.status(error.status || 500).json({ error: error.message || "Could not start Paragon Live" });
   }
+}
+
+function liveIngestResponse(session) {
+  return {
+    rtmps: session.rtmps || "",
+    rtmpsUrl: session.rtmpsUrl || "",
+    rtmpsStreamKey: session.rtmpsStreamKey || "",
+    srtUrl: session.srtUrl || "",
+    srtStreamId: session.srtStreamId || "",
+    webRtcPublishUrl: session.webRtcPublishUrl || "",
+    webRtcUrl: session.webRtcUrl || "",
+    whepPlaybackUrl: session.whepPlaybackUrl || "",
+    hlsPlaybackUrl: session.hlsPlaybackUrl || session.playbackHlsUrl || "",
+  };
 }
 
 export async function markLiveSessionActive(req, res) {
@@ -514,6 +561,8 @@ export async function markLiveSessionActive(req, res) {
     const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
     if (!providerState.providerLive) {
       await ref.set({
+        sessionStatus: "STARTING",
+        ingestStatus: providerState.providerState || "WAITING_FOR_INGEST",
         providerStatus: providerState.providerStatus || "",
         providerState: providerState.providerState || "",
         providerLive: Boolean(providerState.providerLive),
@@ -552,7 +601,7 @@ export async function markLiveSessionActive(req, res) {
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => ref.set({ ...playbackPatch, status: "ACTIVE", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: true, viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : "PREPARING", providerLiveReason: providerState.reason || (providerState.viewerPlayable ? "viewer_ready" : "preparing_viewers"), wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), lastProviderActivityAt: nowField(), lastProviderCheckedAt: nowField(), updatedAt: nowField() }, { merge: true }));
+    }, () => ref.set({ ...playbackPatch, status: "ACTIVE", sessionStatus: "ACTIVE", ingestStatus: providerState.providerState || "INGEST_CONNECTED", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: true, viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : "PREPARING", replayStatus: "NONE", providerLiveReason: providerState.reason || (providerState.viewerPlayable ? "viewer_ready" : "preparing_viewers"), wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), lastProviderActivityAt: nowField(), lastProviderCheckedAt: nowField(), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -591,7 +640,7 @@ export async function heartbeatLiveSession(req, res) {
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => ref.set({ ...playbackPatch, status: nextStatus, providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: Boolean(providerState.providerLive), viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : providerState.providerLive ? "PREPARING" : providerState.providerState || "WAITING_FOR_INGEST", providerLiveReason: providerState.reason || "cloudflare_not_live_yet", lastHeartbeatAt: nowField(), lastProviderCheckedAt: nowField(), ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}), updatedAt: nowField() }, { merge: true }));
+    }, () => ref.set({ ...playbackPatch, status: nextStatus, sessionStatus: nextStatus, ingestStatus: providerState.providerState || "WAITING_FOR_INGEST", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: Boolean(providerState.providerLive), viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : providerState.providerLive ? "PREPARING" : providerState.providerState || "WAITING_FOR_INGEST", replayStatus: "NONE", providerLiveReason: providerState.reason || "cloudflare_not_live_yet", lastHeartbeatAt: nowField(), lastProviderCheckedAt: nowField(), ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}), updatedAt: nowField() }, { merge: true }));
     const updated = await ref.get();
     return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
@@ -604,20 +653,19 @@ export async function scheduleLiveSession(req, res) {
     const hostUid = assertAuth(req);
     const db = admin.firestore();
     const {
-      hostRole,
+      hostRole: _requestedHostRole,
       purpose,
       title,
       description = "",
       audience = "Public",
       scheduledAt,
     } = req.body || {};
-    const normalizedRole = normalizeRole(hostRole);
     const scheduledMs = timestampMillis(scheduledAt);
-    if (!HOST_ROLES.has(normalizedRole)) return res.status(403).json({ error: "This role cannot schedule Paragon Live yet." });
     if (!purpose || !title || !scheduledMs) return res.status(400).json({ error: "Live purpose, title, date and time are required." });
     if (scheduledMs <= Date.now()) return res.status(400).json({ error: "Scheduled Live time must be in the future." });
 
     const profile = await profileForHost(db, hostUid);
+    const normalizedRole = assertLiveHostPolicy(profile, purpose, "schedule");
     const sessionRef = liveCollection(db).doc();
     const sessionId = sessionRef.id;
     await measureFirestore({
@@ -638,6 +686,10 @@ export async function scheduleLiveSession(req, res) {
       description,
       audience,
       status: "SCHEDULED",
+      sessionStatus: "SCHEDULED",
+      ingestStatus: "NOT_CREATED",
+      mediaStatus: "NOT_AVAILABLE",
+      replayStatus: "NONE",
       scheduledAt: new Date(scheduledMs).toISOString(),
       viewerCount: 0,
       peakViewerCount: 0,
@@ -666,6 +718,17 @@ export async function endLiveSession(req, res) {
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can end this Live." });
+    const replay = session.liveInputId
+      ? await getStreamLiveInputPlayback(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.playbackHlsUrl))).catch(() => null)
+      : null;
+    const replayReady = Boolean(replay?.playbackId && replay.playbackId !== session.liveInputId && replay.playbackHlsUrl);
+    const replayPatch = replayReady ? {
+      playbackId: replay.playbackId,
+      playbackUrl: replay.playbackHlsUrl,
+      hlsPlaybackUrl: replay.playbackHlsUrl,
+      playbackHlsUrl: replay.playbackHlsUrl,
+      playbackDashUrl: replay.playbackDashUrl || "",
+    } : {};
     await measureFirestore({
       domain: "live",
       operation: "end-live-session-set",
@@ -673,7 +736,14 @@ export async function endLiveSession(req, res) {
       operationType: "set",
       requestId: req.requestId,
     }, () => ref.set({
-      status: "ENDED",
+      ...replayPatch,
+      status: replayReady ? "REPLAY_READY" : "ENDED",
+      sessionStatus: replayReady ? "REPLAY_READY" : "ENDED",
+      ingestStatus: "DISCONNECTED",
+      mediaStatus: "ENDED",
+      replayStatus: replayReady ? "READY" : "PROCESSING",
+      providerLive: false,
+      viewerPlayable: false,
       endedAt: nowField(),
       updatedAt: nowField(),
     }, { merge: true }));
@@ -733,7 +803,7 @@ export async function postLiveChatMessage(req, res) {
     }, () => liveCollection(db).doc(sessionId).get());
     if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = sessionSnap.data() || {};
-    if (!isFreshActiveSession(session) && !["ACTIVE", "LIVE", "STARTING"].includes(session.status)) {
+    if (!isFreshActiveSession(session)) {
       return res.status(409).json({ error: "This Live is not accepting chat right now." });
     }
     const profile = await profileForHost(db, userId);
@@ -802,7 +872,7 @@ export async function supportLiveSession(req, res) {
       if (hostUid === userId) {
         throw Object.assign(new Error("You cannot support your own Live."), { status: 400 });
       }
-      if (!["ACTIVE", "LIVE", "STARTING"].includes(session.status) || session.endedAt) {
+      if (!isFreshActiveSession(session)) {
         throw Object.assign(new Error("This Live is not accepting support right now."), { status: 409 });
       }
       const wallet = supporterWalletSnap.data() || {};

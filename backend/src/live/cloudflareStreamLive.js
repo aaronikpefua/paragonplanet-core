@@ -129,26 +129,26 @@ function videoIdFromLifecycle(payload) {
   return firstText(
     payload?.videoUID,
     payload?.videoUid,
-    payload?.videoId,
-    payload?.uid,
     payload?.result?.videoUID,
     payload?.result?.videoUid,
-    payload?.result?.videoId,
-    payload?.result?.uid,
     payload?.live?.videoUID,
     payload?.live?.videoUid,
-    payload?.live?.videoId,
-    payload?.live?.uid,
     payload?.current?.videoUID,
-    payload?.current?.videoUid,
-    payload?.current?.videoId,
-    payload?.current?.uid
+    payload?.current?.videoUid
   );
 }
 
 function lifecycleLiveFromPayload(payload) {
   const value = payload?.live ?? payload?.result?.live;
   return value === true;
+}
+
+export function parseStreamLifecyclePayload(payload) {
+  const live = lifecycleLiveFromPayload(payload);
+  const videoId = videoIdFromLifecycle(payload);
+  const activeVideoUid = videoId && videoId !== String(payload?.liveInputId || "") ? videoId : "";
+  const viewerPlayable = Boolean(live && activeVideoUid);
+  return { live, activeVideoUid, viewerPlayable };
 }
 
 async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
@@ -177,10 +177,8 @@ async function getLiveInputLifecycle(liveInputId, playbackOrigin) {
       };
     }
     const payload = await response.json().catch(() => null);
-    const live = lifecycleLiveFromPayload(payload);
-    const videoId = videoIdFromLifecycle(payload);
-    const activeVideoUid = videoId && videoId !== liveInputId ? videoId : "";
-    const viewerPlayable = Boolean(live && activeVideoUid);
+    const parsed = parseStreamLifecyclePayload({ ...payload, liveInputId });
+    const { live, activeVideoUid, viewerPlayable } = parsed;
     return {
       status: live ? "live" : "not_live",
       live,

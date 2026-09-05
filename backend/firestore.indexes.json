@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "live_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "hostUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "merchant_orders",
       "queryScope": "COLLECTION",
       "fields": [

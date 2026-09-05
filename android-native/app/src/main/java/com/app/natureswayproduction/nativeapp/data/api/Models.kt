@@ -317,6 +317,9 @@ data class LiveProviderInfo(
 data class LiveSession(
     val id: String,
     val status: String,
+    val sessionStatus: String? = null,
+    val ingestStatus: String? = null,
+    val replayStatus: String? = null,
     val hostUid: String,
     val hostUsername: String,
     val hostRole: String,

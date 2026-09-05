@@ -4,7 +4,8 @@
     "runtime": "nodejs20"
   },
   "firestore": {
-    "rules": "backend/firestore.rules"
+    "rules": "backend/firestore.rules",
+    "indexes": "backend/firestore.indexes.json"
   },
   "hosting": {
     "public": "frontend/build",
