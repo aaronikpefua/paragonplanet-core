@@ -29,7 +29,6 @@ android {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "BACKEND_URL", "\"https://backend-849823064688.us-central1.run.app\"")
     }
 
     signingConfigs {
@@ -42,7 +41,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BACKEND_URL", "\"https://backend-live-staging-849823064688.us-central1.run.app\"")
+        }
         release {
+            buildConfigField("String", "BACKEND_URL", "\"https://backend-849823064688.us-central1.run.app\"")
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
