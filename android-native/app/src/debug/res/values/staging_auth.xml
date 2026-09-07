@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The isolated staging Firebase project intentionally has no production
+      Google OAuth client. Email/password test accounts remain available for
+      M1; a staging OAuth client can replace this value when cross-provider
+      authentication is explicitly brought into staging.
+    -->
+    <string name="default_web_client_id" translatable="false">staging-google-oauth-disabled</string>
+</resources>

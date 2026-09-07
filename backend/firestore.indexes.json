@@ -1,6 +1,15 @@
 {
   "indexes": [
     {
+      "collectionGroup": "public_live_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "directoryTab", "order": "ASCENDING" },
+        { "fieldPath": "visible", "order": "ASCENDING" },
+        { "fieldPath": "rankingKey", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "live_sessions",
       "queryScope": "COLLECTION",
       "fields": [

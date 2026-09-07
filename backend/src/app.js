@@ -6,6 +6,8 @@ import googlePlayBillingRoutes from "./routes/googlePlayBilling.routes.js";
 import nativeXAuthRoutes from "./routes/nativeXAuth.routes.js";
 import realtimeRoutes from "./routes/realtime/realtime.routes.js";
 import liveRoutes from "./routes/live/live.routes.js";
+import { receiveCloudflareLiveWebhook, runLiveReconciliation } from "./live/liveInternal.controller.js";
+import { createM1StagingTestToken } from "./auth/stagingTestAuth.controller.js";
 import express from "express";
 import cors from "cors";
 import testRoutes from "./routes/test.routes.js";
@@ -75,6 +77,9 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+app.post("/internal/live/cloudflare-webhook", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-webhook" }), receiveCloudflareLiveWebhook);
+app.post("/internal/live/reconcile", rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "live-reconcile" }), runLiveReconciliation);
+app.post("/internal/staging/m1-test-login", rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "m1-test-login" }), createM1StagingTestToken);
 
 // Test protected routes
 app.use("/api/test", testRoutes);

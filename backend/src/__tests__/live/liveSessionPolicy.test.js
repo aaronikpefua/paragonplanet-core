@@ -8,8 +8,13 @@ describe("Live session public policy", () => {
       status: "ACTIVE",
       providerLive: true,
       viewerPlayable: false,
-      lastHeartbeatAt: now,
+      lastProviderLiveAt: now,
     }, now)).toBe(true);
+  });
+
+  it("does not let a host heartbeat substitute for provider proof", () => {
+    const now = Date.now();
+    expect(isFreshActiveSession({ status: "ACTIVE", providerLive: true, lastHeartbeatAt: now }, now)).toBe(false);
   });
 
   it("does not expose publishing credentials", () => {

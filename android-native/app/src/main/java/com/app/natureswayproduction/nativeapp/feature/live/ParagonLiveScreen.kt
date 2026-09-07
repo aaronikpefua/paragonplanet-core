@@ -245,13 +245,14 @@ fun ParagonLiveScreen(
         while (true) {
             if (selectedViewerSession != null) {
                 val selected = selectedViewerSession ?: continue
-                if (!selected.viewerPlayable && selected.status.uppercase() !in setOf("ENDED", "REPLAY_READY", "FAILED", "EXPIRED")) {
+                val canonicalStatus = (selected.sessionStatus ?: selected.status).uppercase()
+                if (canonicalStatus !in setOf("REPLAY_READY", "FAILED", "EXPIRED", "CANCELLED")) {
                     runCatching {
                         val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
                         val appCheck = appCheckRepository.getToken(forceRefresh = false)
                         apiService.getParagonLiveSession(token, appCheck, selected.id)
                     }.onSuccess { refreshed -> selectedViewerSession = refreshed }
-                    delay(3_000)
+                    delay(if (selected.viewerPlayable) 5_000 else 3_000)
                 } else {
                     delay(LIVE_SLOW_REFRESH_MS)
                 }

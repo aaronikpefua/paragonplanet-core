@@ -548,6 +548,27 @@ service cloud.firestore {
     }
 
     /* ===============================
+       PUBLIC LIVE DIRECTORY
+       Server-owned projection; publishing credentials never belong here.
+    =============================== */
+    match /public_live_sessions/{sessionId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /live_sessions/{sessionId} {
+      allow read, write: if false;
+    }
+
+    match /live_provider_events/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /live_host_leases/{hostUid} {
+      allow read, write: if false;
+    }
+
+    /* ===============================
        SAVED VIDEOS
     =============================== */
     match /saved_videos/{saveId} {

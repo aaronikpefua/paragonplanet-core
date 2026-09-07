@@ -6,6 +6,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export function loadServiceAccount() {
+  if (String(process.env.FIREBASE_USE_ADC || "").toLowerCase() === "true") {
+    return null;
+  }
   if (process.env.FIREBASE_ADMIN_JSON) {
     return JSON.parse(process.env.FIREBASE_ADMIN_JSON);
   }

@@ -1,7 +1,9 @@
 import admin from "../config/firebase.js";
-import { createStreamLiveInput, getStreamLiveInputPlayback, getStreamLiveInputState, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { createStreamLiveInput, getStreamLiveInputState, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
 import { liveRoomRealtimeStatus, publishLiveRoomEvent, signLiveRoomToken } from "./liveRoomRealtime.js";
 import { measureAsync, measureFirestore } from "../observability/perf.js";
+import { canonicalStateOf, LIVE_MEDIA_PROFILE, LIVE_RECORDING_MODE } from "./liveLifecycle.js";
+import { reconcileLiveSession, refreshLiveProjection, requestLiveEnd, transitionLiveSession } from "./liveReconciler.js";
 
 const HOST_ROLES = new Set(["CITIZEN", "AMBASSADOR", "PROMOTER", "BACKER", "SUPERBOSS", "SUPERNAL", "MERCHANT"]);
 const LIVE_STATUSES = new Set(["ACTIVE", "LIVE", "STARTING"]);
@@ -109,7 +111,15 @@ export function serializeLiveSession(session) {
   const playbackPolicy = livePlaybackPolicy(session);
   return {
     ...publicSession,
-    sessionStatus: session.sessionStatus || session.status || "",
+    sessionStatus: canonicalStateOf(session),
+    mediaProfile: session.mediaProfile || LIVE_MEDIA_PROFILE,
+    recordingMode: session.recordingMode || LIVE_RECORDING_MODE,
+    mediaGeneration: Math.max(1, Number(session.mediaGeneration || 1)),
+    stateRevision: Number(session.stateRevision || 0),
+    providerEventRevision: Number(session.providerEventRevision || 0),
+    livePlayback: session.livePlayback || null,
+    replayPlayback: session.replayPlayback || null,
+    replayVideoUid: session.replayVideoUid || "",
     ingestStatus: session.ingestStatus || session.providerState || "WAITING_FOR_INGEST",
     replayStatus: session.replayStatus || (["ENDED", "REPLAY_READY"].includes(session.status) ? session.status : "NONE"),
     playbackPolicy,
@@ -139,29 +149,21 @@ export function serializeLiveSession(session) {
 }
 
 function livePlaybackPolicy(session, now = Date.now()) {
-  const hlsUrl = session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "";
-  const whepUrl = session.whepPlaybackUrl || session.webRtcPlaybackUrl || session.playbackWebRtcUrl || "";
+  const canonicalState = canonicalStateOf(session);
+  if (["ENDING", "REPLAY_PROCESSING", "FAILED", "EXPIRED", "CANCELLED"].includes(canonicalState)) {
+    return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs: 0, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: canonicalState.toLowerCase() };
+  }
+  const canonicalPlayback = canonicalState === "REPLAY_READY" ? session.replayPlayback : session.livePlayback;
+  const hlsUrl = canonicalPlayback?.manifestUrl || session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "";
   const hasHls = Boolean(hlsUrl);
-  const hasWhep = Boolean(whepUrl);
   const startedMs = timestampMillis(session.actualStartedAt || session.wentLiveAt || session.startedAt || session.createdAt || session.updatedAt);
   const liveAgeMs = startedMs ? Math.max(0, now - startedMs) : 0;
-  const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
+  const ended = canonicalState === "REPLAY_READY";
   if (ended && hasHls) {
     return { primaryPlayback: "hls", fallbackPlayback: "none", selectedPlaybackTransport: "hls", selectedPlaybackUrl: hlsUrl, liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "replay_uses_hls" };
   }
   if (!session.viewerPlayable) {
     return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: session.providerLiveReason || "cloudflare_viewer_not_ready_yet" };
-  }
-  if (hasWhep && (!hasHls || liveAgeMs < LIVE_HLS_PRIMARY_AFTER_MS)) {
-    return {
-      primaryPlayback: "whep",
-      fallbackPlayback: "none",
-      selectedPlaybackTransport: "whep",
-      selectedPlaybackUrl: whepUrl,
-      liveAgeMs,
-      hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
-      reason: hasHls ? "fresh_live_whep_until_hls_edge_ready" : "whep_only",
-    };
   }
   if (hasHls) {
     return {
@@ -171,24 +173,17 @@ function livePlaybackPolicy(session, now = Date.now()) {
       selectedPlaybackUrl: hlsUrl,
       liveAgeMs,
       hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
-      reason: hasWhep ? "stable_live_hls_cloudflare_selected" : "hls_only",
+      reason: "standard_recorded_hls",
     };
   }
   return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "no_playback_url" };
 }
 
 export function isFreshActiveSession(session, now = Date.now()) {
-  if (session.endedAt || ["ENDED", "REPLAY_READY", "CANCELLED", "FAILED", "MISSED", "EXPIRED"].includes(session.status)) return false;
-  if (session.status === "STARTING") {
-    const startedMs = timestampMillis(session.startedAt || session.createdAt || session.updatedAt);
-    const hasFreshStartup = startedMs > 0 && now - startedMs <= STARTING_WINDOW_MS;
-    return hasFreshStartup && Boolean(session.providerLive);
-  }
-  if (["ACTIVE", "LIVE"].includes(session.status)) {
-    const heartbeatMs = timestampMillis(session.lastHeartbeatAt || session.lastProviderActivityAt || session.wentLiveAt || session.updatedAt);
-    return Boolean(session.providerLive) && heartbeatMs > 0 && now - heartbeatMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
-  }
-  return false;
+  const state = canonicalStateOf(session);
+  if (!["INGEST_CONNECTED", "VIEWER_PREPARING", "LIVE"].includes(state)) return false;
+  const providerMs = timestampMillis(session.lastProviderLiveAt || session.lastProviderActivityAt || session.lastProviderObservedAt);
+  return Boolean(session.providerLive) && providerMs > 0 && now - providerMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
 }
 
 function isUpcomingSession(session, now = Date.now()) {
@@ -214,6 +209,31 @@ function isRecentOpenHostSession(session, now = Date.now()) {
 
 function liveCollection(db) {
   return db.collection("live_sessions");
+}
+
+async function createSessionWithHostLease(db, sessionRef, hostUid, startRequestId, payload) {
+  const leaseRef = db.collection("live_host_leases").doc(hostUid);
+  const now = admin.firestore.Timestamp.now();
+  const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + STARTING_WINDOW_MS);
+  return db.runTransaction(async (transaction) => {
+    const leaseSnap = await transaction.get(leaseRef);
+    const lease = leaseSnap.data() || {};
+    if (leaseSnap.exists && timestampMillis(lease.expiresAt) > now.toMillis()) {
+      throw Object.assign(new Error("You already have a Live session starting or active."), {
+        status: 409,
+        code: lease.startRequestId === startRequestId ? "START_ALREADY_IN_PROGRESS" : "DUPLICATE_START",
+      });
+    }
+    transaction.create(sessionRef, payload);
+    transaction.set(leaseRef, {
+      hostUid,
+      sessionId: sessionRef.id,
+      startRequestId,
+      status: "CLAIMED",
+      expiresAt,
+      updatedAt: now,
+    });
+  });
 }
 
 function liveChatCollection(db, sessionId) {
@@ -312,13 +332,13 @@ export async function listLiveSessions(req, res) {
   try {
     const db = admin.firestore();
     const tab = String(req.query.tab || "Live Now").toLowerCase();
-    const statuses = tab.includes("upcoming")
-      ? ["SCHEDULED"]
+    const directoryTabs = tab.includes("upcoming")
+      ? ["Upcoming"]
       : tab.includes("replay")
-        ? ["ENDED", "REPLAY_READY"]
+        ? ["Replays"]
         : tab.includes("following")
-          ? ["ACTIVE", "LIVE", "STARTING", "SCHEDULED"]
-          : ["ACTIVE", "LIVE", "STARTING"];
+          ? ["Live Now", "Upcoming"]
+          : ["Live Now"];
     let followedCreatorIds = null;
     if (tab.includes("following")) {
       const viewerUid = await optionalAuthUid(req);
@@ -333,31 +353,43 @@ export async function listLiveSessions(req, res) {
       followedCreatorIds = new Set(followSnap.docs.map((doc) => doc.data()?.creatorId).filter(Boolean));
       if (!followedCreatorIds.size) return res.json({ sessions: [], provider: streamLiveProviderStatus() });
     }
-    const snap = await measureFirestore({
+    const snapshots = await Promise.all(directoryTabs.map((directoryTab) => measureFirestore({
       domain: "live",
       operation: `list-live-sessions-${tab}`,
-      collection: "live_sessions",
+      collection: "public_live_sessions",
       operationType: "query",
       requestId: req.requestId,
-    }, () => liveCollection(db).where("status", "in", statuses).limit(50).get());
+    }, () => db.collection("public_live_sessions")
+      .where("directoryTab", "==", directoryTab)
+      .where("visible", "==", true)
+      .orderBy("rankingKey", "desc")
+      .limit(50)
+      .get())));
     const sessions = [];
     const now = Date.now();
-    for (const doc of snap.docs) {
-      const session = { id: doc.id, ...doc.data() };
+    for (const doc of snapshots.flatMap((snapshot) => snapshot.docs)) {
+      const projection = { id: doc.id, ...doc.data() };
+      const sessionStatus = projection.publicStatus === "LIVE" ? "LIVE"
+        : projection.publicStatus === "PREPARING" ? "VIEWER_PREPARING"
+          : projection.publicStatus === "REPLAY_READY" ? "REPLAY_READY"
+            : projection.publicStatus === "SCHEDULED" ? "SCHEDULED" : "CREATING";
+      const session = {
+        ...projection,
+        id: doc.id,
+        liveSessionId: projection.sessionId || doc.id,
+        sessionStatus,
+        status: projection.publicStatus === "LIVE" ? "ACTIVE" : projection.publicStatus === "PREPARING" ? "STARTING" : projection.publicStatus,
+        playbackHlsUrl: projection.livePlayback?.manifestUrl || projection.replayPlayback?.manifestUrl || projection.playbackHlsUrl || "",
+        playbackDashUrl: projection.livePlayback?.dashManifestUrl || projection.replayPlayback?.dashManifestUrl || projection.playbackDashUrl || "",
+      };
       if (followedCreatorIds && !followedCreatorIds.has(session.hostUid)) continue;
-      if (tab.includes("following")) {
-        if (isFreshActiveSession(session, now) || isUpcomingSession(session, now)) sessions.push(session);
-      } else if (tab.includes("upcoming")) {
-        if (isUpcomingSession(session, now)) sessions.push(session);
-      } else if (tab.includes("replay")) {
-        if (hasReplayPlayback(session)) sessions.push(session);
-      } else if (isFreshActiveSession(session, now)) {
-        sessions.push(session);
-      }
+      const expiresMs = timestampMillis(session.visibilityExpiresAt);
+      if (session.directoryTab === "Live Now" && (!expiresMs || expiresMs <= now)) continue;
+      sessions.push(session);
     }
     sessions.sort((a, b) => {
       if (tab.includes("upcoming")) return timestampMillis(a.scheduledAt) - timestampMillis(b.scheduledAt);
-      return timestampMillis(b.lastHeartbeatAt || b.wentLiveAt || b.updatedAt) - timestampMillis(a.lastHeartbeatAt || a.wentLiveAt || a.updatedAt);
+      return Number(b.rankingKey || 0) - Number(a.rankingKey || 0);
     });
     return res.json({ sessions: sessions.map(serializeLiveSession), provider: streamLiveProviderStatus() });
   } catch (error) {
@@ -394,6 +426,10 @@ export async function startLiveSession(req, res) {
     } = req.body || {};
     const startRequestId = String(req.get("Idempotency-Key") || bodyStartRequestId || "").trim().slice(0, 128);
     if (!purpose || !title) return res.status(400).json({ error: "Live purpose and title are required." });
+    if (!startRequestId) return res.status(400).json({ error: "A Live start idempotency key is required.", code: "IDEMPOTENCY_KEY_REQUIRED" });
+    if (String(publisherTransport || "").toLowerCase() === "whip") {
+      return res.status(409).json({ error: "Browser WHIP broadcasting is disabled for Release 1.", code: "MEDIA_PROFILE_NOT_ENABLED" });
+    }
 
     const provider = streamLiveProviderStatus();
     if (!provider.configured) {
@@ -437,7 +473,7 @@ export async function startLiveSession(req, res) {
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => sessionRef.set({
+    }, () => createSessionWithHostLease(db, sessionRef, hostUid, startRequestId, {
       liveSessionId: sessionId,
       hostUid,
       hostUsername: profile.username,
@@ -449,10 +485,17 @@ export async function startLiveSession(req, res) {
       description,
       audience,
       status: "STARTING",
-      sessionStatus: "STARTING",
+      sessionStatus: "CREATING",
       ingestStatus: "WAITING_FOR_INGEST",
       mediaStatus: "WAITING_FOR_INGEST",
       replayStatus: "NONE",
+      mediaProfile: LIVE_MEDIA_PROFILE,
+      recordingMode: LIVE_RECORDING_MODE,
+      ingestTransport: "RTMPS",
+      playbackTransport: "hls",
+      mediaGeneration: 1,
+      stateRevision: 1,
+      providerEventRevision: 0,
       startRequestId,
       viewerCount: 0,
       peakViewerCount: 0,
@@ -461,19 +504,18 @@ export async function startLiveSession(req, res) {
       updatedAt: nowField(),
     }));
 
-    const liveInput = await createStreamLiveInput({ title, sessionId });
+    await refreshLiveProjection(sessionRef);
+    const liveInput = await createStreamLiveInput({ title, sessionId, mediaGeneration: 1, recordingMode: "automatic" });
     createdLiveInputId = liveInput.liveInputId || "";
-    const normalizedPublisherTransport = String(publisherTransport || "").toLowerCase() === "whip" ? "whip" : "rtmps";
-    const playbackTransport = normalizedPublisherTransport === "whip" ? "whep" : "hls";
+    const normalizedPublisherTransport = String(publisherTransport || "").toLowerCase() === "srt" ? "srt" : "rtmps";
+    const playbackTransport = "hls";
     await measureFirestore({
       domain: "live",
       operation: "start-live-session-ingest-set",
       collection: "live_sessions",
       operationType: "set",
       requestId: req.requestId,
-    }, () => sessionRef.set({
-      status: "STARTING",
-      sessionStatus: "STARTING",
+    }, () => transitionLiveSession(sessionRef, "WAITING_FOR_INGEST", {
       ingestStatus: "WAITING_FOR_INGEST",
       publisherTransport: normalizedPublisherTransport,
       playbackTransport,
@@ -501,9 +543,8 @@ export async function startLiveSession(req, res) {
       providerLiveReason: "waiting_for_cloudflare_ingest",
       provider: provider.provider,
       providerConfigured: true,
-      startedAt: nowField(),
-      updatedAt: nowField(),
-    }, { merge: true }));
+      startedAt: admin.firestore.Timestamp.now(),
+    }, { expectedRevision: 1 }));
 
     const snap = await sessionRef.get();
     return res.status(201).json({
@@ -513,16 +554,13 @@ export async function startLiveSession(req, res) {
     });
   } catch (error) {
     if (sessionRef) {
-      await sessionRef.set({
-        status: "FAILED",
-        sessionStatus: "FAILED",
+      await transitionLiveSession(sessionRef, "FAILED", {
         ingestStatus: "FAILED_TO_CONNECT",
         mediaStatus: "FAILED",
         providerCleanupRequired: Boolean(createdLiveInputId),
         ...(createdLiveInputId ? { liveInputId: createdLiveInputId } : {}),
-        failedAt: nowField(),
-        updatedAt: nowField(),
-      }, { merge: true }).catch(() => undefined);
+        failedAt: admin.firestore.Timestamp.now(),
+      }).catch(() => undefined);
     }
     return res.status(error.status || 500).json({ error: error.message || "Could not start Paragon Live" });
   }
@@ -535,9 +573,9 @@ function liveIngestResponse(session) {
     rtmpsStreamKey: session.rtmpsStreamKey || "",
     srtUrl: session.srtUrl || "",
     srtStreamId: session.srtStreamId || "",
-    webRtcPublishUrl: session.webRtcPublishUrl || "",
-    webRtcUrl: session.webRtcUrl || "",
-    whepPlaybackUrl: session.whepPlaybackUrl || "",
+    webRtcPublishUrl: "",
+    webRtcUrl: "",
+    whepPlaybackUrl: "",
     hlsPlaybackUrl: session.hlsPlaybackUrl || session.playbackHlsUrl || "",
   };
 }
@@ -558,6 +596,9 @@ export async function markLiveSessionActive(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can update this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not starting." });
+    const reconciled = await reconcileLiveSession(ref.id, { reason: "host-active-check" });
+    return res.json({ session: serializeLiveSession(reconciled.session || session) });
+    /* legacy provider mutation path retained temporarily below for migration reference */
     const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
     if (!providerState.providerLive) {
       await ref.set({
@@ -625,6 +666,10 @@ export async function heartbeatLiveSession(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can heartbeat this Live." });
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not active." });
+    await ref.set({ lastHostHeartbeatAt: nowField(), lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true });
+    const reconciled = await reconcileLiveSession(ref.id, { reason: "host-heartbeat" });
+    return res.json({ session: serializeLiveSession(reconciled.session || session) });
+    /* legacy provider mutation path retained temporarily below for migration reference */
     const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
     const nextStatus = providerState.providerLive ? "ACTIVE" : "STARTING";
     const playbackPatch = providerState.playback ? {
@@ -690,12 +735,18 @@ export async function scheduleLiveSession(req, res) {
       ingestStatus: "NOT_CREATED",
       mediaStatus: "NOT_AVAILABLE",
       replayStatus: "NONE",
+      mediaProfile: LIVE_MEDIA_PROFILE,
+      recordingMode: LIVE_RECORDING_MODE,
+      mediaGeneration: 1,
+      stateRevision: 1,
+      providerEventRevision: 0,
       scheduledAt: new Date(scheduledMs).toISOString(),
       viewerCount: 0,
       peakViewerCount: 0,
       createdAt: nowField(),
       updatedAt: nowField(),
     }));
+    await refreshLiveProjection(sessionRef);
     const snap = await sessionRef.get();
     return res.status(201).json({ session: serializeLiveSession({ id: snap.id, ...snap.data() }) });
   } catch (error) {
@@ -718,6 +769,9 @@ export async function endLiveSession(req, res) {
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can end this Live." });
+    const ended = await requestLiveEnd(ref.id);
+    return res.json({ session: serializeLiveSession(ended.session || session) });
+    /* legacy replay association path retained temporarily below for migration reference */
     const replay = session.liveInputId
       ? await getStreamLiveInputPlayback(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.playbackHlsUrl))).catch(() => null)
       : null;
@@ -836,6 +890,12 @@ export async function postLiveChatMessage(req, res) {
 }
 
 export async function supportLiveSession(req, res) {
+  if (String(process.env.LIVE_WALLET_ACTIONS_ENABLED || "").toLowerCase() === "false") {
+    return res.status(503).json({
+      code: "LIVE_BILLING_DISABLED",
+      error: "Live wallet actions are disabled in this environment.",
+    });
+  }
   const userId = req.user?.uid;
   const sessionId = String(req.params.sessionId || "").trim();
   const actionKey = String(req.body?.actionKey || "").trim().toLowerCase();

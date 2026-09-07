@@ -12,6 +12,7 @@ val uploadKeyPassword = providers.environmentVariable("TWA_KEY_PASSWORD").orNull
         ?.lastOrNull()
         ?.trim()
         .orEmpty()
+val m1TestLoginSecret = providers.environmentVariable("M1_TEST_LOGIN_SECRET").orNull.orEmpty()
 
 android {
     namespace = "com.app.natureswayproduction"
@@ -42,10 +43,14 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "BACKEND_URL", "\"https://backend-live-staging-849823064688.us-central1.run.app\"")
+            buildConfigField("String", "BACKEND_URL", "\"https://backend-live-staging-172974692065.us-central1.run.app\"")
+            buildConfigField("boolean", "M1_TEST_LOGIN_ENABLED", "true")
+            buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"$m1TestLoginSecret\"")
         }
         release {
             buildConfigField("String", "BACKEND_URL", "\"https://backend-849823064688.us-central1.run.app\"")
+            buildConfigField("boolean", "M1_TEST_LOGIN_ENABLED", "false")
+            buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"\"")
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
@@ -77,6 +82,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.01.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 
     val firebaseBom = platform("com.google.firebase:firebase-bom:34.0.0")
     implementation(firebaseBom)

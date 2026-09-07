@@ -16,6 +16,16 @@ import java.util.UUID
 class ParagonApiService {
     private val perfRunId = "android_" + SystemClock.elapsedRealtime().toString(36)
 
+    suspend fun fetchM1StagingCustomToken(accessSecret: String): String = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/internal/staging/m1-test-login",
+            method = "POST",
+            extraHeaders = mapOf("X-M1-Test-Login-Secret" to accessSecret),
+            jsonBody = JSONObject().toString(),
+        )
+        JSONObject(response).getString("customToken")
+    }
+
     private val bottleActionKeys = listOf(
         "mineral",
         "malt",
@@ -887,13 +897,15 @@ class ParagonApiService {
         appCheckToken: String? = null,
         retryWithoutAppCheckOnFailure: Boolean = false,
         jsonBody: String? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): String {
         val firstAttempt = executeRequest(
             path = path,
             method = method,
             authorization = authorization,
             appCheckToken = appCheckToken,
-            jsonBody = jsonBody
+            jsonBody = jsonBody,
+            extraHeaders = extraHeaders,
         )
 
         if (!retryWithoutAppCheckOnFailure || appCheckToken.isNullOrBlank()) {
@@ -906,7 +918,8 @@ class ParagonApiService {
                 method = method,
                 authorization = authorization,
                 appCheckToken = null,
-                jsonBody = jsonBody
+                jsonBody = jsonBody,
+                extraHeaders = extraHeaders,
             ).requireSuccess()
         }
 
@@ -919,6 +932,7 @@ class ParagonApiService {
         authorization: String? = null,
         appCheckToken: String? = null,
         jsonBody: String? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): ApiResponse {
         val startedAt = SystemClock.elapsedRealtime()
         val requestId = "${perfRunId}_${UUID.randomUUID().toString().take(8)}"
@@ -930,6 +944,7 @@ class ParagonApiService {
             setRequestProperty("X-Request-Id", requestId)
             authorization?.let { setRequestProperty("Authorization", it) }
             appCheckToken?.let { setRequestProperty("X-Firebase-AppCheck", it) }
+            extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
             if (jsonBody != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
@@ -1079,6 +1094,10 @@ private fun JSONObject.toLiveSession(): LiveSession {
         lifecycleStatus = optString("lifecycleStatus").ifBlank { null },
         lifecycleLive = optBoolean("lifecycleLive", false),
         activeVideoUid = optString("activeVideoUid").ifBlank { null },
+        replayVideoUid = optString("replayVideoUid").ifBlank { null },
+        mediaProfile = optString("mediaProfile").ifBlank { null },
+        mediaGeneration = optLong("mediaGeneration", 1L),
+        stateRevision = optLong("stateRevision", 0L),
         mediaStatus = optString("mediaStatus").ifBlank { null },
         providerLiveReason = optString("providerLiveReason").ifBlank { null },
         scheduledAt = optString("scheduledAt").ifBlank { null },

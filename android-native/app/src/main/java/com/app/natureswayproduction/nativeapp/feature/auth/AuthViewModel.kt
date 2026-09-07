@@ -171,6 +171,32 @@ class AuthViewModel(
         }
     }
 
+    fun signInForM1Staging() {
+        if (!BuildConfig.M1_TEST_LOGIN_ENABLED) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            runCatching { sessionRepository.signInForM1Staging() }
+                .onSuccess { session ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isSignedIn = true,
+                        currentEmail = session.email,
+                        role = session.role,
+                        uid = session.uid,
+                        note = session.note,
+                        passwordInput = "",
+                        lastCompletedAction = AuthCompletedAction.Login,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = error.message ?: "M1 staging test login failed",
+                    )
+                }
+        }
+    }
+
     fun continueWithGoogle(activity: Activity) {
         val expectedAction = if (_uiState.value.mode == AuthMode.Signup) {
             AuthCompletedAction.Signup

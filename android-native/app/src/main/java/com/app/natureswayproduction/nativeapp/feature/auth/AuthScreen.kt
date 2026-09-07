@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.app.natureswayproduction.BuildConfig
 import com.app.natureswayproduction.R
 import com.app.natureswayproduction.nativeapp.ui.theme.ParagonGold
 
@@ -234,6 +235,14 @@ fun AuthScreen(
                             }
                         }
                     )
+
+                    if (BuildConfig.M1_TEST_LOGIN_ENABLED) {
+                        PrimaryAuthButton(
+                            label = "M1 Test Login",
+                            enabled = !state.isLoading,
+                            onClick = authViewModel::signInForM1Staging,
+                        )
+                    }
                 }
 
                 if (state.isLoading) {

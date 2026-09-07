@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Log
+import com.app.natureswayproduction.BuildConfig
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.browser.customtabs.CustomTabsService
 import androidx.credentials.CredentialManager
@@ -20,6 +21,7 @@ import com.facebook.FacebookException
 import com.facebook.login.LoginManager
 import com.facebook.login.LoginResult
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FacebookAuthProvider
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.OAuthProvider
@@ -150,6 +152,21 @@ class SessionRepository(
         return loadSessionSummary().copy(
             note = "Facebook account linked successfully. You can now sign in with Google or Facebook."
         )
+    }
+
+    suspend fun signInForM1Staging(): SessionSummary {
+        check(BuildConfig.M1_TEST_LOGIN_ENABLED && BuildConfig.M1_TEST_LOGIN_SECRET.isNotBlank()) {
+            "M1 staging test login is not available in this build."
+        }
+        check(FirebaseApp.getInstance().options.projectId == "paragonplanet-live-stg") {
+            "M1 test login refused outside the isolated staging Firebase project."
+        }
+        val customToken = apiService.fetchM1StagingCustomToken(BuildConfig.M1_TEST_LOGIN_SECRET)
+        firebaseAuth.signInWithCustomToken(customToken).await()
+        check(firebaseAuth.currentUser?.getIdToken(false)?.await()?.token?.isNotBlank() == true) {
+            "Staging Firebase did not issue an ID token."
+        }
+        return loadSessionSummary().copy(note = "Authenticated with the isolated M1 staging test account.")
     }
 
     suspend fun completePendingProviderSignIn(): SessionSummary? {

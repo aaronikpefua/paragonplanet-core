@@ -1,4 +1,5 @@
 import { measureAsync } from "../observability/perf.js";
+import { normalizedCloudflareStatus } from "./liveLifecycle.js";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
@@ -17,8 +18,9 @@ export function streamLiveProviderStatus() {
   return {
     provider: "cloudflare-stream-live",
     configured: missing.length === 0,
-    browserPublishingConfigured: missing.length === 0,
-    browserPublishingTransport: "webrtc-whip",
+    browserPublishingConfigured: false,
+    browserPublishingTransport: "disabled-release-1",
+    mediaProfile: "STANDARD_RECORDED",
     recordingDefault: process.env.CLOUDFLARE_STREAM_RECORDING_MODE || "automatic",
     missing,
   };
@@ -57,13 +59,15 @@ async function cloudflareRequest(path, options = {}) {
   return payload.result || payload;
 }
 
-export async function createStreamLiveInput({ title, sessionId, recordingMode }) {
+export async function createStreamLiveInput({ title, sessionId, mediaGeneration = 1, recordingMode }) {
   const result = await cloudflareRequest("/stream/live_inputs", {
     method: "POST",
     body: JSON.stringify({
       meta: {
         name: title || "Paragon Live",
         paragonLiveSessionId: sessionId,
+        paragonEnvironment: process.env.PARAGON_ENVIRONMENT || "development",
+        paragonMediaGeneration: String(mediaGeneration),
       },
       recording: {
         mode: recordingMode || process.env.CLOUDFLARE_STREAM_RECORDING_MODE || "automatic",
@@ -230,6 +234,46 @@ export async function getStreamLiveInputPlayback(liveInputId, playbackOrigin = "
   };
 }
 
+export async function getStreamLiveInputRecording(liveInputId, { sessionId = "", mediaGeneration = 1, startedAt = 0 } = {}) {
+  if (!liveInputId) return null;
+  const videos = await cloudflareRequest(`/stream/live_inputs/${encodeURIComponent(liveInputId)}/videos`, { method: "GET" });
+  return selectStreamRecording(Array.isArray(videos) ? videos : [], { liveInputId, sessionId, mediaGeneration, startedAt });
+}
+
+export function selectStreamRecording(list, { liveInputId, sessionId = "", mediaGeneration = 1, startedAt = 0 } = {}) {
+  const expectedGeneration = String(mediaGeneration);
+  const startedMs = typeof startedAt === "number" ? startedAt : Date.parse(startedAt || "") || 0;
+  const candidates = list.filter((video) => {
+    const state = String(video.status?.state || video.state || "").toLowerCase();
+    if (state !== "ready") return false;
+    const metadata = video.meta || {};
+    const exactSession = String(metadata.paragonLiveSessionId || "") === String(sessionId || "");
+    const exactGeneration = String(metadata.paragonMediaGeneration || "") === expectedGeneration;
+    const hasParagonIdentity = Boolean(metadata.paragonLiveSessionId || metadata.paragonMediaGeneration);
+    const createdMs = Date.parse(video.created || video.modified || "") || 0;
+    return hasParagonIdentity
+      ? exactSession && exactGeneration
+      : startedMs > 0 && createdMs >= startedMs - 60_000;
+  }).sort((a, b) => (Date.parse(b.created || b.modified || "") || 0) - (Date.parse(a.created || a.modified || "") || 0));
+  const selected = candidates[0];
+  const videoUid = selected?.uid || selected?.id || "";
+  if (!selected || !videoUid || videoUid === liveInputId) return null;
+  return {
+    playbackId: videoUid,
+    videoUid,
+    playbackHlsUrl: selected.playback?.hls || `https://videodelivery.net/${videoUid}/manifest/video.m3u8`,
+    playbackDashUrl: selected.playback?.dash || `https://videodelivery.net/${videoUid}/manifest/video.mpd`,
+  };
+}
+
+export async function setStreamLiveInputEnabled(liveInputId, enabled) {
+  if (!liveInputId) return null;
+  return cloudflareRequest(`/stream/live_inputs/${encodeURIComponent(liveInputId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled: Boolean(enabled) }),
+  });
+}
+
 export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") {
   if (!liveInputId) {
     return {
@@ -264,7 +308,7 @@ export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") 
   }
 
   const origin = firstText(playbackOrigin, streamPlaybackOrigin(liveInput));
-  const providerStatus = String(liveInput?.status || "").trim().toLowerCase();
+  const providerStatus = normalizedCloudflareStatus(liveInput?.status);
   const providerState = mapLiveInputProviderState(providerStatus);
   const providerLive = providerState === "INGEST_CONNECTED";
   const lifecycle = await getLiveInputLifecycle(liveInputId, origin);
@@ -328,6 +372,8 @@ function logProviderDiagnostic(event, details) {
 
 export function mapLiveInputProviderState(status) {
   switch (String(status || "").trim().toLowerCase()) {
+    case "":
+      return "WAITING_FOR_INGEST";
     case "connected":
     case "reconnected":
       return "INGEST_CONNECTED";
@@ -343,7 +389,9 @@ export function mapLiveInputProviderState(status) {
       return "FAILED_TO_RECONNECT";
     case "ttl_exceeded":
       return "EXPIRED";
+    case "unknown":
+      return "UNKNOWN";
     default:
-      return "WAITING_FOR_INGEST";
+      return "UNKNOWN";
   }
 }

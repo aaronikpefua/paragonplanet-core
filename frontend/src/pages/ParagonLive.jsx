@@ -34,7 +34,7 @@ const LIVE_BOTTLE_CHOICES = [
 ];
 
 const LIVE_SESSION_POLL_MS = {
-  "Live Now": 6000,
+  "Live Now": 2000,
   Upcoming: 30000,
   Following: 30000,
   Replays: 15000,
@@ -114,7 +114,7 @@ export default function ParagonLive() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser || selectedSession || previewing) return undefined;
+    if (selectedSession || previewing) return undefined;
     loadLiveSessions(tab);
     const interval = window.setInterval(() => {
       loadLiveSessions(tab, { silent: true });
@@ -124,15 +124,16 @@ export default function ParagonLive() {
 
   useEffect(() => {
     const sessionId = selectedSession?.id || selectedSession?.liveSessionId || "";
-    if (!currentUser || !sessionId || selectedSession?.viewerPlayable || ["ENDED", "REPLAY_READY", "FAILED", "EXPIRED"].includes(String(selectedSession?.status || "").toUpperCase())) {
+    const canonicalStatus = String(selectedSession?.sessionStatus || selectedSession?.status || "").toUpperCase();
+    if (!sessionId || ["REPLAY_READY", "FAILED", "EXPIRED", "CANCELLED"].includes(canonicalStatus)) {
       return undefined;
     }
     let cancelled = false;
     const refreshSelectedSession = async () => {
       try {
-        const token = await currentUser.getIdToken();
+        const token = currentUser ? await currentUser.getIdToken() : "";
         const response = await appCheckFetchWithTimeout(`${API_URL}/api/live/sessions/${encodeURIComponent(sessionId)}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || "Could not refresh Live session.");
@@ -144,12 +145,12 @@ export default function ParagonLive() {
       }
     };
     refreshSelectedSession();
-    const interval = window.setInterval(refreshSelectedSession, 3000);
+    const interval = window.setInterval(refreshSelectedSession, selectedSession?.viewerPlayable ? 3000 : 1500);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [currentUser, selectedSession?.id, selectedSession?.liveSessionId, selectedSession?.viewerPlayable, selectedSession?.status]);
+  }, [currentUser, selectedSession?.id, selectedSession?.liveSessionId, selectedSession?.viewerPlayable, selectedSession?.status, selectedSession?.sessionStatus]);
 
   useEffect(() => {
     if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current;
@@ -178,16 +179,12 @@ export default function ParagonLive() {
   }
 
   async function loadLiveSessions(nextTab = tab, { silent = false } = {}) {
-    if (!currentUser) {
-      setSessions([]);
-      return;
-    }
     if (sessionsLoadRef.current) return sessionsLoadRef.current;
     if (!silent) setSessionsLoading(true);
     const request = (async () => {
-      const token = await currentUser.getIdToken();
+      const token = currentUser ? await currentUser.getIdToken() : "";
       const response = await appCheckFetchWithTimeout(`${API_URL}/api/live/sessions?tab=${encodeURIComponent(nextTab)}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not load Live sessions.");
@@ -647,6 +644,7 @@ function LiveViewer({ session, onClose }) {
   const useWhep = selectedPlaybackTransport === "whep" && Boolean(selectedPlaybackUrl);
   const useHls = selectedPlaybackTransport === "hls" && Boolean(selectedPlaybackUrl);
   const playerRef = useRef(null);
+  const hlsRef = useRef(null);
   const whepPeerRef = useRef(null);
   const whepResourceRef = useRef("");
   const startupTimerRef = useRef(null);
@@ -763,6 +761,7 @@ function LiveViewer({ session, onClose }) {
         manifestLoadingTimeOut: 8000,
         fragLoadingTimeOut: 12000,
       });
+      hlsRef.current = hls;
       hls.loadSource(selectedPlaybackUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -795,6 +794,7 @@ function LiveViewer({ session, onClose }) {
         window.clearTimeout(startupTimerRef.current);
         window.clearTimeout(firstFrameTimerRef.current);
         hls.destroy();
+        if (hlsRef.current === hls) hlsRef.current = null;
       };
     }
     return undefined;
@@ -826,7 +826,11 @@ function LiveViewer({ session, onClose }) {
           window.clearTimeout(startupTimerRef.current);
           window.clearTimeout(firstFrameTimerRef.current);
           setPlayerMessage("");
-          logLiveTiming(timingRef.current, "T6_first_frame_playing");
+          logLiveTiming(timingRef.current, "T6_first_frame_playing", {
+            estimatedLiveLatencySeconds: Number.isFinite(hlsRef.current?.latency)
+              ? Number(hlsRef.current.latency.toFixed(2))
+              : null,
+          });
         }}
         onWaiting={() => {
           window.clearTimeout(startupTimerRef.current);
@@ -1327,7 +1331,7 @@ function createLiveTiming(scope, id) {
 
 function liveDebugEnabled() {
   try {
-    return Boolean(import.meta.env.DEV || window.localStorage?.getItem("paragonLiveDebug") === "1");
+    return Boolean(import.meta.env.DEV || import.meta.env.MODE === "staging" || window.localStorage?.getItem("paragonLiveDebug") === "1");
   } catch {
     return Boolean(import.meta.env.DEV);
   }
@@ -1339,13 +1343,13 @@ function logLiveTiming(timing, event, extra = {}) {
   if (timing.marks?.has(dedupeKey)) return;
   timing.marks?.add(dedupeKey);
   const elapsedMs = Math.round(performance.now() - timing.startedAt);
-  console.info("[ParagonLiveTiming]", {
+  console.info("[ParagonLiveTiming]", JSON.stringify({
     scope: timing.scope,
     id: timing.id,
     event,
     elapsedMs,
     ...extra,
-  });
+  }));
 }
 
 function friendlySupportError(message = "") {

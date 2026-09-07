@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "172974692065",
+    "project_id": "paragonplanet-live-stg",
+    "storage_bucket": "paragonplanet-live-stg.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:172974692065:android:f66038d68d498ce9bd49a0",
+        "android_client_info": {
+          "package_name": "com.app.natureswayproduction"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANAfB1Iq8ldYsPXcMiBfMO0SlxDE7YcPw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
