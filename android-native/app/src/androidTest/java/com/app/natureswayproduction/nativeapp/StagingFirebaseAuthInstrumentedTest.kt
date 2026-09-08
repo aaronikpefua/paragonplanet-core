@@ -19,14 +19,16 @@ class StagingFirebaseAuthInstrumentedTest {
     fun m1ButtonCustomTokenPathAuthenticatesAgainstIsolatedStaging() = runBlocking {
         val firebase = FirebaseApp.getInstance().options
         assertTrue(BuildConfig.M1_TEST_LOGIN_ENABLED)
-        assertTrue(BuildConfig.M1_TEST_LOGIN_SECRET.isNotBlank())
+        assertTrue(BuildConfig.M1_TEST_LOGIN_SECRET.isBlank())
         assertEquals("paragonplanet-live-stg", firebase.projectId)
         assertEquals(
             "https://backend-live-staging-172974692065.us-central1.run.app",
             BuildConfig.BACKEND_URL,
         )
 
-        val customToken = ParagonApiService().fetchM1StagingCustomToken(BuildConfig.M1_TEST_LOGIN_SECRET)
+        val appCheck = com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository().getToken(forceRefresh = true)
+        assertTrue(!appCheck.isNullOrBlank())
+        val customToken = ParagonApiService().fetchM1StagingCustomToken(requireNotNull(appCheck))
         val result = FirebaseAuth.getInstance().signInWithCustomToken(customToken).await()
 
         assertEquals("m1.android.device@paragonplanet.test", result.user?.email)

@@ -12,7 +12,6 @@ val uploadKeyPassword = providers.environmentVariable("TWA_KEY_PASSWORD").orNull
         ?.lastOrNull()
         ?.trim()
         .orEmpty()
-val m1TestLoginSecret = providers.environmentVariable("M1_TEST_LOGIN_SECRET").orNull.orEmpty()
 
 android {
     namespace = "com.app.natureswayproduction"
@@ -45,12 +44,22 @@ android {
         debug {
             buildConfigField("String", "BACKEND_URL", "\"https://backend-live-staging-172974692065.us-central1.run.app\"")
             buildConfigField("boolean", "M1_TEST_LOGIN_ENABLED", "true")
-            buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"$m1TestLoginSecret\"")
+            buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"\"")
+            buildConfigField("boolean", "DEBUG_APP_CHECK_ENABLED", "true")
+        }
+        create("productionDebug") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("release")
+            buildConfigField("String", "BACKEND_URL", "\"https://backend-849823064688.us-central1.run.app\"")
+            buildConfigField("boolean", "M1_TEST_LOGIN_ENABLED", "false")
+            buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"\"")
+            buildConfigField("boolean", "DEBUG_APP_CHECK_ENABLED", "false")
         }
         release {
             buildConfigField("String", "BACKEND_URL", "\"https://backend-849823064688.us-central1.run.app\"")
             buildConfigField("boolean", "M1_TEST_LOGIN_ENABLED", "false")
             buildConfigField("String", "M1_TEST_LOGIN_SECRET", "\"\"")
+            buildConfigField("boolean", "DEBUG_APP_CHECK_ENABLED", "false")
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
@@ -103,6 +112,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")

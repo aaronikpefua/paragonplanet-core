@@ -68,6 +68,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.api.LiveChatMessage
+import com.app.natureswayproduction.nativeapp.data.api.LiveRoomSocket
 import com.app.natureswayproduction.nativeapp.data.api.LiveSession
 import com.app.natureswayproduction.nativeapp.data.api.StartLiveResult
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
@@ -121,6 +122,7 @@ private const val LIVE_NOW_REFRESH_MS = 7_000L
 private const val LIVE_REPLAY_REFRESH_MS = 15_000L
 private const val LIVE_SLOW_REFRESH_MS = 30_000L
 private const val LIVE_CHAT_REFRESH_MS = 4_000L
+private const val LIVE_CHAT_FALLBACK_REFRESH_MS = 30_000L
 
 private val livePurposesByRole = mapOf(
     "CITIZEN" to listOf("Campaign for Votes", "Live Performance", "Audience Q&A", "Why I Should Qualify", "Qualification Update", "Live Together"),
@@ -1037,14 +1039,24 @@ private fun LiveRoomViewer(
                 val user = firebaseAuth.currentUser ?: error("Login first.")
                 val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
                 val appCheck = appCheckRepository.getToken(forceRefresh = false)
-                apiService.sendParagonLiveSupport(
-                    idToken = token,
-                    appCheckToken = appCheck,
-                    sessionId = session.id,
-                    actionKey = actionKey,
-                    customParagAmount = customParagAmount,
-                    customGbaziloAmount = customGbaziloAmount,
-                )
+                if (BuildConfig.BACKEND_URL.contains("live-staging")) {
+                    val reaction = when (actionKey) {
+                        "vote" -> "vote"
+                        "pour_me_water" -> "pour"
+                        "spray_money" -> "spray"
+                        else -> "pop"
+                    }
+                    apiService.sendParagonLiveReaction(token, appCheck, session.id, reaction)
+                } else {
+                    apiService.sendParagonLiveSupport(
+                        idToken = token,
+                        appCheckToken = appCheck,
+                        sessionId = session.id,
+                        actionKey = actionKey,
+                        customParagAmount = customParagAmount,
+                        customGbaziloAmount = customGbaziloAmount,
+                    )
+                }
             }.onSuccess {
                 supportNotice = "$label sent"
                 supportMode = null
@@ -1376,6 +1388,55 @@ private fun LiveChatOverlay(
     var chatText by remember(sessionId) { mutableStateOf("") }
     var messages by remember(sessionId) { mutableStateOf<List<LiveChatMessage>>(emptyList()) }
     var notice by remember(sessionId) { mutableStateOf("") }
+    var realtimeConnected by remember(sessionId) { mutableStateOf(false) }
+
+    val roomSocket = remember(sessionId) {
+        LiveRoomSocket(
+            tokenProvider = {
+                val user = firebaseAuth.currentUser ?: error("Login first.")
+                val token = user.getIdToken(false).await().token ?: error("Could not get auth token.")
+                apiService.fetchParagonLiveRoomToken(token, appCheckRepository.getToken(false), sessionId)
+            },
+            onEvent = { event ->
+                fun appendChat(item: org.json.JSONObject?) {
+                    if (item == null) return
+                    val message = LiveChatMessage(
+                        id = item.optString("id"),
+                        userId = item.optString("userId"),
+                        userName = item.optString("userName", "Viewer"),
+                        displayName = item.optString("displayName"),
+                        text = item.optString("text"),
+                        createdAt = item.optString("createdAt"),
+                    )
+                    if (message.id.isNotBlank() && messages.none { it.id == message.id }) messages = (messages + message).takeLast(50)
+                }
+                when (event.optString("type")) {
+                    "chat.message" -> appendChat(event.optJSONObject("message"))
+                    "room.snapshot" -> {
+                        val history = event.optJSONArray("history")
+                        if (history != null) for (index in 0 until history.length()) {
+                            val entry = history.optJSONObject(index) ?: continue
+                            if (entry.optString("type") == "chat.message") appendChat(entry.optJSONObject("message"))
+                        }
+                    }
+                    "room.closed" -> notice = "This Live room has closed."
+                    "moderation.message.hidden" -> messages = messages.filterNot { it.id == event.optString("messageId") }
+                    "moderation.user.muted" -> if (event.optString("targetUserId") == firebaseAuth.currentUser?.uid) notice = "You have been muted in this Live room."
+                }
+            },
+            onState = { state ->
+                realtimeConnected = state == "connected"
+                if (state == "reconnecting") notice = "Live chat is reconnecting..."
+                if (state == "connected") notice = ""
+            },
+            onReconnect = { notice = "" },
+        )
+    }
+
+    DisposableEffect(roomSocket) {
+        scope.launch(Dispatchers.IO) { runCatching { roomSocket.connect() } }
+        onDispose { roomSocket.close() }
+    }
 
     LaunchedEffect(sessionId) {
         while (true) {
@@ -1390,7 +1451,7 @@ private fun LiveChatOverlay(
             }.onFailure { error ->
                 notice = cleanLiveChatError(error.message)
             }
-            delay(LIVE_CHAT_REFRESH_MS)
+            delay(if (realtimeConnected) LIVE_CHAT_FALLBACK_REFRESH_MS else LIVE_CHAT_REFRESH_MS)
         }
     }
 

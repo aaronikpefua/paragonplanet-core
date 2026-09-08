@@ -1,9 +1,9 @@
-name = "paragon-live-room-staging"
+name = "paragon-live-room-production"
 main = "src/index.js"
 compatibility_date = "2026-09-03"
 
 [vars]
-ALLOWED_ORIGINS = "https://frontend-live-staging-172974692065.us-central1.run.app,http://localhost:5173"
+ALLOWED_ORIGINS = "https://paragonplanet.com,https://www.paragonplanet.com"
 
 [[durable_objects.bindings]]
 name = "LIVE_ROOM"

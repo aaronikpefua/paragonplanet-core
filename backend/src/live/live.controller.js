@@ -305,7 +305,7 @@ export async function getLiveRoomToken(req, res) {
     }, () => liveCollection(db).doc(sessionId).get());
     if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
     const session = sessionSnap.data() || {};
-    if (!isFreshActiveSession(session) && !hasReplayPlayback(session)) {
+    if (!isFreshActiveSession(session)) {
       return res.status(409).json({ error: "This Live room is not active." });
     }
     const profile = await profileForHost(db, userId);
@@ -314,6 +314,7 @@ export async function getLiveRoomToken(req, res) {
       uid: userId,
       displayName: profile.displayName,
       role: profile.role || "VIEWER",
+      mediaGeneration: session.mediaGeneration,
     });
     const realtime = liveRoomRealtimeStatus();
     if (!signed || !realtime.configured) return res.json({ ...realtime, configured: false });
@@ -770,6 +771,12 @@ export async function endLiveSession(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can end this Live." });
     const ended = await requestLiveEnd(ref.id);
+    await publishLiveRoomEvent(ref.id, {
+      type: "room.closed",
+      sessionId: ref.id,
+      mediaGeneration: Math.max(0, Number((ended.session || session).mediaGeneration) || 0),
+      reason: "session_ending",
+    }).catch(() => undefined);
     return res.json({ session: serializeLiveSession(ended.session || session) });
     /* legacy replay association path retained temporarily below for migration reference */
     const replay = session.liveInputId
@@ -833,6 +840,7 @@ export async function listLiveChatMessages(req, res) {
       .get());
     const messages = snap.docs
       .map((doc) => ({ id: doc.id, ...doc.data(), createdAt: timestampIso(doc.data()?.createdAt) }))
+      .filter((message) => message.moderationState !== "HIDDEN")
       .reverse();
     return res.json({ messages, resultCount: messages.length });
   } catch (error) {
@@ -845,9 +853,15 @@ export async function postLiveChatMessage(req, res) {
     const userId = assertAuth(req);
     const db = admin.firestore();
     const sessionId = String(req.params.sessionId || "").trim();
-    const text = String(req.body?.text || "").trim().slice(0, 280);
+    const rawText = String(req.body?.text || "").trim();
+    const text = rawText.slice(0, 280);
+    const clientMessageId = String(req.body?.clientMessageId || "").trim();
     if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
     if (!text) return res.status(400).json({ error: "Write a message first" });
+    if (rawText.length > 280) return res.status(413).json({ code: "LIVE_CHAT_MESSAGE_TOO_LARGE", error: "Live chat messages are limited to 280 characters." });
+    if (clientMessageId && !/^[A-Za-z0-9_-]{8,128}$/.test(clientMessageId)) {
+      return res.status(400).json({ code: "LIVE_CHAT_ID_INVALID", error: "Invalid chat message id." });
+    }
     const sessionSnap = await measureFirestore({
       domain: "live",
       operation: "post-live-chat-session-get",
@@ -861,7 +875,11 @@ export async function postLiveChatMessage(req, res) {
       return res.status(409).json({ error: "This Live is not accepting chat right now." });
     }
     const profile = await profileForHost(db, userId);
-    const ref = liveChatCollection(db, sessionId).doc();
+    const moderationSnap = await liveCollection(db).doc(sessionId).collection("room_moderation").doc(userId).get();
+    if (moderationSnap.exists && moderationSnap.data()?.blocked === true) {
+      return res.status(403).json({ code: "LIVE_ROOM_MUTED", error: "You cannot send messages in this Live room." });
+    }
+    const ref = clientMessageId ? liveChatCollection(db, sessionId).doc(`${userId}_${clientMessageId}`) : liveChatCollection(db, sessionId).doc();
     const payload = {
       sessionId,
       userId,
@@ -870,6 +888,11 @@ export async function postLiveChatMessage(req, res) {
       text,
       createdAt: nowField(),
     };
+    const existing = clientMessageId ? await ref.get() : null;
+    if (existing?.exists) {
+      const prior = existing.data() || {};
+      return res.status(200).json({ message: { id: ref.id, ...prior, createdAt: timestampIso(prior.createdAt) }, duplicate: true });
+    }
     await measureFirestore({
       domain: "live",
       operation: "post-live-chat-message-set",
@@ -886,6 +909,72 @@ export async function postLiveChatMessage(req, res) {
     return res.status(201).json({ message });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not post Live chat" });
+  }
+}
+
+export async function postLiveReaction(req, res) {
+  try {
+    const userId = assertAuth(req);
+    const db = admin.firestore();
+    const sessionId = String(req.params.sessionId || "").trim();
+    const action = String(req.body?.action || "").trim().toLowerCase();
+    const eventId = String(req.body?.eventId || "").trim();
+    if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
+    if (!["vote", "pour", "spray", "pop"].includes(action)) return res.status(400).json({ code: "LIVE_REACTION_INVALID", error: "Unsupported Live reaction." });
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(eventId)) return res.status(400).json({ code: "LIVE_REACTION_ID_INVALID", error: "Invalid reaction event id." });
+    const sessionSnap = await liveCollection(db).doc(sessionId).get();
+    if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
+    const session = sessionSnap.data() || {};
+    if (!isFreshActiveSession(session)) return res.status(409).json({ code: "LIVE_ENDED", error: "This Live is not accepting reactions." });
+    const profile = await profileForHost(db, userId);
+    const event = {
+      type: "reaction",
+      eventId,
+      action,
+      uid: userId,
+      displayName: profile.displayName,
+      mediaGeneration: Math.max(0, Number(session.mediaGeneration) || 0),
+      financial: false,
+      staging: String(process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || "").includes("live-stg"),
+      createdAt: new Date().toISOString(),
+    };
+    const published = await publishLiveRoomEvent(sessionId, event);
+    return res.status(202).json({ accepted: true, persisted: false, financial: false, published: Boolean(published.published), event });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not send Live reaction" });
+  }
+}
+
+export async function moderateLiveRoom(req, res) {
+  try {
+    const moderatorUid = assertAuth(req);
+    const db = admin.firestore();
+    const sessionId = String(req.params.sessionId || "").trim();
+    const action = String(req.body?.action || "").trim().toLowerCase();
+    const targetUserId = String(req.body?.targetUserId || "").trim();
+    const messageId = String(req.body?.messageId || "").trim();
+    const sessionSnap = await liveCollection(db).doc(sessionId).get();
+    if (!sessionSnap.exists) return res.status(404).json({ error: "Live session not found" });
+    const session = sessionSnap.data() || {};
+    const profile = await profileForHost(db, moderatorUid);
+    const role = normalizeRole(profile.role);
+    if (session.hostUid !== moderatorUid && !["ADMIN", "SUPER_ADMIN"].includes(role)) {
+      return res.status(403).json({ code: "NOT_AUTHORIZED", error: "Only the broadcaster or an Admin can moderate this room." });
+    }
+    if (action === "hide_message") {
+      if (!messageId) return res.status(400).json({ error: "Message id is required" });
+      await liveChatCollection(db, sessionId).doc(messageId).set({ moderationState: "HIDDEN", moderatedBy: moderatorUid, moderatedAt: nowField() }, { merge: true });
+      await publishLiveRoomEvent(sessionId, { type: "moderation.message.hidden", sessionId, messageId });
+    } else if (["mute_user", "remove_user"].includes(action)) {
+      if (!targetUserId) return res.status(400).json({ error: "Target user id is required" });
+      await liveCollection(db).doc(sessionId).collection("room_moderation").doc(targetUserId).set({ blocked: true, action, moderatedBy: moderatorUid, updatedAt: nowField() }, { merge: true });
+      await publishLiveRoomEvent(sessionId, { type: action === "remove_user" ? "moderation.user.removed" : "moderation.user.muted", sessionId, targetUserId });
+    } else {
+      return res.status(400).json({ error: "Unsupported moderation action" });
+    }
+    return res.json({ ok: true, action, sessionId });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not moderate Live room" });
   }
 }
 

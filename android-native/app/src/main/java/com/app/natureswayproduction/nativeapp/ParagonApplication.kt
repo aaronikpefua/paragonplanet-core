@@ -17,7 +17,7 @@ class ParagonApplication : Application() {
         }
 
         val firebaseAppCheck = FirebaseAppCheck.getInstance()
-        if (BuildConfig.DEBUG) {
+        if (BuildConfig.DEBUG_APP_CHECK_ENABLED) {
             installDebugAppCheckProvider(firebaseAppCheck)
         } else {
             firebaseAppCheck.installAppCheckProviderFactory(

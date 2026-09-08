@@ -11,7 +11,18 @@ export async function createM1StagingTestToken(req, res) {
   if (process.env.PARAGON_ENVIRONMENT !== "staging" || process.env.FIREBASE_PROJECT_ID !== "paragonplanet-live-stg") {
     return res.status(404).json({ code: "NOT_FOUND", error: "Not found" });
   }
-  if (!secureEqual(req.get("x-m1-test-login-secret"), process.env.M1_TEST_LOGIN_SECRET)) {
+  let appCheckAuthorized = false;
+  const appCheckToken = String(req.get("x-firebase-appcheck") || "").trim();
+  if (appCheckToken) {
+    try {
+      const claims = await admin.appCheck().verifyToken(appCheckToken);
+      appCheckAuthorized = Boolean(claims?.appId);
+    } catch {
+      appCheckAuthorized = false;
+    }
+  }
+  const legacySecretAuthorized = secureEqual(req.get("x-m1-test-login-secret"), process.env.M1_TEST_LOGIN_SECRET);
+  if (!appCheckAuthorized && !legacySecretAuthorized) {
     return res.status(401).json({ code: "NOT_AUTHORIZED", error: "Staging test login authorization failed" });
   }
   try {

@@ -14,6 +14,7 @@ import androidx.credentials.GetCredentialRequest
 import com.app.natureswayproduction.R
 import com.app.natureswayproduction.nativeapp.data.api.MobileUser
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
+import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
 import com.facebook.AccessToken
 import com.facebook.CallbackManager
 import com.facebook.FacebookCallback
@@ -47,6 +48,7 @@ class SessionRepository(
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
     private val apiService: ParagonApiService = ParagonApiService(),
 ) {
+    private val appCheckRepository = AppCheckRepository()
     private var pendingFacebookCredential: AuthCredential? = null
     private var pendingXCredential: AuthCredential? = null
 
@@ -155,13 +157,15 @@ class SessionRepository(
     }
 
     suspend fun signInForM1Staging(): SessionSummary {
-        check(BuildConfig.M1_TEST_LOGIN_ENABLED && BuildConfig.M1_TEST_LOGIN_SECRET.isNotBlank()) {
+        check(BuildConfig.M1_TEST_LOGIN_ENABLED) {
             "M1 staging test login is not available in this build."
         }
         check(FirebaseApp.getInstance().options.projectId == "paragonplanet-live-stg") {
             "M1 test login refused outside the isolated staging Firebase project."
         }
-        val customToken = apiService.fetchM1StagingCustomToken(BuildConfig.M1_TEST_LOGIN_SECRET)
+        val appCheckToken = appCheckRepository.getToken(forceRefresh = true)
+        check(!appCheckToken.isNullOrBlank()) { "Staging App Check authorization is unavailable." }
+        val customToken = apiService.fetchM1StagingCustomToken(appCheckToken)
         firebaseAuth.signInWithCustomToken(customToken).await()
         check(firebaseAuth.currentUser?.getIdToken(false)?.await()?.token?.isNotBlank() == true) {
             "Staging Firebase did not issue an ID token."

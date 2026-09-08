@@ -16,11 +16,11 @@ import java.util.UUID
 class ParagonApiService {
     private val perfRunId = "android_" + SystemClock.elapsedRealtime().toString(36)
 
-    suspend fun fetchM1StagingCustomToken(accessSecret: String): String = withContext(Dispatchers.IO) {
+    suspend fun fetchM1StagingCustomToken(appCheckToken: String): String = withContext(Dispatchers.IO) {
         val response = request(
             path = "/internal/staging/m1-test-login",
             method = "POST",
-            extraHeaders = mapOf("X-M1-Test-Login-Secret" to accessSecret),
+            appCheckToken = appCheckToken,
             jsonBody = JSONObject().toString(),
         )
         JSONObject(response).getString("customToken")
@@ -281,9 +281,31 @@ class ParagonApiService {
             authorization = "Bearer $idToken",
             appCheckToken = appCheckToken,
             retryWithoutAppCheckOnFailure = true,
-            jsonBody = JSONObject().put("text", text).toString(),
+            jsonBody = JSONObject()
+                .put("text", text)
+                .put("clientMessageId", "${System.currentTimeMillis().toString(36)}_${java.util.UUID.randomUUID().toString().replace("-", "")}")
+                .toString(),
         )
         JSONObject(response).getJSONObject("message").toLiveChatMessage()
+    }
+
+    suspend fun sendParagonLiveReaction(
+        idToken: String,
+        appCheckToken: String?,
+        sessionId: String,
+        action: String,
+    ) = withContext(Dispatchers.IO) {
+        request(
+            path = "/api/live/sessions/$sessionId/reactions",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("action", action)
+                .put("eventId", "${System.currentTimeMillis().toString(36)}_${java.util.UUID.randomUUID().toString().replace("-", "")}")
+                .toString(),
+        )
     }
 
     suspend fun sendParagonLiveSupport(

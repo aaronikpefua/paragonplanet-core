@@ -3,9 +3,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-ARG VITE_BACKEND_URL=https://backend-live-staging-172974692065.us-central1.run.app
+ARG VITE_BACKEND_URL=https://backend-849823064688.us-central1.run.app
+ARG VITE_BUILD_MODE=production
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
-RUN npm run build -- --mode staging
+RUN npm run build -- --mode $VITE_BUILD_MODE
 
 FROM nginx:1.27-alpine
 COPY nginx.cloud-run.conf /etc/nginx/conf.d/default.conf

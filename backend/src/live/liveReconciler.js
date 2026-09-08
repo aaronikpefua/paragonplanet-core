@@ -2,6 +2,7 @@ import crypto from "crypto";
 import admin from "../config/firebase.js";
 import { getStreamLiveInputRecording, getStreamLiveInputState, setStreamLiveInputEnabled } from "./cloudflareStreamLive.js";
 import { buildPublicLiveProjection, canonicalStateOf, canonicalTransitionPatch, TERMINAL_LIVE_STATES } from "./liveLifecycle.js";
+import { publishLiveRoomEvent } from "./liveRoomRealtime.js";
 
 const START_EXPIRY_MS = Number(process.env.LIVE_START_EXPIRY_MS || 5 * 60 * 1000);
 const DISCONNECT_GRACE_MS = Number(process.env.LIVE_DISCONNECT_GRACE_MS || 45 * 1000);
@@ -42,7 +43,7 @@ function projectionWithTimestamps(session, now) {
 
 export async function transitionLiveSession(ref, nextState, patch = {}, { expectedRevision = null } = {}) {
   const db = ref.firestore;
-  return db.runTransaction(async (transaction) => {
+  const result = await db.runTransaction(async (transaction) => {
     const snap = await transaction.get(ref);
     if (!snap.exists) throw Object.assign(new Error("Live session not found"), { status: 404, code: "LIVE_SESSION_NOT_FOUND" });
     const current = { id: snap.id, ...snap.data() };
@@ -69,6 +70,16 @@ export async function transitionLiveSession(ref, nextState, patch = {}, { expect
     }
     return next;
   });
+  if (["ENDING", "REPLAY_PROCESSING", "REPLAY_READY", "FAILED", "EXPIRED", "CANCELLED"].includes(result.sessionStatus)) {
+    await publishLiveRoomEvent(result.id, {
+      type: "room.closed",
+      sessionId: result.id,
+      stateRevision: result.stateRevision,
+      mediaGeneration: result.mediaGeneration,
+      reason: result.endReason || result.expiryReason || result.sessionStatus,
+    });
+  }
+  return result;
 }
 
 export async function refreshLiveProjection(ref) {

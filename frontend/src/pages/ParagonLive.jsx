@@ -652,6 +652,16 @@ function LiveViewer({ session, onClose }) {
   const timingRef = useRef(null);
   const [playerMessage, setPlayerMessage] = useState("Loading Live stream...");
   const [supportMode, setSupportMode] = useState("");
+  const roomClientRef = useRef(null);
+  const [viewerCount, setViewerCount] = useState(0);
+  const [reactionNotice, setReactionNotice] = useState("");
+  const [playbackControls, setPlaybackControls] = useState(false);
+
+  function selectSupportMode(mode) {
+    setSupportMode(mode);
+    roomClientRef.current?.sendReaction?.(mode === "water" ? "pour" : mode === "bottle" ? "pop" : mode)
+      .catch(() => undefined);
+  }
 
   useEffect(() => {
     const video = playerRef.current;
@@ -737,7 +747,7 @@ function LiveViewer({ session, onClose }) {
       video.src = selectedPlaybackUrl;
       video.load?.();
       logLiveTiming(timingRef.current, "T3_native_hls_attached");
-      video.play?.().catch(() => undefined);
+      playLiveVideo(video, () => setPlaybackControls(true));
       return () => {
         cancelled = true;
         window.clearTimeout(startupTimerRef.current);
@@ -767,7 +777,7 @@ function LiveViewer({ session, onClose }) {
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         logLiveTiming(timingRef.current, "T4_manifest_parsed");
         hls.startLoad(-1);
-        video.play?.().catch(() => undefined);
+        playLiveVideo(video, () => setPlaybackControls(true));
       });
       hls.on(Hls.Events.FRAG_LOADED, () => {
         logLiveTiming(timingRef.current, "T5_first_fragment_loaded");
@@ -808,7 +818,7 @@ function LiveViewer({ session, onClose }) {
     <section style={liveRoomStyle}>
       <video
         ref={playerRef}
-        controls={ended}
+        controls={ended || playbackControls}
         autoPlay
         playsInline
         preload="auto"
@@ -820,7 +830,7 @@ function LiveViewer({ session, onClose }) {
         onCanPlay={() => {
           window.clearTimeout(startupTimerRef.current);
           setPlayerMessage("");
-          playerRef.current?.play?.().catch(() => undefined);
+          playLiveVideo(playerRef.current, () => setPlaybackControls(true));
         }}
         onPlaying={() => {
           window.clearTimeout(startupTimerRef.current);
@@ -861,15 +871,22 @@ function LiveViewer({ session, onClose }) {
       </div>
       {!ended && playerMessage ? <div style={livePlayerNoticeStyle}>{playerMessage}</div> : null}
       {!ended ? (
-        <LiveSupportRail onSelect={setSupportMode} />
+        <LiveSupportRail onSelect={selectSupportMode} />
       ) : null}
       <LiveChatPanel
         sessionId={session.id || session.liveSessionId}
         currentUser={auth.currentUser}
-        title="Live Chat"
+        title={`Live Chat${viewerCount ? ` · ${viewerCount} watching` : ""}`}
         compact
         showEmptyPlaceholder={false}
+        onRealtimeClient={(client) => { roomClientRef.current = client; }}
+        onPresence={setViewerCount}
+        onReaction={(event) => {
+          setReactionNotice(`${event.displayName || "Viewer"}: ${event.action}`);
+          window.setTimeout(() => setReactionNotice(""), 1800);
+        }}
       />
+      {reactionNotice ? <div style={{ ...livePlayerNoticeStyle, top: "38%" }}>{reactionNotice}</div> : null}
       {supportMode ? (
         <LiveSupportTray
           sessionId={session.id || session.liveSessionId}
@@ -989,6 +1006,9 @@ function LiveChatPanel({
   compact = false,
   showComposer = true,
   showEmptyPlaceholder = true,
+  onRealtimeClient,
+  onPresence,
+  onReaction,
 }) {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -1034,9 +1054,15 @@ function LiveChatPanel({
         if (cancelled) return;
         realtimeActiveRef.current = state === "connected";
       },
+      onReconnect: () => loadChat(),
       onEvent: (event) => {
         if (cancelled) return;
         if (event.type === "chat.message") appendMessage(event.message);
+        if (event.type === "presence.count" || event.type === "room.snapshot") onPresence?.(Math.max(0, Number(event.viewerCount) || 0));
+        if (event.type === "reaction") onReaction?.(event);
+        if (event.type === "moderation.message.hidden") setMessages((items) => items.filter((item) => item.id !== event.messageId));
+        if (event.type === "moderation.user.muted" && event.targetUserId === currentUser?.uid) setNotice("You have been muted in this Live room.");
+        if (event.type === "room.closed") setNotice("This Live room has closed.");
       },
     }).then((client) => {
       if (cancelled) {
@@ -1044,12 +1070,14 @@ function LiveChatPanel({
         return;
       }
       roomClient = client;
+      onRealtimeClient?.(client);
     }).catch(() => undefined);
     const interval = window.setInterval(loadChat, LIVE_CHAT_POLL_MS);
     return () => {
       cancelled = true;
       realtimeActiveRef.current = false;
       roomClient?.close();
+      onRealtimeClient?.(null);
       window.clearInterval(interval);
     };
   }, [sessionId, currentUser]);
@@ -1066,7 +1094,7 @@ function LiveChatPanel({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, clientMessageId: createLiveClientEventId() }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not send message.");
@@ -1102,6 +1130,26 @@ function LiveChatPanel({
       ) : null}
     </section>
   );
+}
+
+async function playLiveVideo(video, requireControls) {
+  if (!video?.play) return;
+  try {
+    await video.play();
+  } catch {
+    video.muted = true;
+    try {
+      await video.play();
+    } catch {
+      requireControls?.();
+    }
+  }
+}
+
+function createLiveClientEventId() {
+  const random = globalThis.crypto?.randomUUID?.().replace(/-/g, "")
+    || `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  return `${Date.now().toString(36)}_${random}`;
 }
 
 async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepResource, onRemoteTrack, timing }) {
