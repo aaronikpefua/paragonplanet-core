@@ -111,8 +111,10 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
   const common = {
     providerStatus: provider.providerStatus,
     providerState: provider.providerState,
-    providerLive: provider.providerLive,
-    viewerPlayable: provider.viewerPlayable,
+    providerLive: Boolean(session.gatewayMediaReady || provider.providerLive),
+    viewerPlayable: Boolean(session.gatewayMediaReady || provider.viewerPlayable),
+    cloudflareViewerPlayable: provider.viewerPlayable,
+    cloudflareProviderLive: provider.providerLive,
     lifecycleStatus: provider.lifecycleStatus,
     lifecycleLive: provider.lifecycleLive,
     activeVideoUid: provider.activeVideoUid || "",
@@ -159,20 +161,22 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
     }, { expectedRevision: session.stateRevision || 0 }) };
   }
 
-  if (provider.viewerPlayable) {
+  if (provider.viewerPlayable || session.gatewayMediaReady === true) {
     const livePlayback = playbackFromProvider(provider, generation);
     return { outcome: "live", session: await transitionLiveSession(ref, "LIVE", {
       ...common,
       ingestStatus: "INGEST_CONNECTED",
       mediaStatus: "VIEWER_READY",
       replayStatus: "NONE",
-      livePlayback,
-      playbackId: provider.activeVideoUid,
-      playbackUrl: livePlayback.manifestUrl,
-      hlsPlaybackUrl: livePlayback.manifestUrl,
-      playbackHlsUrl: livePlayback.manifestUrl,
-      playbackDashUrl: livePlayback.dashManifestUrl,
-      lastProviderLiveAt: observedAt,
+      ...(livePlayback ? {
+        livePlayback,
+        playbackId: provider.activeVideoUid,
+        playbackUrl: livePlayback.manifestUrl,
+        hlsPlaybackUrl: livePlayback.manifestUrl,
+        playbackHlsUrl: livePlayback.manifestUrl,
+        playbackDashUrl: livePlayback.dashManifestUrl,
+      } : {}),
+      lastProviderLiveAt: provider.providerLive ? observedAt : session.lastProviderLiveAt || null,
       ...(!session.viewerReadyAt ? { viewerReadyAt: observedAt, projectionLiveAt: observedAt } : {}),
       ...(!session.actualStartedAt ? { actualStartedAt: observedAt, wentLiveAt: observedAt } : {}),
     }, { expectedRevision: session.stateRevision || 0 }) };

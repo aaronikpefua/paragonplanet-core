@@ -338,6 +338,7 @@ data class LiveSession(
     val primaryPlayback: String? = null,
     val fallbackPlayback: String? = null,
     val selectedPlaybackUrl: String? = null,
+    val selectedPlaybackToken: String? = null,
     val selectedPlaybackTransport: String? = null,
     val playbackPolicyReason: String? = null,
     val providerLive: Boolean = false,

@@ -7,6 +7,7 @@ import nativeXAuthRoutes from "./routes/nativeXAuth.routes.js";
 import realtimeRoutes from "./routes/realtime/realtime.routes.js";
 import liveRoutes from "./routes/live/live.routes.js";
 import { receiveCloudflareLiveWebhook, runLiveReconciliation } from "./live/liveInternal.controller.js";
+import { authorizeLiveMediaGateway, getLiveGatewayRestreamConfig, receiveLiveGatewayEvent } from "./live/liveMediaGateway.controller.js";
 import { createM1StagingTestToken } from "./auth/stagingTestAuth.controller.js";
 import express from "express";
 import cors from "cors";
@@ -79,6 +80,9 @@ app.get("/health", (req, res) => {
 });
 app.post("/internal/live/cloudflare-webhook", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-webhook" }), receiveCloudflareLiveWebhook);
 app.post("/internal/live/reconcile", rateLimit({ windowMs: 60 * 1000, limit: 20, keyPrefix: "live-reconcile" }), runLiveReconciliation);
+app.post("/internal/live/media-gateway/auth", rateLimit({ windowMs: 60 * 1000, limit: 1200, keyPrefix: "live-gateway-auth" }), authorizeLiveMediaGateway);
+app.get("/internal/live/media-gateway/restream", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-gateway-restream" }), getLiveGatewayRestreamConfig);
+app.post("/internal/live/media-gateway/event", rateLimit({ windowMs: 60 * 1000, limit: 240, keyPrefix: "live-gateway-event" }), receiveLiveGatewayEvent);
 app.post("/internal/staging/m1-test-login", rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "m1-test-login" }), createM1StagingTestToken);
 
 // Test protected routes

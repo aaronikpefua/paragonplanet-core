@@ -1,0 +1,34 @@
+services:
+  mediamtx:
+    build: .
+    image: paragon-live-gateway:1.0.0
+    restart: unless-stopped
+    env_file: /etc/paragon-live-gateway/runtime.env
+    network_mode: host
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  coturn:
+    image: coturn/coturn:4.6.3-r3
+    restart: unless-stopped
+    env_file: /etc/paragon-live-gateway/runtime.env
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        exec turnserver --no-cli --no-multicast-peers --fingerprint --lt-cred-mech
+        --realm="$${PARAGON_GATEWAY_HOST}"
+        --user="paragon-live:$${PARAGON_TURN_PASSWORD}"
+        --listening-port=3478 --min-port=49160 --max-port=49200
+        --external-ip="$${PARAGON_GATEWAY_PUBLIC_IP}" --log-file=stdout
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"

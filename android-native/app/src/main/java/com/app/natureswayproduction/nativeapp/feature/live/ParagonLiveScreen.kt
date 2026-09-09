@@ -939,6 +939,7 @@ private fun LiveSessionsPanel(
                         if (usesWhep) {
                             NativeWhepPlaybackPlayer(
                                 whepUrl = selectedPlayback,
+                                authorizationToken = selectedSession.selectedPlaybackToken.orEmpty(),
                             )
                         } else if (usesHls) {
                             LivePlaybackPlayer(playbackUrl = selectedPlayback)
@@ -1096,6 +1097,7 @@ private fun LiveRoomViewer(
         when {
             usesWhep -> NativeWhepPlaybackPlayer(
                 whepUrl = selectedPlayback,
+                authorizationToken = session.selectedPlaybackToken.orEmpty(),
                 modifier = Modifier.fillMaxSize(),
                 onPlaybackUnavailable = {},
             )
@@ -1717,6 +1719,7 @@ private fun LiveAudienceActionBar() {
 @Composable
 private fun NativeWhepPlaybackPlayer(
     whepUrl: String,
+    authorizationToken: String = "",
     modifier: Modifier = Modifier
         .fillMaxWidth()
         .height(430.dp),
@@ -1757,7 +1760,7 @@ private fun NativeWhepPlaybackPlayer(
                         onState = { playerState = it },
                         onPlaybackUnavailable = onPlaybackUnavailable,
                         timingStartMs = timingStartMs,
-                    ).also { it.connect(whepUrl) }
+                    ).also { it.connect(whepUrl, authorizationToken) }
                 }
             },
         )
@@ -1784,7 +1787,7 @@ private class NativeWhepClient(
     private var videoTrack: VideoTrack? = null
     private val firstTrackAttached = AtomicBoolean(false)
 
-    fun connect(whepUrl: String) {
+    fun connect(whepUrl: String, authorizationToken: String = "") {
         if (whepUrl.isBlank()) {
             onState("Live playback unavailable.")
             return
@@ -1870,7 +1873,7 @@ private class NativeWhepClient(
                 connection.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
                         requestJob = scope.launch {
-                            postOfferToWhep(whepUrl, connection, description)
+                            postOfferToWhep(whepUrl, authorizationToken, connection, description)
                         }
                     }
                 }, description)
@@ -1897,6 +1900,7 @@ private class NativeWhepClient(
 
     private suspend fun postOfferToWhep(
         whepUrl: String,
+        authorizationToken: String,
         connection: PeerConnection,
         originalDescription: SessionDescription,
     ) {
@@ -1911,6 +1915,7 @@ private class NativeWhepClient(
                 doOutput = true
                 setRequestProperty("Content-Type", "application/sdp")
                 setRequestProperty("Accept", "application/sdp")
+                if (authorizationToken.isNotBlank()) setRequestProperty("Authorization", "Bearer $authorizationToken")
             }
             runCatching {
                 http.outputStream.use { stream ->

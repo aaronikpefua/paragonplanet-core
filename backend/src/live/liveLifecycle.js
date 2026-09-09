@@ -1,4 +1,4 @@
-export const LIVE_MEDIA_PROFILE = "STANDARD_RECORDED";
+export const LIVE_MEDIA_PROFILE = process.env.LIVE_MEDIA_PROFILE || "STANDARD_RECORDED";
 export const LIVE_RECORDING_MODE = "AUTOMATIC";
 export const CANONICAL_LIVE_STATES = new Set([
   "CREATING",
@@ -110,6 +110,10 @@ export function buildPublicLiveProjection(session, nowMs = Date.now()) {
     visible,
     viewerPlayable: state === "LIVE" && Boolean(session.viewerPlayable),
     providerLive: Boolean(session.providerLive),
+    gatewayMediaReady: Boolean(session.gatewayMediaReady),
+    mediaGatewayEnabled: Boolean(session.mediaGatewayEnabled),
+    gatewayIngestPath: session.gatewayIngestPath || "",
+    gatewayPlaybackPath: session.gatewayPlaybackPath || "",
     mediaProfile: session.mediaProfile || LIVE_MEDIA_PROFILE,
     mediaGeneration: generation,
     stateRevision: sourceRevision,

@@ -1,0 +1,65 @@
+logLevel: info
+logDestinations: [stdout]
+logStructured: true
+readTimeout: 15s
+writeTimeout: 15s
+writeQueueSize: 1024
+udpReadBufferSize: 4194304
+
+authMethod: http
+authHTTPAddress: ${PARAGON_BACKEND_URL}/internal/live/media-gateway/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: true
+metricsAddress: 127.0.0.1:9998
+
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+
+rtmp: true
+rtmpEncryption: strict
+rtmpsAddress: :1936
+rtmpServerKey: /etc/letsencrypt/live/${PARAGON_GATEWAY_HOST}/privkey.pem
+rtmpServerCert: /etc/letsencrypt/live/${PARAGON_GATEWAY_HOST}/fullchain.pem
+
+hls: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: true
+webrtcServerKey: /etc/letsencrypt/live/${PARAGON_GATEWAY_HOST}/privkey.pem
+webrtcServerCert: /etc/letsencrypt/live/${PARAGON_GATEWAY_HOST}/fullchain.pem
+webrtcAllowOrigins: ["https://paragonplanet.com", "https://www.paragonplanet.com"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [${PARAGON_GATEWAY_HOST}]
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+  - url: turn:${PARAGON_GATEWAY_HOST}:3478
+    username: paragon-live
+    password: ${PARAGON_TURN_PASSWORD}
+
+srt: true
+srtAddress: :8890
+moq: false
+
+pathDefaults:
+  source: publisher
+  sourceOnDemand: false
+  maxReaders: 0
+  overridePublisher: false
+
+paths:
+  "~^ingest_[A-Za-z0-9_-]+_[1-9][0-9]*$":
+    runOnAvailable: /opt/paragon/restream.sh
+    runOnAvailableRestart: false
+    runOnUnavailable: /opt/paragon/gateway-event.sh media-offline
+  "~^live_[A-Za-z0-9_-]+_[1-9][0-9]*$":
+    runOnAvailable: /opt/paragon/gateway-event.sh media-online
+    runOnAvailableRestart: false
+    runOnUnavailable: /opt/paragon/gateway-event.sh media-offline

@@ -1,5 +1,6 @@
 import { measureAsync } from "../observability/perf.js";
 import { normalizedCloudflareStatus } from "./liveLifecycle.js";
+import { mediaGatewayStatus } from "./liveMediaGateway.js";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
@@ -18,9 +19,9 @@ export function streamLiveProviderStatus() {
   return {
     provider: "cloudflare-stream-live",
     configured: missing.length === 0,
-    browserPublishingConfigured: false,
-    browserPublishingTransport: "disabled-release-1",
-    mediaProfile: "STANDARD_RECORDED",
+    browserPublishingConfigured: mediaGatewayStatus().configured,
+    browserPublishingTransport: mediaGatewayStatus().configured ? "whip-via-paragon-gateway" : "disabled-release-1",
+    mediaProfile: mediaGatewayStatus().configured ? "GATEWAY_DUAL_OUTPUT" : "STANDARD_RECORDED",
     recordingDefault: process.env.CLOUDFLARE_STREAM_RECORDING_MODE || "automatic",
     missing,
   };

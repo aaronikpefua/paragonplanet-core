@@ -1105,6 +1105,9 @@ private fun JSONObject.toLiveSession(): LiveSession {
         selectedPlaybackUrl = optString("selectedPlaybackUrl").ifBlank {
             optJSONObject("playbackPolicy")?.optString("selectedPlaybackUrl").orEmpty().ifBlank { null }
         },
+        selectedPlaybackToken = optString("selectedPlaybackToken").ifBlank {
+            optJSONObject("playbackPolicy")?.optString("selectedPlaybackToken").orEmpty().ifBlank { null }
+        },
         selectedPlaybackTransport = optString("selectedPlaybackTransport").ifBlank {
             optJSONObject("playbackPolicy")?.optString("selectedPlaybackTransport").orEmpty().ifBlank { null }
         },

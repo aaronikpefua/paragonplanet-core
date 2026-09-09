@@ -78,6 +78,7 @@ export default function ParagonLive() {
   const [cameraReady, setCameraReady] = useState(false);
   const [microphoneReady, setMicrophoneReady] = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
+  const [cameraFacingMode, setCameraFacingMode] = useState("user");
   const [micOn, setMicOn] = useState(true);
   const [status, setStatus] = useState("");
   const [sessions, setSessions] = useState([]);
@@ -169,7 +170,10 @@ export default function ParagonLive() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: cameraFacingMode } }, audio: true });
+      stream.getTracks().forEach((track) => {
+        track.addEventListener("ended", () => setStatus(`${track.kind === "video" ? "Camera" : "Microphone"} became unavailable.`), { once: true });
+      });
       streamRef.current = stream;
       setCameraReady(Boolean(stream.getVideoTracks().length));
       setMicrophoneReady(Boolean(stream.getAudioTracks().length));
@@ -270,6 +274,30 @@ export default function ParagonLive() {
     setMicOn(next);
   }
 
+  async function flipCamera() {
+    if (!streamRef.current) return;
+    const nextFacingMode = cameraFacingMode === "user" ? "environment" : "user";
+    try {
+      const replacement = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: nextFacingMode } }, audio: false });
+      const nextTrack = replacement.getVideoTracks()[0];
+      if (!nextTrack) throw new Error("Camera unavailable");
+      const oldTrack = streamRef.current.getVideoTracks()[0];
+      const sender = peerConnectionRef.current?.getSenders?.().find((item) => item.track?.kind === "video");
+      if (sender) await sender.replaceTrack(nextTrack);
+      if (oldTrack) {
+        streamRef.current.removeTrack(oldTrack);
+        oldTrack.stop();
+      }
+      nextTrack.enabled = cameraOn;
+      streamRef.current.addTrack(nextTrack);
+      if (videoRef.current) videoRef.current.srcObject = streamRef.current;
+      setCameraFacingMode(nextFacingMode);
+      setStatus("Camera switched.");
+    } catch {
+      setStatus("The other camera is not available on this browser/device.");
+    }
+  }
+
 async function startWebBroadcast() {
     if (startInFlightRef.current || publishing || broadcastLive) return;
     const now = Date.now();
@@ -337,6 +365,7 @@ async function startWebBroadcast() {
       await publishStreamWithWhip({
         stream: streamRef.current,
         whipUrl: webRtcPublishUrl,
+        authorizationToken: payload.ingest?.webRtcPublishToken || payload.ingest?.publishToken || "",
         timing: startTiming,
         onPeerConnection: (peerConnection) => {
           peerConnectionRef.current = peerConnection;
@@ -484,7 +513,7 @@ async function startWebBroadcast() {
           <div style={actionRowStyle}>
             <button type="button" onClick={toggleMic} style={miniButtonStyle}>{micOn ? "🎤 Mute" : "🎤 Unmute"}</button>
             <button type="button" onClick={toggleCamera} style={miniButtonStyle}>{cameraOn ? "📹 Camera Off" : "📹 Camera On"}</button>
-            <button type="button" onClick={() => setStatus("Flip camera will activate with the full Live provider runtime.")} style={miniButtonStyle}>🔄 Flip</button>
+            <button type="button" onClick={flipCamera} style={miniButtonStyle}>🔄 Flip</button>
             <button type="button" onClick={stopPreview} style={miniButtonStyle}>Cancel</button>
           </div>
           <p style={noticeStyle}>{status || "Live streaming service is not configured yet."}</p>
@@ -495,7 +524,7 @@ async function startWebBroadcast() {
                   sessionId={activeLiveSessionId}
                   currentUser={currentUser}
                   title="Live Chat"
-                  showComposer={false}
+                  showComposer
                   showEmptyPlaceholder={false}
                 />
               ) : null}
@@ -712,6 +741,7 @@ function LiveViewer({ session, onClose }) {
       connectWhepPlayback({
         video,
         whepUrl: selectedPlaybackUrl,
+        authorizationToken: session.playbackPolicy?.selectedPlaybackToken || session.selectedPlaybackToken || "",
         onPeerConnection: (peerConnection) => {
           whepPeerRef.current = peerConnection;
           peerConnection.addEventListener("iceconnectionstatechange", () => {
@@ -743,9 +773,22 @@ function LiveViewer({ session, onClose }) {
         window.clearTimeout(firstFrameTimerRef.current);
         logLiveTiming(timingRef.current, "whep_startup_failed", {
           message: error?.message || "WHEP startup failed",
-          hasHlsFallback: false,
+        hasHlsFallback: Boolean(fallbackPlaybackUrl),
         });
-        if (!cancelled) setPlayerMessage("Live playback unavailable. Please try again.");
+        if (!cancelled && fallbackPlaybackUrl) {
+          setPlayerMessage("Using compatible Live playback...");
+          if (video.canPlayType("application/vnd.apple.mpegurl")) {
+            video.src = fallbackPlaybackUrl;
+            video.load?.();
+            playLiveVideo(video, () => setPlaybackControls(true));
+          } else if (Hls.isSupported()) {
+            const hls = new Hls({ enableWorker: true, startPosition: -1, liveSyncDurationCount: 2, liveMaxLatencyDurationCount: 5 });
+            hlsRef.current = hls;
+            hls.loadSource(fallbackPlaybackUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => playLiveVideo(video, () => setPlaybackControls(true)));
+          }
+        } else if (!cancelled) setPlayerMessage("Live playback unavailable. Please try again.");
       });
       return () => {
         window.clearTimeout(startupTimerRef.current);
@@ -1199,7 +1242,7 @@ function createLiveClientEventId() {
   return `${Date.now().toString(36)}_${random}`;
 }
 
-async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepResource, onRemoteTrack, timing }) {
+async function connectWhepPlayback({ video, whepUrl, authorizationToken, onPeerConnection, onWhepResource, onRemoteTrack, timing }) {
   const peerConnection = new RTCPeerConnection();
   peerConnection.addTransceiver("video", { direction: "recvonly" });
   peerConnection.addTransceiver("audio", { direction: "recvonly" });
@@ -1225,6 +1268,7 @@ async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepRes
     headers: {
       "Content-Type": "application/sdp",
       Accept: "application/sdp",
+      ...(authorizationToken ? { Authorization: `Bearer ${authorizationToken}` } : {}),
     },
     body: peerConnection.localDescription?.sdp || offer.sdp,
   }, 30000, "Cloudflare Live playback timed out.");
@@ -1239,9 +1283,16 @@ async function connectWhepPlayback({ video, whepUrl, onPeerConnection, onWhepRes
   await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
 }
 
-async function publishStreamWithWhip({ stream, whipUrl, onPeerConnection, onWhipResource, onConnected, timing }) {
+async function publishStreamWithWhip({ stream, whipUrl, authorizationToken, onPeerConnection, onWhipResource, onConnected, timing }) {
   const peerConnection = new RTCPeerConnection();
-  stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+  stream.getTracks().forEach((track) => {
+    const transceiver = peerConnection.addTransceiver(track, { direction: "sendonly", streams: [stream] });
+    if (track.kind === "video" && typeof transceiver.setCodecPreferences === "function") {
+      const codecs = RTCRtpSender.getCapabilities?.("video")?.codecs || [];
+      const h264 = codecs.filter((codec) => String(codec.mimeType).toLowerCase() === "video/h264");
+      if (h264.length) transceiver.setCodecPreferences([...h264, ...codecs.filter((codec) => !h264.includes(codec))]);
+    }
+  });
   onPeerConnection?.(peerConnection);
   logLiveTiming(timing, "T2_peer_created", {
     videoTracks: stream.getVideoTracks().length,
@@ -1256,6 +1307,7 @@ async function publishStreamWithWhip({ stream, whipUrl, onPeerConnection, onWhip
     headers: {
       "Content-Type": "application/sdp",
       Accept: "application/sdp",
+      ...(authorizationToken ? { Authorization: `Bearer ${authorizationToken}` } : {}),
     },
     body: peerConnection.localDescription?.sdp || offer.sdp,
   }, 30000, "Cloudflare browser publishing timed out.");

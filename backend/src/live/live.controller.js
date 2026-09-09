@@ -4,6 +4,7 @@ import { liveRoomRealtimeStatus, publishLiveRoomEvent, signLiveRoomToken } from 
 import { measureAsync, measureFirestore } from "../observability/perf.js";
 import { canonicalStateOf, LIVE_MEDIA_PROFILE, LIVE_RECORDING_MODE } from "./liveLifecycle.js";
 import { reconcileLiveSession, refreshLiveProjection, requestLiveEnd, transitionLiveSession } from "./liveReconciler.js";
+import { gatewayPublisherDescriptor, gatewayViewerDescriptor, mediaGatewayStatus } from "./liveMediaGateway.js";
 
 const HOST_ROLES = new Set(["CITIZEN", "AMBASSADOR", "PROMOTER", "BACKER", "SUPERBOSS", "SUPERNAL", "MERCHANT"]);
 const LIVE_STATUSES = new Set(["ACTIVE", "LIVE", "STARTING"]);
@@ -171,6 +172,24 @@ function livePlaybackPolicy(session, now = Date.now()) {
   if (!session.viewerPlayable) {
     return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: session.providerLiveReason || "cloudflare_viewer_not_ready_yet" };
   }
+  const gateway = mediaGatewayStatus();
+  if (gateway.configured && session.gatewayMediaReady === true && canonicalState === "LIVE") {
+    const playback = gatewayViewerDescriptor({
+      sessionId: session.liveSessionId || session.id,
+      mediaGeneration: session.mediaGeneration,
+    });
+    return {
+      primaryPlayback: "whep",
+      fallbackPlayback: hasHls ? "hls" : "none",
+      selectedPlaybackTransport: "whep",
+      selectedPlaybackUrl: playback.url,
+      selectedPlaybackToken: playback.token,
+      fallbackPlaybackUrl: hlsUrl,
+      liveAgeMs,
+      hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
+      reason: "paragon_gateway_webrtc_primary",
+    };
+  }
   if (hasHls) {
     return {
       primaryPlayback: preferLowLatency ? "ll-hls" : "hls",
@@ -190,8 +209,14 @@ function livePlaybackPolicy(session, now = Date.now()) {
 export function isFreshActiveSession(session, now = Date.now()) {
   const state = canonicalStateOf(session);
   if (!["INGEST_CONNECTED", "VIEWER_PREPARING", "LIVE"].includes(state)) return false;
-  const providerMs = timestampMillis(session.lastProviderLiveAt || session.lastProviderActivityAt || session.lastProviderObservedAt);
-  return Boolean(session.providerLive) && providerMs > 0 && now - providerMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
+  const providerMs = session.gatewayMediaReady
+    ? Math.max(timestampMillis(session.gatewayLastEventAt), timestampMillis(session.lastHeartbeatAt))
+    : Math.max(
+      timestampMillis(session.lastProviderLiveAt),
+      timestampMillis(session.lastProviderActivityAt),
+      timestampMillis(session.lastProviderObservedAt),
+    );
+  return Boolean(session.gatewayMediaReady || session.providerLive) && providerMs > 0 && now - providerMs <= ACTIVE_HEARTBEAT_WINDOW_MS;
 }
 
 function isUpcomingSession(session, now = Date.now()) {
@@ -436,7 +461,8 @@ export async function startLiveSession(req, res) {
     const startRequestId = String(req.get("Idempotency-Key") || bodyStartRequestId || "").trim().slice(0, 128);
     if (!purpose || !title) return res.status(400).json({ error: "Live purpose and title are required." });
     if (!startRequestId) return res.status(400).json({ error: "A Live start idempotency key is required.", code: "IDEMPOTENCY_KEY_REQUIRED" });
-    if (String(publisherTransport || "").toLowerCase() === "whip") {
+    const gatewayStatus = mediaGatewayStatus();
+    if (String(publisherTransport || "").toLowerCase() === "whip" && !gatewayStatus.configured) {
       return res.status(409).json({ error: "Broadcast from the Paragon Planet Android app or connect OBS/Desktop.", code: "MEDIA_PROFILE_NOT_ENABLED" });
     }
 
@@ -500,8 +526,8 @@ export async function startLiveSession(req, res) {
       replayStatus: "NONE",
       mediaProfile: LIVE_MEDIA_PROFILE,
       recordingMode: LIVE_RECORDING_MODE,
-      ingestTransport: "RTMPS",
-      playbackTransport: "hls",
+      ingestTransport: String(publisherTransport || "").toLowerCase() === "whip" ? "WHIP" : String(publisherTransport || "").toLowerCase() === "srt" ? "SRT" : "RTMPS",
+      playbackTransport: gatewayStatus.configured ? "whep" : "hls",
       mediaGeneration: 1,
       stateRevision: 1,
       providerEventRevision: 0,
@@ -516,8 +542,12 @@ export async function startLiveSession(req, res) {
     await refreshLiveProjection(sessionRef);
     const liveInput = await createStreamLiveInput({ title, sessionId, mediaGeneration: 1, recordingMode: "automatic" });
     createdLiveInputId = liveInput.liveInputId || "";
-    const normalizedPublisherTransport = String(publisherTransport || "").toLowerCase() === "srt" ? "srt" : "rtmps";
-    const playbackTransport = "hls";
+    const requestedTransport = String(publisherTransport || "").toLowerCase();
+    const normalizedPublisherTransport = requestedTransport === "srt" ? "srt" : requestedTransport === "whip" ? "whip" : "rtmps";
+    const playbackTransport = gatewayStatus.configured ? "whep" : "hls";
+    const gatewayPublisher = gatewayStatus.configured
+      ? gatewayPublisherDescriptor({ sessionId, mediaGeneration: 1, publisherTransport: normalizedPublisherTransport, subject: hostUid })
+      : null;
     await measureFirestore({
       domain: "live",
       operation: "start-live-session-ingest-set",
@@ -528,6 +558,9 @@ export async function startLiveSession(req, res) {
       ingestStatus: "WAITING_FOR_INGEST",
       publisherTransport: normalizedPublisherTransport,
       playbackTransport,
+      mediaGatewayEnabled: Boolean(gatewayPublisher),
+      gatewayIngestPath: gatewayPublisher?.ingestPath || "",
+      gatewayPlaybackPath: gatewayPublisher?.playbackPath || "",
       liveInputId: liveInput.liveInputId,
       rtmps: liveInput.rtmps,
       rtmpsUrl: liveInput.rtmpsUrl,
@@ -559,7 +592,7 @@ export async function startLiveSession(req, res) {
     const snap = await sessionRef.get();
     return res.status(201).json({
       session: serializeLiveSession({ id: snap.id, ...snap.data() }),
-      ingest: liveIngestResponse({ ...liveInput, ...snap.data() }),
+      ingest: liveIngestResponse({ ...liveInput, ...snap.data() }, { hostUid }),
       provider,
     });
   } catch (error) {
@@ -576,7 +609,16 @@ export async function startLiveSession(req, res) {
   }
 }
 
-function liveIngestResponse(session) {
+function liveIngestResponse(session, { hostUid = session.hostUid } = {}) {
+  const gateway = mediaGatewayStatus();
+  if (gateway.configured && session.mediaGatewayEnabled !== false) {
+    return gatewayPublisherDescriptor({
+      sessionId: session.liveSessionId || session.id,
+      mediaGeneration: session.mediaGeneration,
+      publisherTransport: session.publisherTransport,
+      subject: hostUid,
+    });
+  }
   return {
     rtmps: session.rtmps || "",
     rtmpsUrl: session.rtmpsUrl || "",
