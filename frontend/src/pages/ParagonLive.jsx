@@ -647,6 +647,8 @@ function LiveSessionCard({ session, tab, selected, onSelect }) {
 
 function LiveViewer({ session, onClose }) {
   const selectedPlaybackUrl = session.playbackPolicy?.selectedPlaybackUrl || session.selectedPlaybackUrl || "";
+  const lowLatencyPlaybackUrl = session.playbackPolicy?.lowLatencyPlaybackUrl || "";
+  const fallbackPlaybackUrl = session.playbackPolicy?.fallbackPlaybackUrl || "";
   const selectedPlaybackTransport = String(session.playbackPolicy?.selectedPlaybackTransport || session.selectedPlaybackTransport || "").toLowerCase();
   const useWhep = selectedPlaybackTransport === "whep" && Boolean(selectedPlaybackUrl);
   const useHls = selectedPlaybackTransport === "hls" && Boolean(selectedPlaybackUrl);
@@ -763,7 +765,9 @@ function LiveViewer({ session, onClose }) {
     if (!useHls) return undefined;
     let cancelled = false;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = selectedPlaybackUrl;
+      // Safari uses its native HLS stack. Preserve broad Apple compatibility by using the
+      // standard manifest while LL-HLS remains a capability-controlled hls.js optimization.
+      video.src = fallbackPlaybackUrl || selectedPlaybackUrl;
       video.load?.();
       logLiveTiming(timingRef.current, "T3_native_hls_attached");
       playLiveVideo(video, () => setPlaybackControls(true));
@@ -776,6 +780,8 @@ function LiveViewer({ session, onClose }) {
       };
     }
     if (Hls.isSupported()) {
+      let usingFallback = false;
+      const preferredHlsUrl = lowLatencyPlaybackUrl || selectedPlaybackUrl;
       logLiveTiming(timingRef.current, "T3_hlsjs_player_created");
       const hls = new Hls({
         lowLatencyMode: true,
@@ -791,7 +797,7 @@ function LiveViewer({ session, onClose }) {
         fragLoadingTimeOut: 12000,
       });
       hlsRef.current = hls;
-      hls.loadSource(selectedPlaybackUrl);
+      hls.loadSource(preferredHlsUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         logLiveTiming(timingRef.current, "T7_hls_manifest_parsed");
@@ -801,8 +807,26 @@ function LiveViewer({ session, onClose }) {
       hls.on(Hls.Events.FRAG_LOADED, () => {
         logLiveTiming(timingRef.current, "T5_first_fragment_loaded");
       });
+      hls.on(Hls.Events.LEVEL_UPDATED, () => {
+        const liveSyncPosition = hls.liveSyncPosition;
+        if (Number.isFinite(liveSyncPosition) && Number.isFinite(video.currentTime) && liveSyncPosition - video.currentTime > 8) {
+          video.currentTime = Math.max(0, liveSyncPosition - 1);
+          logLiveTiming(timingRef.current, "playback_live_edge_recovered", {
+            latency: Number(hls.latency || 0),
+          });
+        }
+      });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data?.fatal) return;
+        if (!usingFallback && fallbackPlaybackUrl && preferredHlsUrl !== fallbackPlaybackUrl) {
+          usingFallback = true;
+          setPlayerMessage("Using compatible Live playback...");
+          logLiveTiming(timingRef.current, "ll_hls_fallback", { type: data.type });
+          hls.stopLoad();
+          hls.loadSource(fallbackPlaybackUrl);
+          hls.startLoad(-1);
+          return;
+        }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           logLiveTiming(timingRef.current, "playback_network_retry", { fatal: true });
           setPlayerMessage("Reconnecting Live...");
@@ -827,7 +851,7 @@ function LiveViewer({ session, onClose }) {
       };
     }
     return undefined;
-  }, [selectedPlaybackTransport, selectedPlaybackUrl, session.id, useHls, useWhep]);
+  }, [selectedPlaybackTransport, selectedPlaybackUrl, lowLatencyPlaybackUrl, fallbackPlaybackUrl, session.id, useHls, useWhep]);
 
   const playbackReady = Boolean(selectedPlaybackUrl && (useHls || useWhep));
   const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());

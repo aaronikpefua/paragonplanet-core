@@ -60,6 +60,7 @@ async function cloudflareRequest(path, options = {}) {
 }
 
 export async function createStreamLiveInput({ title, sessionId, mediaGeneration = 1, recordingMode }) {
+  const preferLowLatency = process.env.LIVE_LOW_LATENCY_HLS_ENABLED !== "false";
   const result = await cloudflareRequest("/stream/live_inputs", {
     method: "POST",
     body: JSON.stringify({
@@ -72,6 +73,7 @@ export async function createStreamLiveInput({ title, sessionId, mediaGeneration 
       recording: {
         mode: recordingMode || process.env.CLOUDFLARE_STREAM_RECORDING_MODE || "automatic",
       },
+      preferLowLatency,
     }),
   });
   const liveInputId = result.uid || result.id || "";
@@ -99,10 +101,26 @@ export async function createStreamLiveInput({ title, sessionId, mediaGeneration 
     hlsPlaybackUrl: result.playback?.hls || liveInputHlsUrl,
     playbackHlsUrl: result.playback?.hls || liveInputHlsUrl,
     playbackDashUrl: result.playback?.dash || liveInputDashUrl,
+    preferLowLatency: result.preferLowLatency ?? preferLowLatency,
     whepPlaybackUrl: result.webRTCPlayback?.url || result.webrtcPlayback?.url || "",
     playbackWebRtcUrl: result.webRTCPlayback?.url || result.webrtcPlayback?.url || "",
     raw: result,
   };
+}
+
+export function lowLatencyHlsUrl(url) {
+  if (!url) return "";
+  const parsed = new URL(url);
+  parsed.searchParams.set("protocol", "llhls");
+  return parsed.toString();
+}
+
+export async function setStreamLiveInputLowLatency(liveInputId, enabled = true) {
+  if (!liveInputId) return null;
+  return cloudflareRequest(`/stream/live_inputs/${encodeURIComponent(liveInputId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ preferLowLatency: Boolean(enabled) }),
+  });
 }
 
 function streamPlaybackOrigin(liveInput) {
@@ -323,6 +341,7 @@ export async function getStreamLiveInputState(liveInputId, playbackOrigin = "") 
     liveInputId,
     lifecycleStatus: lifecycle.status,
     lifecycleLive: lifecycle.live,
+    preferLowLatency: Boolean(liveInput.preferLowLatency),
     hasVideoUid: Boolean(lifecycle.activeVideoUid),
     viewerPlayable,
   });

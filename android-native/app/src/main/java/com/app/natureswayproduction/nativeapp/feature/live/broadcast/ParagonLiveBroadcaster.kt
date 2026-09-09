@@ -2,6 +2,7 @@ package com.app.natureswayproduction.nativeapp.feature.live.broadcast
 
 import android.content.Context
 import android.content.Intent
+import android.media.MediaCodecInfo
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,6 +22,7 @@ class ParagonLiveBroadcaster(
     // an optional preview consumer and can be replaced without owning the publisher.
     private val camera = RtmpCamera2(context.applicationContext, true, this)
     private var attachedView: OpenGlView? = null
+    private var attachedSurfaceReady = false
     private var publishUrl: String = ""
     private var reconnectAttempts = 0
     private val maxReconnectAttempts = 3
@@ -73,14 +75,23 @@ class ParagonLiveBroadcaster(
     fun isPublishing(): Boolean = camera.isStreaming
 
     fun attachPreviewView(view: OpenGlView) {
-        if (attachedView !== view) {
+        val surfaceReady = view.isAttachedToWindow && view.width > 0 && view.height > 0 &&
+            view.holder.surface?.isValid == true
+        if (!surfaceReady) {
+            // Surface callbacks will retry after Android has created and sized the real surface.
+            if (attachedView === view) attachedSurfaceReady = false
+            return
+        }
+        if (attachedView !== view || !attachedSurfaceReady) {
             runCatching {
                 camera.replaceView(view)
                 attachedView = view
+                attachedSurfaceReady = true
                 previewStarted = camera.isOnPreview
                 if (videoEnabled) camera.glInterface.unMuteVideo() else camera.glInterface.muteVideo()
                 if (camera.isStreaming) camera.requestKeyFrame()
             }.onFailure {
+                attachedSurfaceReady = false
                 onStateChanged(LiveBroadcastState.RECONNECTING, "Restoring camera preview.")
             }
         }
@@ -101,6 +112,7 @@ class ParagonLiveBroadcaster(
             }
         }
         attachedView = null
+        attachedSurfaceReady = false
         previewStarted = camera.isStreaming
     }
 
@@ -188,6 +200,7 @@ class ParagonLiveBroadcaster(
         previewStarted = false
         encodersPrepared = false
         attachedView = null
+        attachedSurfaceReady = false
         stopForegroundOwner()
         stopFrameHealth()
     }
@@ -263,7 +276,18 @@ class ParagonLiveBroadcaster(
 
     private fun prepareEncoders(): Boolean {
         if (encodersPrepared) return true
-        val videoReady = camera.prepareVideo(videoWidth, videoHeight, videoFps, videoBitrate, keyFrameIntervalSeconds, videoRotation)
+        // AVC Baseline prevents B-frame reordering; RootEncoder selects CBR when the device codec
+        // supports it. Together with the 2s GOP this is the Cloudflare LL-HLS-safe profile.
+        val videoReady = camera.prepareVideo(
+            videoWidth,
+            videoHeight,
+            videoFps,
+            videoBitrate,
+            keyFrameIntervalSeconds,
+            videoRotation,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+            MediaCodecInfo.CodecProfileLevel.AVCLevel31,
+        )
         val audioReady = camera.prepareAudio()
         encodersPrepared = videoReady && audioReady
         if (!encodersPrepared) {
@@ -284,8 +308,10 @@ class ParagonLiveBroadcaster(
             if (preview != null && preview.isAttachedToWindow && preview.holder.surface?.isValid == true) {
                 camera.replaceView(preview)
                 attachedView = preview
+                attachedSurfaceReady = true
             } else {
                 attachedView = null
+                attachedSurfaceReady = false
             }
             camera.requestKeyFrame()
         }.onFailure {

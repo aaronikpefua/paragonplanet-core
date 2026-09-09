@@ -1,5 +1,5 @@
 import admin from "../config/firebase.js";
-import { createStreamLiveInput, getStreamLiveInputState, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { createStreamLiveInput, getStreamLiveInputState, lowLatencyHlsUrl, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
 import { liveRoomRealtimeStatus, publishLiveRoomEvent, signLiveRoomToken } from "./liveRoomRealtime.js";
 import { measureAsync, measureFirestore } from "../observability/perf.js";
 import { canonicalStateOf, LIVE_MEDIA_PROFILE, LIVE_RECORDING_MODE } from "./liveLifecycle.js";
@@ -159,6 +159,8 @@ function livePlaybackPolicy(session, now = Date.now()) {
   }
   const canonicalPlayback = canonicalState === "REPLAY_READY" ? session.replayPlayback : session.livePlayback;
   const hlsUrl = canonicalPlayback?.manifestUrl || session.hlsPlaybackUrl || session.playbackHlsUrl || session.playbackUrl || "";
+  const preferLowLatency = session.preferLowLatency === true && canonicalState !== "REPLAY_READY";
+  const llHlsUrl = preferLowLatency && hlsUrl ? lowLatencyHlsUrl(hlsUrl) : "";
   const hasHls = Boolean(hlsUrl);
   const startedMs = timestampMillis(session.actualStartedAt || session.wentLiveAt || session.startedAt || session.createdAt || session.updatedAt);
   const liveAgeMs = startedMs ? Math.max(0, now - startedMs) : 0;
@@ -171,13 +173,15 @@ function livePlaybackPolicy(session, now = Date.now()) {
   }
   if (hasHls) {
     return {
-      primaryPlayback: "hls",
-      fallbackPlayback: "none",
+      primaryPlayback: preferLowLatency ? "ll-hls" : "hls",
+      fallbackPlayback: preferLowLatency ? "hls" : "none",
       selectedPlaybackTransport: "hls",
-      selectedPlaybackUrl: hlsUrl,
+      selectedPlaybackUrl: llHlsUrl || hlsUrl,
+      lowLatencyPlaybackUrl: llHlsUrl,
+      fallbackPlaybackUrl: preferLowLatency ? hlsUrl : "",
       liveAgeMs,
       hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS,
-      reason: "standard_recorded_hls",
+      reason: preferLowLatency ? "standard_recorded_ll_hls" : "standard_recorded_hls",
     };
   }
   return { primaryPlayback: "none", fallbackPlayback: "none", selectedPlaybackTransport: "none", selectedPlaybackUrl: "", liveAgeMs, hlsPrimaryAfterMs: LIVE_HLS_PRIMARY_AFTER_MS, reason: "no_playback_url" };
@@ -536,6 +540,7 @@ export async function startLiveSession(req, res) {
       hlsPlaybackUrl: liveInput.hlsPlaybackUrl || liveInput.playbackHlsUrl || "",
       playbackHlsUrl: liveInput.playbackHlsUrl,
       playbackDashUrl: liveInput.playbackDashUrl,
+      preferLowLatency: Boolean(liveInput.preferLowLatency),
       whepPlaybackUrl: liveInput.whepPlaybackUrl || liveInput.playbackWebRtcUrl || "",
       playbackWebRtcUrl: liveInput.playbackWebRtcUrl,
       webRtcPlaybackUrl: liveInput.playbackWebRtcUrl,

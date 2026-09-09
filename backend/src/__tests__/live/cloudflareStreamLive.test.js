@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapLiveInputProviderState, parseStreamLifecyclePayload, selectStreamRecording } from "../../live/cloudflareStreamLive.js";
+import { lowLatencyHlsUrl, mapLiveInputProviderState, parseStreamLifecyclePayload, selectStreamRecording } from "../../live/cloudflareStreamLive.js";
 import { normalizedCloudflareStatus } from "../../live/liveLifecycle.js";
 
 describe("Cloudflare Stream Live status mapping", () => {
@@ -43,6 +43,13 @@ describe("Cloudflare Stream lifecycle readiness", () => {
       activeVideoUid: "",
       viewerPlayable: false,
     });
+  });
+});
+
+describe("Cloudflare LL-HLS playback", () => {
+  it("adds the LL-HLS protocol without discarding existing manifest parameters", () => {
+    expect(lowLatencyHlsUrl("https://example.test/video/manifest/video.m3u8?token=abc"))
+      .toBe("https://example.test/video/manifest/video.m3u8?token=abc&protocol=llhls");
   });
 });
 
