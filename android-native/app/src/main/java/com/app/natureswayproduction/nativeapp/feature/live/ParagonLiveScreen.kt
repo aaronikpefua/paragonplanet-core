@@ -802,7 +802,7 @@ private fun LivePreviewPanel(
 
                                     override fun surfaceDestroyed(holder: SurfaceHolder) {
                                         previewStarted = false
-                                        broadcaster.detachPreviewView()
+                                        broadcaster.detachPreviewView(previewView)
                                     }
                                 })
                                 previewView.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
@@ -812,7 +812,7 @@ private fun LivePreviewPanel(
 
                                     override fun onViewDetachedFromWindow(view: android.view.View) {
                                         previewStarted = false
-                                        broadcaster.detachPreviewView()
+                                        broadcaster.detachPreviewView(previewView)
                                     }
                                 })
                                 startWhenReady()

@@ -42,7 +42,11 @@ class ParagonLiveBroadcaster(
         }
     }
 
-    fun detachPreviewView() {
+    fun detachPreviewView(expectedView: OpenGlView? = null) {
+        // Surface destruction from the previous Compose destination can be delivered after the
+        // replacement view has already attached. Never let that stale callback detach the new
+        // preview (and therefore move the active encoder back to an off-screen GL surface).
+        if (expectedView != null && attachedView !== expectedView) return
         if (attachedView == null) return
         runCatching {
             if (camera.isStreaming) {
