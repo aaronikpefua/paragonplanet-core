@@ -1,6 +1,12 @@
 package com.app.natureswayproduction.nativeapp.feature.live.broadcast
 
 import android.content.Context
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.rtmp.RtmpCamera2
@@ -11,8 +17,10 @@ class ParagonLiveBroadcaster(
     view: OpenGlView,
     private val onStateChanged: (LiveBroadcastState, String) -> Unit,
 ) : ConnectChecker {
-    private val camera = RtmpCamera2(view, this)
-    private var attachedView: OpenGlView? = view
+    // The encoder starts on an application-owned off-screen GL pipeline. A screen surface is only
+    // an optional preview consumer and can be replaced without owning the publisher.
+    private val camera = RtmpCamera2(context.applicationContext, true, this)
+    private var attachedView: OpenGlView? = null
     private var publishUrl: String = ""
     private var reconnectAttempts = 0
     private val maxReconnectAttempts = 3
@@ -25,6 +33,42 @@ class ParagonLiveBroadcaster(
     private val videoBitrate = 1_200_000
     private val videoRotation = 90
     private val keyFrameIntervalSeconds = 2
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var lastEncodedFrameAtMs = 0L
+    private var lastSentFrameAtMs = 0L
+    private var lastSentVideoFrames = 0L
+    private var recoveryAttempts = 0
+    private var recoveryInProgress = false
+    private var recoveringStreamRestart = false
+    private val frameHealthCheck = object : Runnable {
+        override fun run() {
+            if (!camera.isStreaming) return
+            val now = SystemClock.elapsedRealtime()
+            val sent = camera.streamClient.getSentVideoFrames()
+            if (sent > lastSentVideoFrames) {
+                lastSentVideoFrames = sent
+                lastSentFrameAtMs = now
+                recoveryAttempts = 0
+            }
+            val encodedStalled = videoEnabled && now - lastEncodedFrameAtMs > FRAME_STALL_MS
+            val sentStalled = videoEnabled && now - lastSentFrameAtMs > FRAME_STALL_MS
+            Log.i(
+                TAG,
+                "mediaHealth streaming=${camera.isStreaming} preview=${camera.isOnPreview} " +
+                    "videoEnabled=$videoEnabled sentFrames=$sent encodedAgeMs=${now - lastEncodedFrameAtMs} " +
+                    "sentAgeMs=${now - lastSentFrameAtMs} recoveryAttempt=$recoveryAttempts"
+            )
+            if ((encodedStalled || sentStalled) && !recoveryInProgress) recoverVideoPipeline()
+            mainHandler.postDelayed(this, HEALTH_INTERVAL_MS)
+        }
+    }
+
+    init {
+        camera.setFpsListener {
+            lastEncodedFrameAtMs = SystemClock.elapsedRealtime()
+        }
+        attachPreviewView(view)
+    }
 
     fun isPublishing(): Boolean = camera.isStreaming
 
@@ -120,6 +164,10 @@ class ParagonLiveBroadcaster(
         if (!microphoneEnabled) camera.disableAudio() else camera.enableAudio()
         onStateChanged(LiveBroadcastState.CONNECTING, "Connecting to Paragon Live.")
         camera.streamClient.setReTries(maxReconnectAttempts)
+        ContextCompat.startForegroundService(
+            context.applicationContext,
+            Intent(context.applicationContext, LiveBroadcastForegroundService::class.java),
+        )
         camera.startStream(publishUrl)
     }
 
@@ -129,6 +177,8 @@ class ParagonLiveBroadcaster(
             camera.stopStream()
         }
         stopPreview()
+        stopForegroundOwner()
+        stopFrameHealth()
         onStateChanged(LiveBroadcastState.ENDED, "Live ended.")
     }
 
@@ -138,6 +188,8 @@ class ParagonLiveBroadcaster(
         previewStarted = false
         encodersPrepared = false
         attachedView = null
+        stopForegroundOwner()
+        stopFrameHealth()
     }
 
     fun switchCamera() {
@@ -164,6 +216,15 @@ class ParagonLiveBroadcaster(
     }
 
     override fun onConnectionSuccess() {
+        val now = SystemClock.elapsedRealtime()
+        lastEncodedFrameAtMs = now
+        lastSentFrameAtMs = now
+        lastSentVideoFrames = camera.streamClient.getSentVideoFrames()
+        recoveryAttempts = 0
+        recoveryInProgress = false
+        recoveringStreamRestart = false
+        mainHandler.removeCallbacks(frameHealthCheck)
+        mainHandler.postDelayed(frameHealthCheck, HEALTH_INTERVAL_MS)
         onStateChanged(LiveBroadcastState.LIVE, "Local publisher connected. Preparing viewers.")
     }
 
@@ -182,7 +243,12 @@ class ParagonLiveBroadcaster(
     override fun onNewBitrate(bitrate: Long) = Unit
 
     override fun onDisconnect() {
-        onStateChanged(LiveBroadcastState.ENDED, "Live disconnected.")
+        stopFrameHealth()
+        if (recoveringStreamRestart) {
+            onStateChanged(LiveBroadcastState.RECONNECTING, "Restarting Live video frames.")
+        } else {
+            onStateChanged(LiveBroadcastState.ENDED, "Live disconnected.")
+        }
     }
 
     override fun onAuthError() {
@@ -204,5 +270,75 @@ class ParagonLiveBroadcaster(
             onStateChanged(LiveBroadcastState.ERROR, "Could not prepare Live encoder.")
         }
         return encodersPrepared
+    }
+
+    private fun recoverVideoPipeline() {
+        recoveryInProgress = true
+        recoveryAttempts += 1
+        Log.w(TAG, "Video frame progression stalled; recovery attempt=$recoveryAttempts")
+        onStateChanged(LiveBroadcastState.RECONNECTING, "Restoring Live camera frames.")
+        val preview = attachedView
+        runCatching {
+            // replaceView closes/reopens Camera2 and rebinds the encoder input surface.
+            camera.replaceView(context.applicationContext)
+            if (preview != null && preview.isAttachedToWindow && preview.holder.surface?.isValid == true) {
+                camera.replaceView(preview)
+                attachedView = preview
+            } else {
+                attachedView = null
+            }
+            camera.requestKeyFrame()
+        }.onFailure {
+            onStateChanged(LiveBroadcastState.RECONNECTING, "Camera frame recovery is retrying.")
+        }
+        mainHandler.postDelayed({
+            val now = SystemClock.elapsedRealtime()
+            val sentFrames = camera.streamClient.getSentVideoFrames()
+            val framesHealthy = sentFrames > lastSentVideoFrames &&
+                now - lastEncodedFrameAtMs <= FRAME_STALL_MS
+            if (framesHealthy) {
+                lastSentVideoFrames = sentFrames
+                lastSentFrameAtMs = now
+                recoveryAttempts = 0
+                Log.i(TAG, "Video frame progression recovered; sentFrames=$sentFrames")
+                onStateChanged(LiveBroadcastState.LIVE, "Live camera frames restored.")
+            } else if (recoveryAttempts == 1 && publishUrl.isNotBlank() && camera.isStreaming) {
+                // A connected RTMP socket can outlive a dead encoder surface. Restart only the
+                // publisher pipeline against the same input; never create a new Paragon session.
+                recoveringStreamRestart = true
+                Log.w(TAG, "Camera/GL rebind did not restore frames; restarting same RTMP publisher")
+                camera.stopStream()
+                mainHandler.postDelayed({
+                    runCatching {
+                        camera.startStream(publishUrl)
+                        camera.requestKeyFrame()
+                    }.onFailure {
+                        onStateChanged(LiveBroadcastState.ERROR, "Live video frames could not recover.")
+                    }
+                }, RESTART_DELAY_MS)
+            } else if (recoveryAttempts > 1) {
+                onStateChanged(LiveBroadcastState.ERROR, "Live video frames stopped. End Live and try again.")
+            }
+            recoveryInProgress = false
+        }, RECOVERY_VERIFY_MS)
+    }
+
+    private fun stopFrameHealth() {
+        mainHandler.removeCallbacks(frameHealthCheck)
+        recoveryInProgress = false
+    }
+
+    private fun stopForegroundOwner() {
+        context.applicationContext.stopService(
+            Intent(context.applicationContext, LiveBroadcastForegroundService::class.java)
+        )
+    }
+
+    companion object {
+        const val TAG = "ParagonLiveMedia"
+        private const val HEALTH_INTERVAL_MS = 2_000L
+        private const val FRAME_STALL_MS = 7_000L
+        private const val RECOVERY_VERIFY_MS = 3_000L
+        private const val RESTART_DELAY_MS = 750L
     }
 }
