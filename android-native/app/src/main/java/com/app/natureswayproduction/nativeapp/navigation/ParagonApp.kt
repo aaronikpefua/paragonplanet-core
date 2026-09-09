@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
@@ -25,6 +26,7 @@ import com.app.natureswayproduction.nativeapp.feature.admin.AdminScreen
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedScreen
 import com.app.natureswayproduction.nativeapp.feature.feed.FeedViewModel
 import com.app.natureswayproduction.nativeapp.feature.live.ParagonLiveScreen
+import com.app.natureswayproduction.nativeapp.feature.live.ParagonLiveBroadcastSessionState
 import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpScreen
 import com.app.natureswayproduction.nativeapp.feature.meetup.MeetUpViewModel
 import com.app.natureswayproduction.nativeapp.feature.onboarding.CitizenOnboardingScreen
@@ -67,6 +69,7 @@ fun ParagonApp(
     uploadViewModel: UploadViewModel,
 ) {
     val navController = rememberNavController()
+    val liveBroadcastSessionState = remember { ParagonLiveBroadcastSessionState() }
     val onboardingRepository = RoleOnboardingRepository()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -553,6 +556,7 @@ fun ParagonApp(
                 ParagonLiveScreen(
                     currentRole = profileState.profile?.role ?: authState.role,
                     onBackHome = goHome,
+                    broadcastSessionState = liveBroadcastSessionState,
                 )
             }
             composable(AppDestination.PrivateVideoCall.route) {

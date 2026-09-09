@@ -107,6 +107,7 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
 
   const generation = Math.max(1, Number(session.mediaGeneration || 1));
   const provider = await getStreamLiveInputState(session.liveInputId, session.playbackOrigin || "");
+  const observedAt = admin.firestore.Timestamp.now();
   const common = {
     providerStatus: provider.providerStatus,
     providerState: provider.providerState,
@@ -116,9 +117,11 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
     lifecycleLive: provider.lifecycleLive,
     activeVideoUid: provider.activeVideoUid || "",
     providerLiveReason: provider.reason || reason,
-    lastProviderObservedAt: admin.firestore.Timestamp.now(),
-    lastProviderCheckedAt: admin.firestore.Timestamp.now(),
+    lastProviderObservedAt: observedAt,
+    lastProviderCheckedAt: observedAt,
     mediaGeneration: generation,
+    ...(provider.providerLive && !session.ingestConnectedAt ? { ingestConnectedAt: observedAt } : {}),
+    ...(provider.activeVideoUid && !session.videoUidObservedAt ? { videoUidObservedAt: observedAt } : {}),
   };
 
   if (["ENDING", "REPLAY_PROCESSING"].includes(state)) {
@@ -169,8 +172,9 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
       hlsPlaybackUrl: livePlayback.manifestUrl,
       playbackHlsUrl: livePlayback.manifestUrl,
       playbackDashUrl: livePlayback.dashManifestUrl,
-      lastProviderLiveAt: admin.firestore.Timestamp.now(),
-      ...(!session.actualStartedAt ? { actualStartedAt: admin.firestore.Timestamp.now(), wentLiveAt: admin.firestore.Timestamp.now() } : {}),
+      lastProviderLiveAt: observedAt,
+      ...(!session.viewerReadyAt ? { viewerReadyAt: observedAt, projectionLiveAt: observedAt } : {}),
+      ...(!session.actualStartedAt ? { actualStartedAt: observedAt, wentLiveAt: observedAt } : {}),
     }, { expectedRevision: session.stateRevision || 0 }) };
   }
 
@@ -180,7 +184,7 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
       ingestStatus: "INGEST_CONNECTED",
       mediaStatus: "PREPARING",
       replayStatus: "NONE",
-      lastProviderLiveAt: admin.firestore.Timestamp.now(),
+      lastProviderLiveAt: observedAt,
     }, { expectedRevision: session.stateRevision || 0 }) };
   }
 

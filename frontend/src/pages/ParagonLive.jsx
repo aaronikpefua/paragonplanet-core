@@ -89,7 +89,7 @@ export default function ParagonLive() {
   const [broadcastLive, setBroadcastLive] = useState(false);
   const [startBlockedUntil, setStartBlockedUntil] = useState(0);
   const activeLiveSessionId = webLiveResult?.session?.id || "";
-  const browserPublisherConfigured = Boolean(liveProvider?.browserPublishingConfigured || liveProvider?.configured);
+  const browserPublisherConfigured = Boolean(liveProvider?.browserPublishingConfigured);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
@@ -164,13 +164,17 @@ export default function ParagonLive() {
   const purposes = useMemo(() => LIVE_PURPOSES_BY_ROLE[role] || [], [role]);
 
   async function startPreview() {
+    if (!browserPublisherConfigured) {
+      setStatus("Broadcast from the Paragon Planet Android app or connect OBS/Desktop.");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       streamRef.current = stream;
       setCameraReady(Boolean(stream.getVideoTracks().length));
       setMicrophoneReady(Boolean(stream.getAudioTracks().length));
       setPreviewing(true);
-      setStatus(browserPublisherConfigured ? "Preview ready. You can go Live." : "Preview ready. Live publishing service is not configured yet.");
+      setStatus("Preview ready. You can go Live.");
     } catch (error) {
       setCameraReady(false);
       setMicrophoneReady(false);
@@ -573,9 +577,12 @@ async function startWebBroadcast() {
           </div>
           <p style={mutedStyle}>Camera: {cameraReady ? "Ready" : "Permission needed"}</p>
           <p style={mutedStyle}>Microphone: {microphoneReady ? "Ready" : "Permission needed"}</p>
+          {!browserPublisherConfigured ? (
+            <p style={noticeStyle}>Broadcast from the Paragon Planet Android app or connect OBS/Desktop.</p>
+          ) : null}
           {status ? <p style={noticeStyle}>{status}</p> : null}
           <div style={actionRowStyle}>
-            <button type="button" disabled={!liveTitle.trim()} onClick={startPreview} style={liveTitle.trim() ? goldButtonStyle : disabledGoldButtonStyle}>Preview Live</button>
+            <button type="button" disabled={!liveTitle.trim() || !browserPublisherConfigured} onClick={startPreview} style={liveTitle.trim() && browserPublisherConfigured ? goldButtonStyle : disabledGoldButtonStyle}>Preview Live</button>
             <button type="button" disabled={!liveTitle.trim() || !scheduleDate || !scheduleTime} onClick={scheduleLive} style={liveTitle.trim() && scheduleDate && scheduleTime ? goldButtonStyle : disabledGoldButtonStyle}>Schedule Live</button>
           </div>
         </section>
@@ -679,6 +686,18 @@ function LiveViewer({ session, onClose }) {
       providerLive: Boolean(session.providerLive),
       viewerPlayable: Boolean(session.viewerPlayable),
       hasSelectedPlayback: Boolean(selectedPlaybackUrl),
+      mediaGeneration: Number(session.mediaGeneration || 0),
+      stateRevision: Number(session.stateRevision || 0),
+      sessionCreatedAt: session.createdAt || "",
+      ingestConnectedAt: session.ingestConnectedAt || "",
+      videoUidObservedAt: session.videoUidObservedAt || "",
+      viewerReadyAt: session.viewerReadyAt || "",
+      projectionLiveAt: session.projectionLiveAt || "",
+    });
+    logLiveTiming(timingRef.current, "T6_playable_generation_received", {
+      mediaGeneration: Number(session.mediaGeneration || 0),
+      stateRevision: Number(session.stateRevision || 0),
+      videoUid: session.activeVideoUid || session.livePlayback?.videoUid || "",
     });
     video.preload = "auto";
     video.autoplay = true;
@@ -775,7 +794,7 @@ function LiveViewer({ session, onClose }) {
       hls.loadSource(selectedPlaybackUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        logLiveTiming(timingRef.current, "T4_manifest_parsed");
+        logLiveTiming(timingRef.current, "T7_hls_manifest_parsed");
         hls.startLoad(-1);
         playLiveVideo(video, () => setPlaybackControls(true));
       });
@@ -835,7 +854,7 @@ function LiveViewer({ session, onClose }) {
             window.clearTimeout(startupTimerRef.current);
             window.clearTimeout(firstFrameTimerRef.current);
             setPlayerMessage("");
-            logLiveTiming(timingRef.current, "T6_first_frame_playing", {
+            logLiveTiming(timingRef.current, "T8_first_frame_playing", {
               estimatedLiveLatencySeconds: Number.isFinite(hlsRef.current?.latency)
                 ? Number(hlsRef.current.latency.toFixed(2))
                 : null,
@@ -1383,9 +1402,9 @@ function createLiveTiming(scope, id) {
 
 function liveDebugEnabled() {
   try {
-    return Boolean(import.meta.env.DEV || import.meta.env.MODE === "staging" || window.localStorage?.getItem("paragonLiveDebug") === "1");
+    return window.localStorage?.getItem("paragonLiveDebug") !== "0";
   } catch {
-    return Boolean(import.meta.env.DEV);
+    return true;
   }
 }
 

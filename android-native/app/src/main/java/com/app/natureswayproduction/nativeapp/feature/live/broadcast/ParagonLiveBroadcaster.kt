@@ -8,20 +8,53 @@ import com.pedro.library.view.OpenGlView
 
 class ParagonLiveBroadcaster(
     private val context: Context,
-    private val view: OpenGlView,
+    view: OpenGlView,
     private val onStateChanged: (LiveBroadcastState, String) -> Unit,
 ) : ConnectChecker {
     private val camera = RtmpCamera2(view, this)
+    private var attachedView: OpenGlView? = view
     private var publishUrl: String = ""
     private var reconnectAttempts = 0
     private val maxReconnectAttempts = 3
     private var previewStarted = false
     private var encodersPrepared = false
+    private var videoEnabled = true
     private val videoWidth = 640
     private val videoHeight = 480
     private val videoFps = 30
     private val videoBitrate = 1_200_000
     private val videoRotation = 90
+    private val keyFrameIntervalSeconds = 2
+
+    fun isPublishing(): Boolean = camera.isStreaming
+
+    fun attachPreviewView(view: OpenGlView) {
+        if (attachedView !== view) {
+            runCatching {
+                camera.replaceView(view)
+                attachedView = view
+                previewStarted = camera.isOnPreview
+                if (videoEnabled) camera.glInterface.unMuteVideo() else camera.glInterface.muteVideo()
+                if (camera.isStreaming) camera.requestKeyFrame()
+            }.onFailure {
+                onStateChanged(LiveBroadcastState.RECONNECTING, "Restoring camera preview.")
+            }
+        }
+    }
+
+    fun detachPreviewView() {
+        if (attachedView == null) return
+        runCatching {
+            if (camera.isStreaming) {
+                camera.replaceView(context)
+                camera.requestKeyFrame()
+            } else if (camera.isOnPreview) {
+                camera.stopPreview()
+            }
+        }
+        attachedView = null
+        previewStarted = camera.isStreaming
+    }
 
     fun startPreview() {
         if (previewStarted || camera.isOnPreview) return
@@ -100,6 +133,7 @@ class ParagonLiveBroadcaster(
         runCatching { if (camera.isOnPreview) camera.stopPreview() }
         previewStarted = false
         encodersPrepared = false
+        attachedView = null
     }
 
     fun switchCamera() {
@@ -112,11 +146,12 @@ class ParagonLiveBroadcaster(
     }
 
     fun setCameraEnabled(enabled: Boolean) {
+        videoEnabled = enabled
         if (enabled) {
-            view.unMuteVideo()
+            camera.glInterface.unMuteVideo()
             if (!camera.isOnPreview) startPreview()
         } else {
-            view.muteVideo()
+            camera.glInterface.muteVideo()
         }
     }
 
@@ -158,7 +193,7 @@ class ParagonLiveBroadcaster(
 
     private fun prepareEncoders(): Boolean {
         if (encodersPrepared) return true
-        val videoReady = camera.prepareVideo(videoWidth, videoHeight, videoFps, videoBitrate, videoRotation)
+        val videoReady = camera.prepareVideo(videoWidth, videoHeight, videoFps, videoBitrate, keyFrameIntervalSeconds, videoRotation)
         val audioReady = camera.prepareAudio()
         encodersPrepared = videoReady && audioReady
         if (!encodersPrepared) {

@@ -36,6 +36,23 @@ describe("Live session public policy", () => {
     expect(result).not.toHaveProperty("startRequestId");
   });
 
+  it("exposes non-secret lifecycle timing milestones for startup telemetry", () => {
+    const result = serializeLiveSession({
+      id: "session-timing",
+      status: "ACTIVE",
+      ingestConnectedAt: "2026-09-09T10:00:02.000Z",
+      videoUidObservedAt: "2026-09-09T10:00:08.000Z",
+      viewerReadyAt: "2026-09-09T10:00:09.000Z",
+      projectionLiveAt: "2026-09-09T10:00:09.000Z",
+    });
+    expect(result).toMatchObject({
+      ingestConnectedAt: "2026-09-09T10:00:02.000Z",
+      videoUidObservedAt: "2026-09-09T10:00:08.000Z",
+      viewerReadyAt: "2026-09-09T10:00:09.000Z",
+      projectionLiveAt: "2026-09-09T10:00:09.000Z",
+    });
+  });
+
   it("authorizes the canonical profile role and its permitted purpose", () => {
     expect(assertLiveHostPolicy({ role: "CITIZEN" }, "Live Performance")).toBe("CITIZEN");
     expect(() => assertLiveHostPolicy({ role: "VIEWER" }, "Live Performance")).toThrow(/cannot host/i);

@@ -66,6 +66,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.api.LiveChatMessage
 import com.app.natureswayproduction.nativeapp.data.api.LiveRoomSocket
@@ -185,6 +188,7 @@ private val liveBottleChoices = listOf(
 fun ParagonLiveScreen(
     currentRole: String?,
     onBackHome: () -> Unit,
+    broadcastSessionState: ParagonLiveBroadcastSessionState,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -195,25 +199,25 @@ fun ParagonLiveScreen(
     val livePurposes = livePurposesByRole[normalizedRole].orEmpty()
     var selectedTab by remember { mutableStateOf(liveTabs.first()) }
     var showGoLivePurposes by remember { mutableStateOf(false) }
-    var selectedPurpose by remember { mutableStateOf<String?>(null) }
-    var liveTitle by remember { mutableStateOf("") }
-    var liveDescription by remember { mutableStateOf("") }
-    var scheduleDate by remember { mutableStateOf("") }
-    var scheduleTime by remember { mutableStateOf("") }
-    var showPreview by remember { mutableStateOf(false) }
-    var cameraEnabled by remember { mutableStateOf(true) }
-    var microphoneEnabled by remember { mutableStateOf(true) }
-    var cameraLensFacing by remember { mutableStateOf(CameraCharacteristics.LENS_FACING_FRONT) }
+    var selectedPurpose by broadcastSessionState.selectedPurpose
+    var liveTitle by broadcastSessionState.liveTitle
+    var liveDescription by broadcastSessionState.liveDescription
+    var scheduleDate by broadcastSessionState.scheduleDate
+    var scheduleTime by broadcastSessionState.scheduleTime
+    var showPreview by broadcastSessionState.showPreview
+    var cameraEnabled by broadcastSessionState.cameraEnabled
+    var microphoneEnabled by broadcastSessionState.microphoneEnabled
+    var cameraLensFacing by broadcastSessionState.cameraLensFacing
     var permissionsRequested by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(context.hasPermission(Manifest.permission.CAMERA)) }
     var microphoneReady by remember { mutableStateOf(context.hasPermission(Manifest.permission.RECORD_AUDIO)) }
-    var statusMessage by remember { mutableStateOf("") }
-    var startLiveResult by remember { mutableStateOf<StartLiveResult?>(null) }
-    var isStartingLive by remember { mutableStateOf(false) }
-    var startRequestId by remember { mutableStateOf("") }
-    var liveBroadcaster by remember { mutableStateOf<ParagonLiveBroadcaster?>(null) }
-    var broadcastState by remember { mutableStateOf(LiveBroadcastState.IDLE) }
-    var activeSessionMarked by remember { mutableStateOf(false) }
+    var statusMessage by broadcastSessionState.statusMessage
+    var startLiveResult by broadcastSessionState.startLiveResult
+    var isStartingLive by broadcastSessionState.isStartingLive
+    var startRequestId by broadcastSessionState.startRequestId
+    var liveBroadcaster by broadcastSessionState.broadcaster
+    var broadcastState by broadcastSessionState.broadcastState
+    var activeSessionMarked by broadcastSessionState.activeSessionMarked
     var liveSessions by remember { mutableStateOf<List<LiveSession>>(emptyList()) }
     var isLoadingSessions by remember { mutableStateOf(false) }
     var selectedViewerSession by remember { mutableStateOf<LiveSession?>(null) }
@@ -254,7 +258,7 @@ fun ParagonLiveScreen(
                         val appCheck = appCheckRepository.getToken(forceRefresh = false)
                         apiService.getParagonLiveSession(token, appCheck, selected.id)
                     }.onSuccess { refreshed -> selectedViewerSession = refreshed }
-                    delay(if (selected.viewerPlayable) 5_000 else 3_000)
+                    delay(if (selected.viewerPlayable) 5_000 else 1_500)
                 } else {
                     delay(LIVE_SLOW_REFRESH_MS)
                 }
@@ -297,7 +301,7 @@ fun ParagonLiveScreen(
             }.onSuccess { activeSession ->
                 startLiveResult = startLiveResult?.copy(session = activeSession)
             }
-            delay(15_000)
+            delay(if (startLiveResult?.session?.viewerPlayable == true) 15_000 else 5_000)
         }
     }
 
@@ -356,6 +360,7 @@ fun ParagonLiveScreen(
                 startLiveResult = startLiveResult,
                 statusMessage = statusMessage.ifBlank { "Live streaming service is not configured yet." },
                 onBroadcasterReady = { liveBroadcaster = it },
+                existingBroadcaster = liveBroadcaster,
                 onToggleCamera = {
                     val next = !cameraEnabled
                     cameraEnabled = next
@@ -436,7 +441,8 @@ fun ParagonLiveScreen(
                 },
                 onEndLive = {
                     liveBroadcaster?.stopPublishing()
-                    startLiveResult?.session?.id?.takeIf { it.isNotBlank() }?.let { sessionId ->
+                    val endingSessionId = startLiveResult?.session?.id.orEmpty()
+                    endingSessionId.takeIf { it.isNotBlank() }?.let { sessionId ->
                         scope.launch {
                             runCatching {
                                 val user = firebaseAuth.currentUser ?: error("Sign in first.")
@@ -446,9 +452,7 @@ fun ParagonLiveScreen(
                             }
                         }
                     }
-                    activeSessionMarked = false
-                    startLiveResult = null
-                    showPreview = false
+                    broadcastSessionState.clearAfterEnd()
                 },
                 onCancel = {
                     liveBroadcaster?.stopPublishing()
@@ -461,9 +465,7 @@ fun ParagonLiveScreen(
             )
             DisposableEffect(Unit) {
                 onDispose {
-                    liveBroadcaster?.release()
-                    liveBroadcaster = null
-                    broadcastState = LiveBroadcastState.IDLE
+                    broadcastSessionState.detachPreview()
                 }
             }
             LaunchedEffect(broadcastState, startLiveResult?.session?.id) {
@@ -474,7 +476,7 @@ fun ParagonLiveScreen(
                     var markedLive = false
                     var providerConnected = false
                     var lastError: Throwable? = null
-                    repeat(10) { attempt ->
+                    repeat(20) { attempt ->
                         if (markedLive) return@repeat
                         runCatching {
                             val user = firebaseAuth.currentUser ?: error("Sign in first.")
@@ -488,15 +490,15 @@ fun ParagonLiveScreen(
                                 markedLive = true
                                 statusMessage = "You are Live."
                             } else if (activeSession.providerLive) {
-                                statusMessage = "Provider connected. Preparing viewers... ${attempt + 1}/10"
+                                statusMessage = "Provider connected. Preparing viewers... ${attempt + 1}/20"
                             } else {
-                                statusMessage = "Waiting for Cloudflare ingest confirmation... ${attempt + 1}/10"
+                                statusMessage = "Waiting for Cloudflare ingest confirmation... ${attempt + 1}/20"
                             }
-                            if (!markedLive) delay(3_000)
+                            if (!markedLive) delay(1_500)
                         }.onFailure { error ->
                             lastError = error
-                            statusMessage = "Waiting for Cloudflare Live confirmation... ${attempt + 1}/10"
-                            delay(3_000)
+                            statusMessage = "Waiting for Cloudflare Live confirmation... ${attempt + 1}/20"
+                            delay(1_500)
                         }
                     }
                     if (!markedLive && !providerConnected) {
@@ -718,6 +720,7 @@ private fun LivePreviewPanel(
     broadcastState: LiveBroadcastState,
     startLiveResult: StartLiveResult?,
     statusMessage: String,
+    existingBroadcaster: ParagonLiveBroadcaster?,
     onBroadcasterReady: (ParagonLiveBroadcaster) -> Unit,
     onToggleCamera: () -> Unit,
     onToggleMicrophone: () -> Unit,
@@ -729,10 +732,23 @@ private fun LivePreviewPanel(
 ) {
     val context = LocalContext.current
     val rootView = LocalView.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var activePreviewView by remember { mutableStateOf<OpenGlView?>(null) }
     DisposableEffect(Unit) {
         val previousKeepScreenOn = rootView.keepScreenOn
         rootView.keepScreenOn = true
         onDispose { rootView.keepScreenOn = previousKeepScreenOn }
+    }
+    DisposableEffect(lifecycleOwner, existingBroadcaster, activePreviewView) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> activePreviewView?.let { existingBroadcaster?.attachPreviewView(it) }
+                Lifecycle.Event.ON_STOP -> existingBroadcaster?.detachPreviewView()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF101820), shape = RoundedCornerShape(22.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -748,8 +764,11 @@ private fun LivePreviewPanel(
                         modifier = Modifier.fillMaxSize(),
                         factory = { viewContext ->
                             OpenGlView(viewContext).also { previewView ->
+                                activePreviewView = previewView
                                 previewView.keepScreenOn = true
-                                val broadcaster = ParagonLiveBroadcaster(
+                                val broadcaster = existingBroadcaster?.also {
+                                    it.attachPreviewView(previewView)
+                                } ?: ParagonLiveBroadcaster(
                                     context = context.applicationContext,
                                     view = previewView,
                                     onStateChanged = onBroadcastStateChanged,
@@ -767,7 +786,8 @@ private fun LivePreviewPanel(
                                             previewView.holder.surface?.isValid == true
                                         ) {
                                             previewStarted = true
-                                            broadcaster.startPreview()
+                                            broadcaster.attachPreviewView(previewView)
+                                            if (!broadcaster.isPublishing()) broadcaster.startPreview()
                                         }
                                     }
                                 }
@@ -782,7 +802,7 @@ private fun LivePreviewPanel(
 
                                     override fun surfaceDestroyed(holder: SurfaceHolder) {
                                         previewStarted = false
-                                        broadcaster.stopPreview()
+                                        broadcaster.detachPreviewView()
                                     }
                                 })
                                 previewView.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
@@ -792,7 +812,7 @@ private fun LivePreviewPanel(
 
                                     override fun onViewDetachedFromWindow(view: android.view.View) {
                                         previewStarted = false
-                                        broadcaster.release()
+                                        broadcaster.detachPreviewView()
                                     }
                                 })
                                 startWhenReady()

@@ -145,6 +145,10 @@ export function serializeLiveSession(session) {
     endedAt: timestampIso(session.endedAt) || session.endedAt || "",
     lastHeartbeatAt: timestampIso(session.lastHeartbeatAt) || session.lastHeartbeatAt || "",
     lastProviderActivityAt: timestampIso(session.lastProviderActivityAt) || session.lastProviderActivityAt || "",
+    ingestConnectedAt: timestampIso(session.ingestConnectedAt) || session.ingestConnectedAt || "",
+    videoUidObservedAt: timestampIso(session.videoUidObservedAt) || session.videoUidObservedAt || "",
+    viewerReadyAt: timestampIso(session.viewerReadyAt) || session.viewerReadyAt || "",
+    projectionLiveAt: timestampIso(session.projectionLiveAt) || session.projectionLiveAt || "",
   };
 }
 
@@ -429,7 +433,7 @@ export async function startLiveSession(req, res) {
     if (!purpose || !title) return res.status(400).json({ error: "Live purpose and title are required." });
     if (!startRequestId) return res.status(400).json({ error: "A Live start idempotency key is required.", code: "IDEMPOTENCY_KEY_REQUIRED" });
     if (String(publisherTransport || "").toLowerCase() === "whip") {
-      return res.status(409).json({ error: "Browser WHIP broadcasting is disabled for Release 1.", code: "MEDIA_PROFILE_NOT_ENABLED" });
+      return res.status(409).json({ error: "Broadcast from the Paragon Planet Android app or connect OBS/Desktop.", code: "MEDIA_PROFILE_NOT_ENABLED" });
     }
 
     const provider = streamLiveProviderStatus();
