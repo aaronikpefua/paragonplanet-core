@@ -810,48 +810,52 @@ function LiveViewer({ session, onClose }) {
     return undefined;
   }, [selectedPlaybackTransport, selectedPlaybackUrl, session.id, useHls, useWhep]);
 
-  if (!selectedPlaybackUrl || (!useHls && !useWhep)) {
-    return <p style={noticeStyle}>Preparing Live stream...</p>;
-  }
+  const playbackReady = Boolean(selectedPlaybackUrl && (useHls || useWhep));
   const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
   return (
     <section style={liveRoomStyle}>
-      <video
-        ref={playerRef}
-        controls={ended || playbackControls}
-        autoPlay
-        playsInline
-        preload="auto"
-        style={liveRoomVideoStyle}
-        onLoadedData={() => {
-          window.clearTimeout(startupTimerRef.current);
-          if (playerRef.current?.readyState >= 2) setPlayerMessage("");
-        }}
-        onCanPlay={() => {
-          window.clearTimeout(startupTimerRef.current);
-          setPlayerMessage("");
-          playLiveVideo(playerRef.current, () => setPlaybackControls(true));
-        }}
-        onPlaying={() => {
-          window.clearTimeout(startupTimerRef.current);
-          window.clearTimeout(firstFrameTimerRef.current);
-          setPlayerMessage("");
-          logLiveTiming(timingRef.current, "T6_first_frame_playing", {
-            estimatedLiveLatencySeconds: Number.isFinite(hlsRef.current?.latency)
-              ? Number(hlsRef.current.latency.toFixed(2))
-              : null,
-          });
-        }}
-        onWaiting={() => {
-          window.clearTimeout(startupTimerRef.current);
-          startupTimerRef.current = window.setTimeout(() => {
-            const video = playerRef.current;
-            if (video?.readyState >= 2 && !video.paused && !video.ended) return;
-            setPlayerMessage("Buffering Live stream...");
-          }, 1400);
-        }}
-        onEnded={() => setPlayerMessage("This Live has ended.")}
-      />
+      {playbackReady ? (
+        <video
+          ref={playerRef}
+          controls={ended || playbackControls}
+          autoPlay
+          playsInline
+          preload="auto"
+          style={liveRoomVideoStyle}
+          onLoadedData={() => {
+            window.clearTimeout(startupTimerRef.current);
+            if (playerRef.current?.readyState >= 2) setPlayerMessage("");
+          }}
+          onCanPlay={() => {
+            window.clearTimeout(startupTimerRef.current);
+            setPlayerMessage("");
+            playLiveVideo(playerRef.current, () => setPlaybackControls(true));
+          }}
+          onPlaying={() => {
+            window.clearTimeout(startupTimerRef.current);
+            window.clearTimeout(firstFrameTimerRef.current);
+            setPlayerMessage("");
+            logLiveTiming(timingRef.current, "T6_first_frame_playing", {
+              estimatedLiveLatencySeconds: Number.isFinite(hlsRef.current?.latency)
+                ? Number(hlsRef.current.latency.toFixed(2))
+                : null,
+            });
+          }}
+          onWaiting={() => {
+            window.clearTimeout(startupTimerRef.current);
+            startupTimerRef.current = window.setTimeout(() => {
+              const video = playerRef.current;
+              if (video?.readyState >= 2 && !video.paused && !video.ended) return;
+              setPlayerMessage("Buffering Live stream...");
+            }, 1400);
+          }}
+          onEnded={() => setPlayerMessage("This Live has ended.")}
+        />
+      ) : (
+        <div style={{ ...liveRoomVideoStyle, display: "grid", placeItems: "center" }}>
+          <p style={noticeStyle}>Preparing Live stream...</p>
+        </div>
+      )}
       <div style={liveBrandOverlayStyle}>
         <span style={liveLogoDotStyle}>🌐</span>
         <strong>Paragon Planet</strong>
