@@ -240,6 +240,35 @@ export default function Upload() {
       const effectiveTitle = isMeetUpMode ? selectedArea.title : title;
       const effectiveDescription = isMeetUpMode ? selectedArea.pitch : description;
       const effectiveCategory = isMeetUpMode ? selectedArea.title : category;
+      let acceptedQuote = null;
+      if (!isMeetUpMode) {
+        setStatusText("Loading current video terms and pricing...");
+        const policyRes = await appCheckFetch(`${BACKEND_URL}/api/video/upload-policy?fileSize=${encodeURIComponent(file.size)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const policy = await readJsonResponse(policyRes);
+        if (!policyRes.ok) throw new Error(policy.error || "Could not load current video upload terms");
+        acceptedQuote = policy.quote;
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+        const uploadFee = Number(policy.quote?.uploadFee || 0);
+        const maintenanceFee = Number(policy.quote?.monthlyMaintenanceFee || 0);
+        const message = [
+          "PARAGON PLANET",
+          "VIDEO UPLOAD TERMS & CONDITIONS",
+          "",
+          `Video size: ${sizeMb} MB`,
+          `Current Upload Fee: ₦${uploadFee}`,
+          `Monthly Maintenance: ₦${maintenanceFee}/month`,
+          `Maximum Upload Size: ${Math.round(Number(policy.quote?.maxUploadSizeBytes || 0) / (1024 * 1024))} MB`,
+          "",
+          policy.terms?.body || "",
+          "",
+          "Click OK only if you have read and agree to the Video Upload Terms & Conditions and displayed charges.",
+        ].join("\n");
+        if (!window.confirm(message)) {
+          throw new Error("Video upload cancelled before terms acceptance.");
+        }
+      }
 
       const res = await appCheckFetch(`${BACKEND_URL}/generate-upload-url`, {
         method: "POST",
@@ -256,13 +285,18 @@ export default function Upload() {
           title: effectiveTitle,
           description: effectiveDescription,
           category: effectiveCategory,
+          acceptedTerms: !isMeetUpMode,
+          pricingVersion: acceptedQuote?.pricingVersion,
+          termsVersion: acceptedQuote?.termsVersion,
+          uploadFeeAccepted: acceptedQuote?.uploadFee,
+          monthlyMaintenanceAccepted: acceptedQuote?.monthlyMaintenanceFee,
         }),
       });
 
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error || "Could not create upload URL");
 
-      const { uploadUrl, fileName, fileUrl } = data;
+      const { uploadUrl, fileName, fileUrl, uploadId } = data;
       if (!fileUrl) throw new Error("Backend did not return original video URL");
       const cleanName = fileName.split("/").pop();
       const backendVideoId = data.video?.videoId || cleanName.split("-")[0];
@@ -303,6 +337,21 @@ export default function Upload() {
         videoId: backendVideoId,
         durationMs: Math.round(performance.now() - uploadStart),
       });
+      if (!isMeetUpMode && uploadId) {
+        await appCheckFetch(`${BACKEND_URL}/api/video/upload-complete`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            videoId: backendVideoId,
+            uploadId,
+          }),
+        }).catch((completeError) => {
+          console.warn("Upload completion reconciliation request failed:", completeError);
+        });
+      }
       try {
         window.sessionStorage?.setItem(
           RECENT_UPLOAD_STORAGE_KEY,

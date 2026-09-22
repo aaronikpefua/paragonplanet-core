@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth } from "../config/firebase";
 
@@ -6,6 +6,7 @@ import PromoterApproval from "./admin/PromoterApproval";
 import WithdrawalsAdmin from "./admin/WithdrawalsAdmin";
 import AdminManagementPanel from "./admin/AdminManagementPanel";
 import MarketplaceAdmin from "./admin/MarketplaceAdmin";
+import CitizenVideoAdmin from "./admin/CitizenVideoAdmin";
 import SharedInbox from "./SharedInbox";
 
 export default function Admin() {
@@ -15,6 +16,23 @@ export default function Admin() {
 
   const [activeTab, setActiveTab] = useState("overview");
   const [managementTab, setManagementTab] = useState("promoters");
+  const [adminAccess, setAdminAccess] = useState(user ? "checking" : "denied");
+
+  useEffect(() => {
+    let active = true;
+    if (!user) {
+      return () => { active = false; };
+    }
+    user.getIdTokenResult()
+      .then((token) => {
+        if (active) setAdminAccess(token.claims?.admin === true || token.claims?.role === "admin" ? "allowed" : "denied");
+      })
+      .catch(() => { if (active) setAdminAccess("denied"); });
+    return () => { active = false; };
+  }, [user]);
+
+  if (adminAccess === "checking") return <div style={{ padding: 30 }}>Checking Admin permission…</div>;
+  if (adminAccess !== "allowed") return <div style={{ padding: 30 }}><h1>Admin permission required</h1><p>This dashboard is restricted to authorized administrators.</p></div>;
 
   return (
 
@@ -81,6 +99,8 @@ export default function Admin() {
         >
           Admin Inbox
         </button>
+
+        <button onClick={() => setActiveTab("citizen-video")} style={tabStyle(activeTab === "citizen-video")}>Citizen Video</button>
 
       </div>
 
@@ -340,6 +360,8 @@ export default function Admin() {
           />
         </section>
       )}
+
+      {activeTab === "citizen-video" && <CitizenVideoAdmin />}
 
     </div>
   );

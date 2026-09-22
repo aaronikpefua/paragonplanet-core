@@ -22,11 +22,18 @@ import { authenticate } from "./middlewares/auth.middleware.js";
 import { rateLimit } from "./middlewares/rateLimit.middleware.js";
 import { requestObservability } from "./middlewares/observability.middleware.js";
 import {
+  completeVideoUpload,
+  getVideoUploadPolicy,
   requestUploadUrl,
   listVideos,
   triggerCompression,
   processVideoQueue
 } from "./video/controllers/video.controller.js";
+import {
+  runVideoDeletion,
+  runVideoMaintenance,
+  runVideoReconciliation,
+} from "./video/controllers/videoWorker.controller.js";
 import { supportBacker, supportSuperboss, supportVideo } from "./controllers/support.controller.js";
 import { initializeDeposit, verifyDeposit } from "./controllers/deposit.controller.js";
 import { listBanks, resolveBankAccount, requestWithdraw } from "./controllers/bank.controller.js";
@@ -97,6 +104,9 @@ app.post(
 app.post("/trigger-compression", verifyAppCheckOrUploadAuth, authenticate, triggerCompression);
 app.post("/trigger-merchant-product-compression", verifyAppCheckOrUploadAuth, authenticate, triggerCompression);
 app.post("/internal/video/process-queue", processVideoQueue);
+app.post("/internal/video/reconcile", runVideoReconciliation);
+app.post("/internal/video/maintenance", runVideoMaintenance);
+app.post("/internal/video/delete", runVideoDeletion);
 app.post("/support/superboss/:supernalId", verifyAppCheckOrAuthenticatedUser, authenticate, supportSuperboss);
 app.post("/support/backer/:backerId", verifyAppCheckOrAuthenticatedUser, authenticate, supportBacker);
 app.post("/support/:videoId", verifyAppCheckOrAuthenticatedUser, authenticate, supportVideo);
@@ -108,6 +118,8 @@ app.get("/bank/list", verifyAppCheckOrAuthenticatedUser, authenticate, listBanks
 app.post("/bank/resolve", verifyAppCheckOrAuthenticatedUser, authenticate, resolveBankAccount);
 app.post("/withdraw/request", verifyAppCheckOrAuthenticatedUser, authenticate, requestWithdraw);
 app.get("/api/video/list", listVideos);
+app.get("/api/video/upload-policy", verifyAppCheckOrAuthenticatedUser, authenticate, getVideoUploadPolicy);
+app.post("/api/video/upload-complete", verifyAppCheckOrAuthenticatedUser, authenticate, completeVideoUpload);
 app.use("/api/wallet", verifyAppCheckOrAuthenticatedUser, walletRoutes);
 app.use("/api/marketplace", verifyAppCheckOrAuthenticatedUser, marketplaceRoutes);
 app.use("/api/google-play-billing", verifyAppCheckOrAuthenticatedUser, googlePlayBillingRoutes);

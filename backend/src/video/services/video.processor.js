@@ -267,6 +267,11 @@ export async function processUploadedVideo({
       filePath: thumbnailPath,
       contentType: "image/jpeg",
     });
+    const existingSnap = await videoRef.get();
+    const existing = existingSnap.exists ? existingSnap.data() || {} : {};
+    const isCitizenVideo = collectionName === "videos" && String(existing.contentDomain || "citizen") === "citizen";
+    const isMeetUp = existing.uploadPurpose === "meet_up_video" || existing.visibility === "meet_up";
+    const isMarketplace = existing.uploadPurpose === "merchant_product" || existing.visibility === "marketplace" || existing.productId || existing.merchantId;
 
     await videoRef.set(
       {
@@ -276,6 +281,10 @@ export async function processUploadedVideo({
         streamUrl: desktopUrl,
         status: "active",
         processingStatus: "ready",
+        lifecycleStatus: "READY",
+        ...(isCitizenVideo && !isMeetUp && !isMarketplace
+          ? { contentDomain: "citizen", feedKind: "home", feedEligible: true }
+          : { feedEligible: false, feedKind: isMarketplace ? "marketplace" : "none" }),
         updatedAt: new Date(),
       },
       { merge: true }

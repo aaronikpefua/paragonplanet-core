@@ -63,6 +63,14 @@ class UploadViewModel(
         )
     }
 
+    fun updateTermsAccepted(value: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            termsAccepted = value,
+            errorMessage = null,
+            uploadedVideoId = null,
+        )
+    }
+
     fun setPickedVideo(uri: Uri?) {
         _uiState.value = _uiState.value.copy(
             videoUri = uri,
@@ -79,6 +87,7 @@ class UploadViewModel(
             source = UploadSource.FILE,
             linkUrl = "",
             videoUri = null,
+            termsAccepted = false,
             isUploading = false,
             progress = 0,
             message = "Choose a new performance and send it into the native upload flow.",
@@ -95,6 +104,11 @@ class UploadViewModel(
         }
         if (state.categories.isEmpty()) {
             _uiState.value = state.copy(errorMessage = "Choose at least one talent category.")
+            return
+        }
+
+        if (!state.termsAccepted) {
+            _uiState.value = state.copy(errorMessage = "Accept the current Video Upload Terms & Conditions before uploading.")
             return
         }
 
@@ -122,6 +136,7 @@ class UploadViewModel(
                     title = state.title,
                     description = state.description,
                     category = state.categories.joinToString(", "),
+                    acceptedTerms = state.termsAccepted,
                 ) { progress, status ->
                     _uiState.value = _uiState.value.copy(
                         progress = progress,
@@ -170,6 +185,7 @@ data class UploadUiState(
     val source: UploadSource = UploadSource.FILE,
     val linkUrl: String = "",
     val videoUri: Uri? = null,
+    val termsAccepted: Boolean = false,
     val isUploading: Boolean = false,
     val progress: Int = 0,
     val message: String = "Choose a video and upload it through the native flow.",

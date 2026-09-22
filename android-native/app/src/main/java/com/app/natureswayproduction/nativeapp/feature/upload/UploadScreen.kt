@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -369,6 +370,23 @@ fun UploadScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Checkbox(
+                                checked = state.termsAccepted,
+                                onCheckedChange = uploadViewModel::updateTermsAccepted,
+                                enabled = !state.isUploading,
+                            )
+                            Text(
+                                text = "I have read and agree to the current Video Upload Terms & Conditions and displayed upload/maintenance charges.",
+                                color = Color(0xFF4C453D),
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
 
                         Button(

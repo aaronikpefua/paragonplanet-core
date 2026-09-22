@@ -1,105 +1,103 @@
-import { useEffect, useState } from "react";
-import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { API_URL, appCheckFetch } from "../lib/supportActions";
 import { logPerf } from "../lib/perf";
 
 const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
 const RECENT_UPLOAD_TTL_MS = 10 * 60 * 1000;
+const PAGE_SIZE = 20;
 
 export default function useVideos() {
   const [videos, setVideos] = useState([]);
-  const [profilesByUid, setProfilesByUid] = useState({});
+  const loadingRef = useRef(false);
+  const cursorRef = useRef("");
+  const hasMoreRef = useRef(false);
 
-  useEffect(() => {
-    const start = performance.now();
-    const unsubscribeProfiles = onSnapshot(collection(db, "public_profiles"), (snap) => {
-      logPerf("firestore.operation", {
-        platform: "web",
-        domain: "feed",
-        operation: "listen-public-profiles",
-        collection: "public_profiles",
-        operationType: "listen",
-        resultCount: snap.docs.length,
-        durationMs: Math.round(performance.now() - start),
-      });
-      const profiles = {};
-      snap.docs.forEach((profileDoc) => {
-        profiles[profileDoc.id] = profileDoc.data() || {};
-      });
-      setProfilesByUid(profiles);
+  const mergeVideos = useCallback((current, incoming) => {
+    const byId = new Map();
+    [...current, ...incoming].forEach((video) => {
+      if (video?.id) byId.set(video.id, video);
     });
-
-    return () => unsubscribeProfiles();
+    return [...byId.values()];
   }, []);
 
-  useEffect(() => {
-    const q = query(
-      collection(db, "videos"),
-      orderBy("createdAt", "desc"),
-      limit(40)
-    );
+  const loadPage = useCallback(async ({ reset = false } = {}) => {
+    if (loadingRef.current) return;
+    if (!reset && !hasMoreRef.current) return;
 
+    loadingRef.current = true;
+    const cursor = reset ? "" : cursorRef.current;
+    const params = new URLSearchParams({ pageSize: String(PAGE_SIZE) });
+    if (cursor) params.set("cursor", cursor);
     const start = performance.now();
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const data = snap.docs
-        .map((doc) => ({
-          id: doc.id,
-          ...doc.data()
-        }))
-        .map((video) => normalizeFeedVideo(video, profilesByUid))
+
+    try {
+      const response = await appCheckFetch(`${API_URL}/api/video/list?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Could not load videos");
+
+      const items = Array.isArray(payload) ? payload : payload.items || [];
+      const normalizedItems = items
+        .map((video) => normalizeFeedVideo(video))
         .filter((video) => isHomeFeedVideo(video));
+      const recentUpload = reset ? readRecentHomeUpload() : null;
+      const withRecentUpload =
+        recentUpload && isHomeFeedVideo(recentUpload)
+          ? [normalizeFeedVideo(recentUpload, true), ...normalizedItems]
+          : normalizedItems;
 
-      const recentUpload = readRecentHomeUpload();
-      const snapshotHasRecentUpload = Boolean(
-        recentUpload?.id && data.some((video) => video.id === recentUpload.id)
-      );
-      const mergedData =
-        recentUpload && !snapshotHasRecentUpload && isHomeFeedVideo(recentUpload)
-          ? [normalizeFeedVideo(recentUpload, profilesByUid, true), ...data]
-          : data;
+      setVideos((current) => (reset ? mergeVideos([], withRecentUpload) : mergeVideos(current, withRecentUpload)));
+      const next = Array.isArray(payload) ? "" : payload.nextCursor || "";
+      const more = Array.isArray(payload) ? false : Boolean(payload.hasMore && next);
+      cursorRef.current = next;
+      hasMoreRef.current = more;
 
-      setVideos(mergedData);
-      logPerf("feed.snapshot", {
+      logPerf("feed.page", {
         platform: "web",
         domain: "feed",
-        operation: "listen-home-videos",
-        collection: "videos",
-        resultCount: snap.docs.length,
-        usableItemCount: mergedData.length,
+        operation: "load-home-videos-page",
+        resultCount: items.length,
+        usableItemCount: normalizedItems.length,
+        hasMore: more,
         durationMs: Math.round(performance.now() - start),
       });
-      if (recentUpload?.id && snapshotHasRecentUpload) {
-        logPerf("upload.web.T6_feed_api_visible", {
-          platform: "web",
-          domain: "upload",
-          videoId: recentUpload.id,
-          durationMs: Date.now() - recentUpload.createdAtMs,
-        });
-      }
-      if (recentUpload?.id && mergedData.some((video) => video.id === recentUpload.id)) {
-        logPerf("upload.web.T7_home_feed_received", {
-          platform: "web",
-          domain: "upload",
-          videoId: recentUpload.id,
-          source: snapshotHasRecentUpload ? "firestore-snapshot" : "recent-upload-handoff",
-          durationMs: Date.now() - recentUpload.createdAtMs,
-        });
-      }
-    });
+    } catch (error) {
+      console.warn("Could not load paginated video feed:", error);
+    } finally {
+      loadingRef.current = false;
+    }
+  }, [mergeVideos]);
 
-    return () => unsubscribe();
-  }, [profilesByUid]);
+  useEffect(() => {
+    loadPage({ reset: true });
+  }, [loadPage]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      if (!hasMoreRef.current || loadingRef.current) return;
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const fullHeight = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
+      if (fullHeight - (scrollTop + viewportHeight) < 900) {
+        loadPage();
+      }
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [loadPage]);
 
   return videos;
 }
 
-function normalizeFeedVideo(video, profilesByUid, recentUploadOptimistic = false) {
+function normalizeFeedVideo(video, recentUploadOptimistic = false) {
+  const displayName = resolveVideoDisplayName(video);
   return {
     ...video,
+    id: video.id || video.videoId,
     recentUploadOptimistic,
-    displayName: resolveVideoDisplayName(video, profilesByUid),
-    performerName: resolveVideoDisplayName(video, profilesByUid),
-    creatorName: resolveVideoDisplayName(video, profilesByUid),
+    displayName,
+    performerName: displayName,
+    creatorName: displayName,
     thumbnailUrl:
       video.thumbnailUrl ||
       video.coverImage ||
@@ -129,19 +127,14 @@ function readRecentHomeUpload() {
   }
 }
 
-function resolveVideoDisplayName(video, profilesByUid) {
-  const uid = video.uid || video.userId || "";
-  const profile = profilesByUid[uid] || {};
+function resolveVideoDisplayName(video = {}) {
   return (
-    profile.displayName ||
-    profile.stageName ||
-    profile.realName ||
-    profile.name ||
     video.displayName ||
     video.performerName ||
     video.creatorName ||
     video.stageName ||
     video.realName ||
+    video.name ||
     "Paragon Creator"
   );
 }

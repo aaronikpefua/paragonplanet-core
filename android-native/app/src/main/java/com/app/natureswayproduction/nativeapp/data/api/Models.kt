@@ -219,6 +219,11 @@ data class UploadRequestPayload(
     val fileSize: Long,
     val durationSeconds: Int,
     val uploadPurpose: String = "home_video",
+    val acceptedTerms: Boolean = false,
+    val pricingVersion: String? = null,
+    val termsVersion: String? = null,
+    val uploadFeeAccepted: Double? = null,
+    val monthlyMaintenanceAccepted: Double? = null,
 )
 
 data class UploadTicket(
@@ -226,6 +231,18 @@ data class UploadTicket(
     val objectPath: String,
     val fileUrl: String,
     val videoId: String,
+    val uploadId: String = "",
+)
+
+data class VideoUploadPolicy(
+    val pricingVersion: String,
+    val termsVersion: String,
+    val uploadFee: Double,
+    val monthlyMaintenanceFee: Double,
+    val currency: String,
+    val maxUploadSizeBytes: Long,
+    val termsTitle: String,
+    val termsBody: String,
 )
 
 data class WalletBankOption(

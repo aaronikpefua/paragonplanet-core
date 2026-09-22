@@ -26,6 +26,7 @@ class UploadRepository(
         title: String,
         description: String,
         category: String,
+        acceptedTerms: Boolean,
         onProgress: (Int, String) -> Unit,
     ): String = withContext(Dispatchers.IO) {
         val idToken = sessionRepository.getFreshIdToken()
@@ -40,8 +41,23 @@ class UploadRepository(
         if (appCheckToken == null) {
             onProgress(0, "App Check token not available. Continuing with trusted tester upload path…")
         } else {
-            onProgress(0, "App Check token acquired. Requesting signed upload URL…")
+            onProgress(0, "App Check token acquired. Loading current video terms…")
         }
+
+        if (!acceptedTerms) {
+            throw IllegalStateException("Accept the current Video Upload Terms & Conditions before uploading.")
+        }
+
+        val policy = apiService.fetchVideoUploadPolicy(
+            idToken = idToken,
+            appCheckToken = appCheckToken,
+            fileSize = meta.sizeBytes,
+        )
+
+        onProgress(
+            1,
+            "Accepted ${policy.termsTitle}: upload ₦${policy.uploadFee.toInt()}, monthly ₦${policy.monthlyMaintenanceFee.toInt()}."
+        )
 
         val ticket = apiService.requestVideoUpload(
             idToken = idToken,
@@ -54,11 +70,26 @@ class UploadRepository(
                 fileType = meta.mimeType,
                 fileSize = meta.sizeBytes,
                 durationSeconds = meta.durationSeconds,
+                acceptedTerms = true,
+                pricingVersion = policy.pricingVersion,
+                termsVersion = policy.termsVersion,
+                uploadFeeAccepted = policy.uploadFee,
+                monthlyMaintenanceAccepted = policy.monthlyMaintenanceFee,
             )
         )
 
         onProgress(5, "Uploading video file…")
         uploadToSignedUrl(uri, meta.mimeType, ticket.uploadUrl, onProgress)
+        if (ticket.uploadId.isNotBlank()) {
+            runCatching {
+                apiService.completeVideoUpload(
+                    idToken = idToken,
+                    appCheckToken = appCheckToken,
+                    videoId = ticket.videoId,
+                    uploadId = ticket.uploadId,
+                )
+            }
+        }
 
         onProgress(96, "Queuing processing…")
         apiService.triggerVideoCompression(

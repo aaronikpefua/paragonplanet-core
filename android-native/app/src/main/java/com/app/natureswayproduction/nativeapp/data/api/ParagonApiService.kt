@@ -414,11 +414,16 @@ class ParagonApiService {
 
     suspend fun fetchFeed(appCheckToken: String? = null): List<VideoSummary> = withContext(Dispatchers.IO) {
         val response = request(
-            path = "/api/video/list",
+            path = "/api/video/list?pageSize=20",
             method = "GET",
             appCheckToken = appCheckToken
         )
-        val array = JSONArray(response)
+        val trimmed = response.trim()
+        val array = if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            JSONObject(trimmed).optJSONArray("items") ?: JSONArray()
+        }
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
@@ -491,6 +496,11 @@ class ParagonApiService {
                 .put("fileSize", payload.fileSize)
                 .put("durationSeconds", payload.durationSeconds)
                 .put("uploadPurpose", payload.uploadPurpose)
+                .put("acceptedTerms", payload.acceptedTerms)
+                .put("pricingVersion", payload.pricingVersion)
+                .put("termsVersion", payload.termsVersion)
+                .put("uploadFeeAccepted", payload.uploadFeeAccepted)
+                .put("monthlyMaintenanceAccepted", payload.monthlyMaintenanceAccepted)
                 .toString()
         )
         val json = JSONObject(response)
@@ -504,6 +514,53 @@ class ParagonApiService {
             objectPath = objectPath,
             fileUrl = fileUrl,
             videoId = videoId,
+            uploadId = json.optString("uploadId"),
+        )
+    }
+
+    suspend fun fetchVideoUploadPolicy(
+        idToken: String,
+        appCheckToken: String?,
+        fileSize: Long,
+    ): VideoUploadPolicy = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/video/upload-policy?fileSize=$fileSize",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        )
+        val json = JSONObject(response)
+        val quote = json.optJSONObject("quote") ?: JSONObject()
+        val terms = json.optJSONObject("terms") ?: JSONObject()
+        VideoUploadPolicy(
+            pricingVersion = quote.optString("pricingVersion"),
+            termsVersion = quote.optString("termsVersion"),
+            uploadFee = quote.optDouble("uploadFee", 0.0),
+            monthlyMaintenanceFee = quote.optDouble("monthlyMaintenanceFee", 0.0),
+            currency = quote.optString("currency").ifBlank { "NGN" },
+            maxUploadSizeBytes = quote.optLong("maxUploadSizeBytes", 0L),
+            termsTitle = terms.optString("title").ifBlank { "Video Upload Terms & Conditions" },
+            termsBody = terms.optString("body"),
+        )
+    }
+
+    suspend fun completeVideoUpload(
+        idToken: String,
+        appCheckToken: String?,
+        videoId: String,
+        uploadId: String,
+    ) = withContext(Dispatchers.IO) {
+        request(
+            path = "/api/video/upload-complete",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject()
+                .put("videoId", videoId)
+                .put("uploadId", uploadId)
+                .toString()
         )
     }
 
