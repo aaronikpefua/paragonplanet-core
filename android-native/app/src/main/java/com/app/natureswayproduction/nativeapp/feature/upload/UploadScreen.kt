@@ -372,6 +372,21 @@ fun UploadScreen(
                             }
                         }
 
+                        if (state.videoUri != null && state.pricingVersion.isNotBlank()) {
+                            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F2E8))) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("PARAGON PLANET VIDEO UPLOAD", fontWeight = FontWeight.Bold)
+                                    Text("Video: ${state.selectedFileName}")
+                                    Text("Video Size: ${"%.1f".format(state.selectedFileSizeBytes / 1048576.0)} MB")
+                                    Text("Current Upload Fee: ${state.uploadFee.toInt()} PARAG")
+                                    Text("Monthly Maintenance: ${state.monthlyMaintenanceFee.toInt()} PARAG/month")
+                                    Text("Pricing Version: ${state.pricingVersion}")
+                                    Text("Terms Version: ${state.termsVersion}")
+                                    Text(state.termsTitle, color = Color(0xFF7A5B00), fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -391,7 +406,7 @@ fun UploadScreen(
 
                         Button(
                             onClick = uploadViewModel::upload,
-                            enabled = !state.isUploading,
+                            enabled = !state.isUploading && state.pricingVersion.isNotBlank(),
                         ) {
                             Text(if (state.isUploading) "Uploading..." else "Upload")
                         }

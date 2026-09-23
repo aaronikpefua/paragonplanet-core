@@ -16,6 +16,8 @@ const MAX_VIDEO_DURATION_SECONDS = Number(
   import.meta.env.VITE_MAX_VIDEO_DURATION_SECONDS || 900
 );
 const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
+const modalBackdropStyle = { position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,.78)", display: "grid", placeItems: "center", padding: 16 };
+const modalCardStyle = { width: "min(620px,100%)", maxHeight: "90vh", overflowY: "auto", background: "#fff", color: "#111", borderRadius: 16, padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,.45)" };
 
 const CATEGORIES = [
   "Dancer",
@@ -128,8 +130,21 @@ export default function Upload() {
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [uploadSource, setUploadSource] = useState("file");
   const [videoLink, setVideoLink] = useState("");
+  const [acceptance, setAcceptance] = useState(null);
+  const acceptanceResolveRef = useRef(null);
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
+
+  const requestUploadAcceptance = (policy) => new Promise((resolve) => {
+    acceptanceResolveRef.current = resolve;
+    setAcceptance({ policy, checked: false });
+  });
+
+  const closeAcceptance = (accepted) => {
+    acceptanceResolveRef.current?.(Boolean(accepted));
+    acceptanceResolveRef.current = null;
+    setAcceptance(null);
+  };
 
   const selectedArea = useMemo(
     () => MEET_UP_AREAS[mealMode].find((area) => area.title === areaTitle) || MEET_UP_AREAS[mealMode][0],
@@ -252,20 +267,7 @@ export default function Upload() {
         const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
         const uploadFee = Number(policy.quote?.uploadFee || 0);
         const maintenanceFee = Number(policy.quote?.monthlyMaintenanceFee || 0);
-        const message = [
-          "PARAGON PLANET",
-          "VIDEO UPLOAD TERMS & CONDITIONS",
-          "",
-          `Video size: ${sizeMb} MB`,
-          `Current Upload Fee: ₦${uploadFee}`,
-          `Monthly Maintenance: ₦${maintenanceFee}/month`,
-          `Maximum Upload Size: ${Math.round(Number(policy.quote?.maxUploadSizeBytes || 0) / (1024 * 1024))} MB`,
-          "",
-          policy.terms?.body || "",
-          "",
-          "Click OK only if you have read and agree to the Video Upload Terms & Conditions and displayed charges.",
-        ].join("\n");
-        if (!window.confirm(message)) {
+        if (!await requestUploadAcceptance({ ...policy, sizeMb, uploadFee, maintenanceFee, fileName: file.name })) {
           throw new Error("Video upload cancelled before terms acceptance.");
         }
       }
@@ -438,6 +440,7 @@ export default function Upload() {
           : "Citizen videos upload to the main home video feed."}
       </p>
 
+      {acceptance && <div role="dialog" aria-modal="true" style={modalBackdropStyle}><div style={modalCardStyle}><h2>PARAGON PLANET VIDEO UPLOAD</h2><p><strong>Video:</strong> {acceptance.policy.fileName}</p><p><strong>Video Size:</strong> {acceptance.policy.sizeMb} MB</p><p><strong>Pricing Tier:</strong> {Math.ceil((acceptance.policy.quote?.tier?.minBytes || 0) / 1048576)}–{Math.round((acceptance.policy.quote?.tier?.maxBytes || 0) / 1048576)} MB</p><p><strong>Current Upload Fee:</strong> {acceptance.policy.uploadFee} PARAG</p><p><strong>Monthly Maintenance:</strong> {acceptance.policy.maintenanceFee} PARAG/month</p><p><strong>Maximum Upload Size:</strong> {Math.round(Number(acceptance.policy.quote?.maxUploadSizeBytes || 0) / 1073741824 * 10) / 10} GB</p><p><strong>Current Pricing Version:</strong> {acceptance.policy.quote?.pricingVersion}</p><p><strong>Current Terms Version:</strong> {acceptance.policy.quote?.termsVersion}</p><details><summary>View Video Upload Terms &amp; Conditions</summary><p>{acceptance.policy.terms?.body}</p></details><label><input type="checkbox" checked={acceptance.checked} onChange={(event) => setAcceptance((current) => ({ ...current, checked: event.target.checked }))} /> I have read and agree to the Terms and displayed upload and maintenance charges.</label><div style={{display:"flex",gap:12,marginTop:16}}><button type="button" onClick={() => closeAcceptance(false)}>CANCEL</button><button type="button" disabled={!acceptance.checked} onClick={() => closeAcceptance(true)}>AGREE &amp; UPLOAD</button></div></div></div>}
       <form onSubmit={handleUpload}>
         {isMeetUpMode ? (
           <>

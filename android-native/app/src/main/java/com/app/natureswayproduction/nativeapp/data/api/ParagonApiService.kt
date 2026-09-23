@@ -538,7 +538,7 @@ class ParagonApiService {
             termsVersion = quote.optString("termsVersion"),
             uploadFee = quote.optDouble("uploadFee", 0.0),
             monthlyMaintenanceFee = quote.optDouble("monthlyMaintenanceFee", 0.0),
-            currency = quote.optString("currency").ifBlank { "NGN" },
+            currency = quote.optString("currency").ifBlank { "PARAG" },
             maxUploadSizeBytes = quote.optLong("maxUploadSizeBytes", 0L),
             termsTitle = terms.optString("title").ifBlank { "Video Upload Terms & Conditions" },
             termsBody = terms.optString("body"),

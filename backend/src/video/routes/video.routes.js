@@ -21,6 +21,7 @@ import {
   updateCitizenVideoTerms,
 } from "../controllers/videoAdmin.controller.js";
 import { requireAdmin } from "../../middlewares/admin.middleware.js";
+import { heartbeatVideoView, startVideoView } from "../controllers/videoAnalytics.controller.js";
 
 const router = Router();
 
@@ -31,6 +32,8 @@ router.post("/trigger-compression", authenticate, triggerCompression);
 router.post("/trigger-merchant-product-compression", authenticate, triggerCompression);
 router.post("/process-queue", authenticate, processVideoQueue);
 router.get("/list", listVideos);
+router.post("/analytics/views", authenticate, startVideoView);
+router.post("/analytics/views/:sessionId/heartbeat", authenticate, heartbeatVideoView);
 router.get("/admin/settings", authenticate, requireAdmin, getCitizenVideoAdminSettings);
 router.put("/admin/pricing", authenticate, requireAdmin, updateCitizenVideoPricing);
 router.put("/admin/terms", authenticate, requireAdmin, updateCitizenVideoTerms);

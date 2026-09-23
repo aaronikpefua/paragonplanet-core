@@ -149,7 +149,8 @@ export default function Explore() {
           onDoubleClick={() => handleDoubleTap(video.id)}
         >
           <VideoPlayer
-            streamUrl={video.streamUrl}
+            streamUrl={video.streamHlsUrl || video.streamUrl}
+            mediaId={video.videoId || video.id}
             active={Math.abs(index - activeIndex) <= 1}
           />
 

@@ -77,6 +77,21 @@ class UploadViewModel(
             errorMessage = null,
             uploadedVideoId = null,
         )
+        if (uri != null) viewModelScope.launch {
+            runCatching { repository.loadPolicy(uri) }.onSuccess { (meta, policy) ->
+                _uiState.value = _uiState.value.copy(
+                    selectedFileName = meta.displayName,
+                    selectedFileSizeBytes = meta.sizeBytes,
+                    pricingVersion = policy.pricingVersion,
+                    termsVersion = policy.termsVersion,
+                    termsTitle = policy.termsTitle,
+                    uploadFee = policy.uploadFee,
+                    monthlyMaintenanceFee = policy.monthlyMaintenanceFee,
+                    currency = policy.currency,
+                    termsAccepted = false,
+                )
+            }.onFailure { error -> _uiState.value = _uiState.value.copy(errorMessage = error.message) }
+        }
     }
 
     fun resetForAnotherUpload() {
@@ -191,6 +206,14 @@ data class UploadUiState(
     val message: String = "Choose a video and upload it through the native flow.",
     val errorMessage: String? = null,
     val uploadedVideoId: String? = null,
+    val selectedFileName: String = "",
+    val selectedFileSizeBytes: Long = 0,
+    val pricingVersion: String = "",
+    val termsVersion: String = "",
+    val termsTitle: String = "Video Upload Terms & Conditions",
+    val uploadFee: Double = 0.0,
+    val monthlyMaintenanceFee: Double = 0.0,
+    val currency: String = "PARAG",
 )
 
 enum class UploadSource {

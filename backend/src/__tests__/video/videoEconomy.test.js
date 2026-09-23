@@ -46,6 +46,7 @@ describe("Citizen video economy foundation", () => {
     expect(pricing.videoFeesEnabled).toBe(false);
     expect(pricing.automaticWalletDeductionEnabled).toBe(false);
     expect(pricing.automaticDeletionEnabled).toBe(false);
+    expect(pricing.currency).toBe("PARAG");
     expect(pricing.tiers.every((tier) => tier.uploadFee === 0 && tier.monthlyMaintenanceFee === 0)).toBe(true);
   });
 
@@ -105,6 +106,7 @@ describe("Citizen video economy foundation", () => {
       termsVersion: "terms-current",
       uploadFee: 0,
       monthlyMaintenanceFee: 0,
+      currency: "PARAG",
     });
   });
 });

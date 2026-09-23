@@ -169,19 +169,25 @@ export async function listCitizenVideoAnalytics(req, res) {
     const collection = database.collection("videos");
     const query = collection.where("contentDomain", "==", "citizen").orderBy("createdAt", "desc");
     const page = await pagedQuery({ collection, query, cursor: req.query.cursor, limit });
-    page.items = page.items.map((video) => ({
+    page.items = await Promise.all(page.items.map(async (video) => {
+      const aggregateSnap = await database.collection("video_analytics_daily").where("videoId", "==", video.id).limit(3200).get();
+      const aggregate = aggregateSnap.docs.reduce((sum, doc) => {
+        const data = doc.data() || {};
+        sum.views += Number(data.views || 0); sum.uniqueViewers += Number(data.uniqueViewers || 0); sum.watchSeconds += Number(data.watchSeconds || 0); sum.completions += Number(data.completions || 0); return sum;
+      }, { views: 0, uniqueViewers: 0, watchSeconds: 0, completions: 0 });
+      return {
       videoId: video.id,
       title: video.title || video.caption || "Untitled video",
       citizenId: video.uid || video.citizenId || null,
       citizenName: video.userName || video.creatorName || null,
-      views: Number(video.views || video.viewCount || 0),
-      uniqueViewers: video.uniqueViewers ?? null,
-      watchMinutes: Number(video.watchMinutes || 0),
-      averageWatchDuration: video.averageWatchDuration ?? null,
-      completionRate: video.completionRate ?? null,
+      views: aggregate.views,
+      uniqueViewers: aggregate.uniqueViewers,
+      watchMinutes: aggregate.watchSeconds / 60,
+      averageWatchDuration: aggregate.views ? aggregate.watchSeconds / aggregate.views : 0,
+      completionRate: aggregate.views ? aggregate.completions / aggregate.views : 0,
       createdAt: video.createdAt || null,
       status: video.lifecycleStatus || video.processingStatus || video.status || null,
-    }));
+    }; }));
     return res.json({
       ...page,
       providerCosts: { reconciled: false, message: "Provider cost data pending reconciliation" },

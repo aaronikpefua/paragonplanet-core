@@ -4,7 +4,7 @@ export function citizenStreamConfig() {
   return {
     enabled: process.env.CITIZEN_STREAM_ENABLED === "true",
     directUploadEnabled: process.env.CITIZEN_STREAM_DIRECT_UPLOAD_ENABLED === "true",
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID || "",
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID || process.env.R2_ACCOUNT_ID || "",
     apiToken: process.env.CLOUDFLARE_STREAM_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN || "",
     directUploadExpiryMinutes: Number(process.env.CITIZEN_STREAM_DIRECT_UPLOAD_EXPIRY_MINUTES || 60),
   };
@@ -57,6 +57,28 @@ export async function createCitizenStreamDirectUpload({ videoId, maxDurationSeco
   };
 }
 
+export async function importCitizenStreamFromUrl({ videoId, sourceUrl, metadata = {} }) {
+  const config = citizenStreamConfig();
+  if (!streamConfigured(config)) return { enabled: false, reason: "CITIZEN_STREAM_DISABLED" };
+  if (!sourceUrl) throw new Error("Citizen Stream import requires an R2 source URL");
+  const response = await fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/stream/copy`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.apiToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input: sourceUrl,
+      creator: String(metadata.citizenId || "").slice(0, 64) || undefined,
+      meta: { videoId, contentDomain: "citizen", ...metadata },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.success === false || !body.result?.uid) {
+    const error = new Error(body.errors?.[0]?.message || `Cloudflare Stream URL import failed (${response.status})`);
+    error.status = 502;
+    throw error;
+  }
+  return { enabled: true, streamUid: body.result.uid, video: body.result };
+}
+
 export function streamPlaybackFromUid(streamUid) {
   if (!streamUid) return {};
   return {
@@ -82,4 +104,13 @@ export async function getCitizenStreamVideo(streamUid) {
     throw error;
   }
   return { configured: true, video: body.result };
+}
+
+export async function getCitizenStreamStorageUsage() {
+  const config = citizenStreamConfig();
+  if (!streamConfigured(config)) return { configured: false };
+  const response = await fetch(`${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/stream/storage-usage`, { headers: { Authorization: `Bearer ${config.apiToken}` } });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.success === false) throw new Error(body.errors?.[0]?.message || `Cloudflare Stream storage lookup failed (${response.status})`);
+  return { configured: true, ...body.result };
 }

@@ -19,7 +19,7 @@ export const DEFAULT_VIDEO_PRICING = Object.freeze({
   videoFeesEnabled: false,
   automaticWalletDeductionEnabled: false,
   automaticDeletionEnabled: false,
-  currency: "NGN",
+  currency: "PARAG",
   maxUploadSizeBytes: 1024 * MB,
   citizenStorageAllowanceBytes: 1024 * MB,
   gracePeriodDays: 14,
@@ -78,7 +78,7 @@ export function sanitizeVideoPricing(input = {}) {
     videoFeesEnabled: Boolean(merged.videoFeesEnabled),
     automaticWalletDeductionEnabled: Boolean(merged.automaticWalletDeductionEnabled),
     automaticDeletionEnabled: Boolean(merged.automaticDeletionEnabled),
-    currency: String(merged.currency || "NGN").toUpperCase(),
+    currency: "PARAG",
     maxUploadSizeBytes: Math.max(1, Math.floor(numeric(merged.maxUploadSizeBytes, DEFAULT_VIDEO_PRICING.maxUploadSizeBytes))),
     citizenStorageAllowanceBytes: Math.max(0, Math.floor(numeric(merged.citizenStorageAllowanceBytes, DEFAULT_VIDEO_PRICING.citizenStorageAllowanceBytes))),
     gracePeriodDays: Math.max(0, Math.floor(numeric(merged.gracePeriodDays, DEFAULT_VIDEO_PRICING.gracePeriodDays))),
@@ -298,6 +298,9 @@ export async function createVideoUploadAuthorization({
     pricingVersion: pricing.version,
     uploadFeeAccepted: quote.uploadFee,
     monthlyMaintenanceAccepted: quote.monthlyMaintenanceFee,
+    acceptedUploadFeeParag: quote.uploadFee,
+    acceptedMonthlyMaintenanceParag: quote.monthlyMaintenanceFee,
+    pricingTier: quote.tier || null,
     currency: quote.currency,
     acceptedAt: nowTimestamp(),
     expiresAt,
@@ -452,6 +455,33 @@ export async function summarizeCitizenVideoAdmin(db) {
   summary.uploadedThisMonth = month;
   statuses.forEach((status, index) => { summary.byStatus[status] = statusCounts[index]; });
   summary.processingFailures = summary.byStatus.FAILED;
+
+  const statsSnap = await db.collection("platform_stats").doc("citizen_video").get();
+  if (statsSnap.exists) {
+    const stats = statsSnap.data() || {};
+    summary.totalStorageBytes = Number(stats.logicalStorageBytes || 0);
+    summary.totalViews = Number(stats.views || 0);
+    summary.uniqueViewers = Number(stats.uniqueViewers || 0);
+    summary.watchMinutes = Number(stats.watchSeconds || 0) / 60;
+  }
+  const [r2ProviderSnap, streamProviderSnap] = await Promise.all([
+    db.collection("provider_reconciliation").doc("citizen_video_r2").get(),
+    db.collection("provider_reconciliation").doc("citizen_video_stream").get(),
+  ]);
+  if (r2ProviderSnap.exists) {
+    const provider = r2ProviderSnap.data() || {};
+    summary.r2StorageBytes = provider.storageBytes ?? null;
+    summary.r2ObjectCount = provider.objectCount ?? null;
+    summary.r2ProviderStatus = provider.status || "PENDING_RECONCILIATION";
+    summary.r2LastReconciledAt = provider.lastReconciledAt || null;
+  }
+  if (streamProviderSnap.exists) {
+    const provider = streamProviderSnap.data() || {};
+    summary.streamActiveAssets = provider.activeAssets ?? null;
+    summary.streamStorageMinutes = provider.storageMinutes ?? null;
+    summary.streamProviderStatus = provider.status || "PENDING_RECONCILIATION";
+    summary.streamLastReconciledAt = provider.lastReconciledAt || null;
+  }
 
   const queueSnap = await db.collection(VIDEO_RECONCILIATION_COLLECTION).where("status", "==", "queued").limit(1000).get();
   summary.queueDepth = queueSnap.size;

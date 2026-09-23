@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { logPerf } from "../lib/perf";
+import { auth } from "../config/firebase";
+import { API_URL, appCheckFetch } from "../lib/supportActions";
 
 export function FeedNextVideoPreloader({ streamUrl, mediaId = "" }) {
   const videoRef = useRef(null);
@@ -164,6 +166,35 @@ export default function VideoPlayer({
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" ? window.innerWidth <= 768 : false
   );
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const user = auth.currentUser;
+    if (!video || !user || !mediaId || !active) return undefined;
+    let sessionId = "";
+    let lastMediaTime = 0;
+    let stopped = false;
+    const send = async (ended = false) => {
+      if (!sessionId || stopped) return;
+      const position = Number(video.currentTime || 0);
+      const delta = video.paused ? 0 : Math.max(0, Math.min(15, position - lastMediaTime));
+      lastMediaTime = position;
+      const token = await user.getIdToken();
+      await appCheckFetch(`${API_URL}/api/video/analytics/views/${sessionId}/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ watchedDeltaSeconds: delta, positionSeconds: position, durationSeconds: Number(video.duration || 0), ended }) });
+    };
+    const start = async () => {
+      const token = await user.getIdToken();
+      const response = await appCheckFetch(`${API_URL}/api/video/analytics/views`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ videoId: mediaId, durationSeconds: Number(video.duration || 0) }) });
+      if (response.ok) sessionId = (await response.json()).sessionId || "";
+      lastMediaTime = Number(video.currentTime || 0);
+    };
+    const onPlaying = () => { if (!sessionId) void start(); };
+    const onEnded = () => void send(true);
+    video.addEventListener("playing", onPlaying);
+    video.addEventListener("ended", onEnded);
+    const timer = window.setInterval(() => void send(false), 10000);
+    return () => { void send(true); stopped = true; window.clearInterval(timer); video.removeEventListener("playing", onPlaying); video.removeEventListener("ended", onEnded); };
+  }, [mediaId, active]);
 
   const isLandscape = !isVertical;
   const isHlsStream = streamUrl?.includes(".m3u8");

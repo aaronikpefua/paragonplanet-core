@@ -22,7 +22,7 @@ import {
   markUploadComplete,
   prepareCitizenVideoUpload,
 } from "../services/videoEconomy.js";
-import { createCitizenStreamDirectUpload, streamPlaybackFromUid } from "../services/cloudflareStreamVod.js";
+import { importCitizenStreamFromUrl, streamPlaybackFromUid } from "../services/cloudflareStreamVod.js";
 
 const DEFAULT_VIDEO_FEED_PAGE_SIZE = 20;
 const MAX_VIDEO_FEED_PAGE_SIZE = 50;
@@ -471,13 +471,9 @@ export async function requestUploadUrl(req, res) {
         pricing,
       });
     }
-    const streamDirectUpload = isCitizenHomeUpload
-      ? await createCitizenStreamDirectUpload({
-          videoId: video.videoId,
-          maxDurationSeconds: Number(durationSeconds || 0) || undefined,
-          metadata: { citizenId: req.user.uid, uploadId },
-        })
-      : { enabled: false };
+    // Citizen originals upload once to R2. Stream imports that R2 object only
+    // after upload completion, so clients never upload the same bytes twice.
+    const streamDirectUpload = { enabled: false, reason: "R2_COPY_IMPORT_AFTER_UPLOAD" };
     const streamInfo = streamDirectUpload.streamUid ? streamPlaybackFromUid(streamDirectUpload.streamUid) : {};
     await admin.firestore().collection("videos").doc(video.videoId).set(
       {
@@ -557,6 +553,13 @@ export async function requestUploadUrl(req, res) {
       { merge: true }
     );
     if (isCitizenHomeUpload) {
+      await db.collection("platform_stats").doc("citizen_video").set({
+        logicalStorageBytes: admin.firestore.FieldValue.increment(Number(fileSize || 0)),
+        totalVideos: admin.firestore.FieldValue.increment(1),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    if (isCitizenHomeUpload) {
       await createVideoUploadAuthorization({
         db,
         uploadId,
@@ -628,7 +631,45 @@ export async function completeVideoUpload(req, res) {
       videoId,
       uploadId,
     });
-    return res.json({ ok: true, videoId, uploadId, status: "UPLOADED" });
+    const videoRef = db.collection("videos").doc(videoId);
+    let streamStatus = "DISABLED";
+    try {
+      const claimed = await db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(videoRef);
+        if (!snap.exists || snap.data()?.uid !== req.user.uid) return null;
+        const video = snap.data() || {};
+        if (video.streamUid) return { existing: true, video };
+        if (video.streamImportClaimedAt) return null;
+        transaction.set(videoRef, {
+          streamStatus: "STREAM_QUEUED",
+          streamImportClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
+          streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return { existing: false, video };
+      });
+      if (claimed?.existing) streamStatus = claimed.video.streamStatus || "STREAM_PROCESSING";
+      else if (claimed) {
+        const imported = await importCitizenStreamFromUrl({
+          videoId,
+          sourceUrl: claimed.video.originalUrl || claimed.video.fileUrl,
+          metadata: { citizenId: req.user.uid, uploadId },
+        });
+        streamStatus = imported.enabled ? "STREAM_PROCESSING" : "DISABLED";
+        await videoRef.set({
+          streamUid: imported.streamUid || "",
+          streamStatus,
+          streamProvider: imported.enabled ? "cloudflare_stream" : "r2_fallback",
+          streamCreatedAt: imported.enabled ? admin.firestore.FieldValue.serverTimestamp() : null,
+          streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(imported.streamUid ? streamPlaybackFromUid(imported.streamUid) : {}),
+        }, { merge: true });
+      }
+    } catch (streamError) {
+      streamStatus = "RETRYING";
+      await videoRef.set({ streamStatus, streamError: streamError.message, streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      await enqueueVideoReconciliationJob({ db, videoId, uploadId, reason: "stream_import_retry" });
+    }
+    return res.json({ ok: true, videoId, uploadId, status: "UPLOADED", streamStatus });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not mark upload complete" });
   }

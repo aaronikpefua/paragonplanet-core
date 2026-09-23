@@ -91,7 +91,7 @@ function buildPublicUrl({ publicBaseUrl, endpointOrigin, objectPath }) {
   return `${endpointOrigin}/${awsEncode(bucketName)}/${publicPath}`;
 }
 
-function createSignedR2Url({ method, objectPath, expiresSeconds = 600 }) {
+function createSignedR2Url({ method, objectPath, expiresSeconds = 600, query = {} }) {
   const { endpoint, accessKeyId, secretAccessKey, publicBaseUrl } = getR2Config();
   const endpointUrl = new URL(endpoint);
   const now = new Date();
@@ -102,6 +102,7 @@ function createSignedR2Url({ method, objectPath, expiresSeconds = 600 }) {
   const signedHeaders = "host";
 
   const queryParams = {
+    ...query,
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
     "X-Amz-Credential": `${accessKeyId}/${credentialScope}`,
     "X-Amz-Date": amzDate,
@@ -147,6 +148,24 @@ function createSignedR2Url({ method, objectPath, expiresSeconds = 600 }) {
       objectPath,
     }),
   };
+}
+
+export async function reconcileCitizenR2Usage({ maxPages = 100 } = {}) {
+  let continuationToken = "";
+  let objectCount = 0;
+  let storageBytes = 0;
+  let pages = 0;
+  do {
+    const signed = createSignedR2Url({ method: "GET", objectPath: "", expiresSeconds: 300, query: { "list-type": "2", prefix: "videos/", ...(continuationToken ? { "continuation-token": continuationToken } : {}) } });
+    const response = await fetch(signed.url);
+    if (!response.ok) throw new Error(`R2 inventory failed (${response.status})`);
+    const xml = await response.text();
+    const sizes = [...xml.matchAll(/<Size>(\d+)<\/Size>/g)].map((match) => Number(match[1]));
+    objectCount += sizes.length; storageBytes += sizes.reduce((sum, value) => sum + value, 0); pages += 1;
+    const truncated = /<IsTruncated>true<\/IsTruncated>/.test(xml);
+    continuationToken = truncated ? (xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/)?.[1] || "") : "";
+  } while (continuationToken && pages < Math.max(1, Math.min(maxPages, 1000)));
+  return { objectCount, storageBytes, complete: !continuationToken, pages };
 }
 
 export async function createSignedUploadUrl({

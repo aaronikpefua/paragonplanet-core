@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.app.natureswayproduction.nativeapp.data.api.UploadRequestPayload
+import com.app.natureswayproduction.nativeapp.data.api.VideoUploadPolicy
 import com.app.natureswayproduction.nativeapp.data.appcheck.AppCheckRepository
 import com.app.natureswayproduction.nativeapp.data.auth.SessionRepository
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,12 @@ class UploadRepository(
     private val sessionRepository: SessionRepository,
     private val appCheckRepository: AppCheckRepository,
 ) {
+    suspend fun loadPolicy(uri: Uri): Pair<FileMetaSummary, VideoUploadPolicy> = withContext(Dispatchers.IO) {
+        val idToken = sessionRepository.getFreshIdToken() ?: throw IllegalStateException("Sign in first to upload.")
+        val appCheckToken = appCheckRepository.getToken(forceRefresh = true)
+        val meta = readFileMeta(uri)
+        FileMetaSummary(meta.displayName, meta.sizeBytes) to apiService.fetchVideoUploadPolicy(idToken, appCheckToken, meta.sizeBytes)
+    }
     suspend fun uploadVideo(
         uri: Uri,
         title: String,
@@ -56,7 +63,7 @@ class UploadRepository(
 
         onProgress(
             1,
-            "Accepted ${policy.termsTitle}: upload ₦${policy.uploadFee.toInt()}, monthly ₦${policy.monthlyMaintenanceFee.toInt()}."
+            "Accepted ${policy.termsTitle}: upload ${policy.uploadFee.toInt()} PARAG, monthly ${policy.monthlyMaintenanceFee.toInt()} PARAG/month."
         )
 
         val ticket = apiService.requestVideoUpload(
@@ -195,3 +202,5 @@ private data class FileMeta(
     val mimeType: String,
     val durationSeconds: Int,
 )
+
+data class FileMetaSummary(val displayName: String, val sizeBytes: Long)

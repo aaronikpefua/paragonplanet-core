@@ -7,6 +7,7 @@ import {
   getPublicUrlForObject,
 } from "./video.service.js";
 import { MAX_VIDEO_DURATION_SECONDS } from "./video.policy.js";
+import { streamConfigured } from "./cloudflareStreamVod.js";
 
 const MAX_PROCESSING_BYTES =
   Number(process.env.MAX_VIDEO_PROCESSING_MB || 350) * 1024 * 1024;
@@ -272,18 +273,19 @@ export async function processUploadedVideo({
     const isCitizenVideo = collectionName === "videos" && String(existing.contentDomain || "citizen") === "citizen";
     const isMeetUp = existing.uploadPurpose === "meet_up_video" || existing.visibility === "meet_up";
     const isMarketplace = existing.uploadPurpose === "merchant_product" || existing.visibility === "marketplace" || existing.productId || existing.merchantId;
+    const requiresStreamReady = isCitizenVideo && !isMeetUp && !isMarketplace && streamConfigured();
 
     await videoRef.set(
       {
         thumbnailUrl,
         mobileUrl,
         desktopUrl,
-        streamUrl: desktopUrl,
+        streamUrl: requiresStreamReady ? (existing.streamHlsUrl || existing.streamUrl || desktopUrl) : desktopUrl,
         status: "active",
         processingStatus: "ready",
         lifecycleStatus: "READY",
         ...(isCitizenVideo && !isMeetUp && !isMarketplace
-          ? { contentDomain: "citizen", feedKind: "home", feedEligible: true }
+          ? { contentDomain: "citizen", feedKind: "home", feedEligible: requiresStreamReady ? Boolean(existing.streamReady) : true }
           : { feedEligible: false, feedKind: isMarketplace ? "marketplace" : "none" }),
         updatedAt: new Date(),
       },

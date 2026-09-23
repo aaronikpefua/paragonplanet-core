@@ -121,6 +121,15 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "contentDomain", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "videos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "contentDomain", "order": "ASCENDING" },
         { "fieldPath": "billingStatus", "order": "ASCENDING" }
       ]
     },
