@@ -1,7 +1,6 @@
 import admin from "../../config/firebase.js";
 import {
   getCurrentVideoPricing,
-  getCurrentVideoTerms,
   publishVideoPricingVersion,
   publishVideoTermsVersion,
   sanitizeVideoPricing,
@@ -58,17 +57,53 @@ async function pagedQuery({ collection, query, cursor, limit }) {
   };
 }
 
+export async function getCitizenVideoAdminTermsState(database) {
+  const pointerSnap = await database.collection("platform_settings").doc("citizen_video_terms").get();
+  const currentVersion = pointerSnap.exists ? String(pointerSnap.data()?.currentVersion || "") : "";
+  let current = null;
+  if (currentVersion) {
+    const currentSnap = await database.collection(VIDEO_TERMS_COLLECTION).doc(currentVersion).get();
+    if (currentSnap.exists) current = { id: currentSnap.id, ...(currentSnap.data() || {}) };
+  }
+
+  const historySnap = await database.collection(VIDEO_TERMS_COLLECTION).orderBy("createdAt", "desc").limit(20).get();
+  const history = historySnap.docs.map(serializeDoc);
+  const published = current && String(current.status || "").toLowerCase() === "published" && String(current.body || "").trim()
+    ? current
+    : null;
+  const draft = history.find((item) => String(item.status || "").toLowerCase() === "draft") || null;
+  const editable = published || draft || {
+    version: "",
+    title: "Paragon Planet Video Upload Terms & Conditions",
+    body: "",
+    status: "missing",
+    requiresAcceptance: true,
+  };
+
+  return {
+    terms: editable,
+    publication: {
+      hasPublishedTerms: Boolean(published),
+      authoritativeVersion: published?.version || published?.id || "",
+      currentPointerVersion: currentVersion,
+      draftVersion: draft?.version || draft?.id || "",
+      warning: published ? "" : "No published Citizen Video Terms & Conditions are currently active. Citizen uploads are temporarily blocked until an authorized Admin publishes a Terms version.",
+    },
+  };
+}
+
 export async function getCitizenVideoAdminSettings(req, res) {
   try {
     const database = db();
-    const [pricing, terms, overview] = await Promise.all([
+    const [pricing, termsState, overview] = await Promise.all([
       getCurrentVideoPricing(database),
-      getCurrentVideoTerms(database),
+      getCitizenVideoAdminTermsState(database),
       summarizeCitizenVideoAdmin(database),
     ]);
     return res.json({
       pricing,
-      terms,
+      terms: termsState.terms,
+      termsPublication: termsState.publication,
       overview,
       safeLaunchDefaults: {
         videoFeesEnabled: pricing.videoFeesEnabled === false,
@@ -101,7 +136,7 @@ export async function updateCitizenVideoTerms(req, res) {
     const terms = await publishVideoTermsVersion({
       db: database,
       user: req.user,
-      terms: sanitizeVideoTerms(req.body || {}),
+      terms: sanitizeVideoTerms({ ...(req.body || {}), status: "published" }),
     });
     return res.json({ terms });
   } catch (error) {
