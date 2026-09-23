@@ -4,6 +4,7 @@ import {
   DEFAULT_VIDEO_TERMS,
   assertAcceptedQuote,
   prepareCitizenVideoUpload,
+  getCurrentVideoTerms,
   resolveVideoPricingForSize,
   sanitizeVideoPricing,
   sanitizeVideoTerms,
@@ -108,5 +109,14 @@ describe("Citizen video economy foundation", () => {
       monthlyMaintenanceFee: 0,
       currency: "PARAG",
     });
+  });
+
+  it("fails closed when no published terms version is designated", async () => {
+    await expect(getCurrentVideoTerms(makeDb())).rejects.toThrow(/No published Citizen Video Terms/i);
+  });
+
+  it("does not accept a draft terms version as current production terms", async () => {
+    const draft = sanitizeVideoTerms({ ...DEFAULT_VIDEO_TERMS, version: "draft-1", status: "draft" });
+    await expect(getCurrentVideoTerms(makeDb({ terms: draft }))).rejects.toThrow(/No published Citizen Video Terms/i);
   });
 });

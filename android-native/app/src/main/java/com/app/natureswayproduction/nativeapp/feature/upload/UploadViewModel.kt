@@ -64,6 +64,7 @@ class UploadViewModel(
     }
 
     fun updateTermsAccepted(value: Boolean) {
+        if (value && (!_uiState.value.policyLoaded || !_uiState.value.termsOpened)) return
         _uiState.value = _uiState.value.copy(
             termsAccepted = value,
             errorMessage = null,
@@ -74,6 +75,12 @@ class UploadViewModel(
     fun setPickedVideo(uri: Uri?) {
         _uiState.value = _uiState.value.copy(
             videoUri = uri,
+            policyLoaded = false,
+            isPolicyLoading = uri != null,
+            policyError = null,
+            termsAccepted = false,
+            termsOpened = false,
+            termsBody = "",
             errorMessage = null,
             uploadedVideoId = null,
         )
@@ -85,13 +92,40 @@ class UploadViewModel(
                     pricingVersion = policy.pricingVersion,
                     termsVersion = policy.termsVersion,
                     termsTitle = policy.termsTitle,
+                    termsBody = policy.termsBody,
+                    termsStatus = policy.termsStatus,
+                    termsEffectiveAt = policy.termsEffectiveAt,
+                    tierMinBytes = policy.tierMinBytes,
+                    tierMaxBytes = policy.tierMaxBytes,
+                    maxUploadSizeBytes = policy.maxUploadSizeBytes,
                     uploadFee = policy.uploadFee,
                     monthlyMaintenanceFee = policy.monthlyMaintenanceFee,
                     currency = policy.currency,
                     termsAccepted = false,
+                    termsOpened = false,
+                    policyLoaded = policy.termsStatus.equals("published", ignoreCase = true) && policy.termsBody.isNotBlank(),
+                    isPolicyLoading = false,
                 )
-            }.onFailure { error -> _uiState.value = _uiState.value.copy(errorMessage = error.message) }
+            }.onFailure { error -> _uiState.value = _uiState.value.copy(
+                isPolicyLoading = false,
+                policyLoaded = false,
+                policyError = "Video upload policy could not be loaded. Please try again.",
+                errorMessage = error.message,
+            ) }
         }
+    }
+
+    fun retryPolicy() {
+        val uri = _uiState.value.videoUri ?: return
+        setPickedVideo(uri)
+    }
+
+    fun markTermsOpened() {
+        if (_uiState.value.policyLoaded) _uiState.value = _uiState.value.copy(termsOpened = true)
+    }
+
+    fun cancelSelectedUpload() {
+        setPickedVideo(null)
     }
 
     fun resetForAnotherUpload() {
@@ -103,6 +137,16 @@ class UploadViewModel(
             linkUrl = "",
             videoUri = null,
             termsAccepted = false,
+            termsOpened = false,
+            policyLoaded = false,
+            isPolicyLoading = false,
+            policyError = null,
+            selectedFileName = "",
+            selectedFileSizeBytes = 0,
+            pricingVersion = "",
+            termsVersion = "",
+            termsBody = "",
+            termsStatus = "",
             isUploading = false,
             progress = 0,
             message = "Choose a new performance and send it into the native upload flow.",
@@ -124,6 +168,10 @@ class UploadViewModel(
 
         if (!state.termsAccepted) {
             _uiState.value = state.copy(errorMessage = "Accept the current Video Upload Terms & Conditions before uploading.")
+            return
+        }
+        if (!state.policyLoaded || !state.termsStatus.equals("published", ignoreCase = true)) {
+            _uiState.value = state.copy(errorMessage = "A published Video Upload policy is required before uploading.")
             return
         }
 
@@ -214,6 +262,16 @@ data class UploadUiState(
     val uploadFee: Double = 0.0,
     val monthlyMaintenanceFee: Double = 0.0,
     val currency: String = "PARAG",
+    val termsBody: String = "",
+    val termsStatus: String = "",
+    val termsEffectiveAt: String = "",
+    val tierMinBytes: Long = 0,
+    val tierMaxBytes: Long = 0,
+    val maxUploadSizeBytes: Long = 0,
+    val policyLoaded: Boolean = false,
+    val isPolicyLoading: Boolean = false,
+    val policyError: String? = null,
+    val termsOpened: Boolean = false,
 )
 
 enum class UploadSource {

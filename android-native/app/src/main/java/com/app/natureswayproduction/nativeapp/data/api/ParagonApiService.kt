@@ -533,6 +533,7 @@ class ParagonApiService {
         val json = JSONObject(response)
         val quote = json.optJSONObject("quote") ?: JSONObject()
         val terms = json.optJSONObject("terms") ?: JSONObject()
+        val tier = quote.optJSONObject("tier") ?: JSONObject()
         VideoUploadPolicy(
             pricingVersion = quote.optString("pricingVersion"),
             termsVersion = quote.optString("termsVersion"),
@@ -542,6 +543,10 @@ class ParagonApiService {
             maxUploadSizeBytes = quote.optLong("maxUploadSizeBytes", 0L),
             termsTitle = terms.optString("title").ifBlank { "Video Upload Terms & Conditions" },
             termsBody = terms.optString("body"),
+            termsStatus = terms.optString("status"),
+            termsEffectiveAt = terms.optString("effectiveAt"),
+            tierMinBytes = tier.optLong("minBytes", 0L),
+            tierMaxBytes = tier.optLong("maxBytes", 0L),
         )
     }
 

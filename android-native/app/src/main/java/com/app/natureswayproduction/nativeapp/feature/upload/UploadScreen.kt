@@ -15,9 +15,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -86,6 +89,7 @@ fun UploadScreen(
     val context = LocalContext.current
     var pendingCaptureUri by remember { mutableStateOf<Uri?>(null) }
     var showCategoryDialog by remember { mutableStateOf(false) }
+    var showTermsDialog by remember { mutableStateOf(false) }
     var categoryDraft by remember { mutableStateOf("") }
     val currentCategory by rememberUpdatedState(state.categories.firstOrNull().orEmpty())
     var checkingCitizenAccess by remember { mutableStateOf(true) }
@@ -372,17 +376,31 @@ fun UploadScreen(
                             }
                         }
 
-                        if (state.videoUri != null && state.pricingVersion.isNotBlank()) {
+                        if (state.isPolicyLoading) {
+                            Text("Loading current video upload policy…", color = Color(0xFF4C453D))
+                        }
+
+                        state.policyError?.let { policyError ->
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(policyError, color = Color(0xFFB00020))
+                                TextButton(onClick = uploadViewModel::retryPolicy) { Text("RETRY") }
+                            }
+                        }
+
+                        if (state.videoUri != null && state.policyLoaded) {
                             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F2E8))) {
-                                Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("PARAGON PLANET VIDEO UPLOAD", fontWeight = FontWeight.Bold)
+                                Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("VIDEO UPLOAD POLICY", fontWeight = FontWeight.Bold)
                                     Text("Video: ${state.selectedFileName}")
                                     Text("Video Size: ${"%.1f".format(state.selectedFileSizeBytes / 1048576.0)} MB")
+                                    Text("Pricing Tier: ${Math.ceil(state.tierMinBytes / 1048576.0).toInt()}–${Math.round(state.tierMaxBytes / 1048576.0)} MB")
                                     Text("Current Upload Fee: ${state.uploadFee.toInt()} PARAG")
                                     Text("Monthly Maintenance: ${state.monthlyMaintenanceFee.toInt()} PARAG/month")
-                                    Text("Pricing Version: ${state.pricingVersion}")
-                                    Text("Terms Version: ${state.termsVersion}")
-                                    Text(state.termsTitle, color = Color(0xFF7A5B00), fontWeight = FontWeight.SemiBold)
+                                    Text("Maximum Upload Size: ${Math.round(state.maxUploadSizeBytes / 1048576.0)} MB")
+                                    TextButton(onClick = {
+                                        uploadViewModel.markTermsOpened()
+                                        showTermsDialog = true
+                                    }) { Text("VIEW VIDEO UPLOAD TERMS & CONDITIONS", color = Color(0xFF7A5B00), fontWeight = FontWeight.Bold) }
                                 }
                             }
                         }
@@ -395,25 +413,55 @@ fun UploadScreen(
                             Checkbox(
                                 checked = state.termsAccepted,
                                 onCheckedChange = uploadViewModel::updateTermsAccepted,
-                                enabled = !state.isUploading,
+                                enabled = !state.isUploading && state.policyLoaded && state.termsOpened,
                             )
                             Text(
-                                text = "I have read and agree to the current Video Upload Terms & Conditions and displayed upload/maintenance charges.",
+                                text = "I have read and agree to the Terms and displayed upload and maintenance charges.",
                                 color = Color(0xFF4C453D),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
 
-                        Button(
-                            onClick = uploadViewModel::upload,
-                            enabled = !state.isUploading && state.pricingVersion.isNotBlank(),
-                        ) {
-                            Text(if (state.isUploading) "Uploading..." else "Upload")
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            TextButton(onClick = uploadViewModel::cancelSelectedUpload, enabled = !state.isUploading && state.videoUri != null) {
+                                Text("CANCEL")
+                            }
+                            Button(
+                                onClick = uploadViewModel::upload,
+                                enabled = !state.isUploading && state.videoUri != null && state.policyLoaded && state.termsAccepted && state.title.isNotBlank() && state.categories.isNotEmpty(),
+                            ) {
+                                Text(if (state.isUploading) "Uploading..." else "AGREE & UPLOAD")
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showTermsDialog && state.policyLoaded) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showTermsDialog = false },
+            containerColor = Color.White,
+            title = {
+                Column {
+                    Text("PARAGON PLANET", fontWeight = FontWeight.Bold)
+                    Text("VIDEO UPLOAD TERMS & CONDITIONS", style = MaterialTheme.typography.titleMedium)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(state.termsTitle, fontWeight = FontWeight.SemiBold)
+                    Text(state.termsBody, style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTermsDialog = false }) { Text("CLOSE") }
+            },
+        )
     }
 
     if (showCategoryDialog) {

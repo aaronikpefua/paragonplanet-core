@@ -137,7 +137,7 @@ export default function Upload() {
 
   const requestUploadAcceptance = (policy) => new Promise((resolve) => {
     acceptanceResolveRef.current = resolve;
-    setAcceptance({ policy, checked: false });
+    setAcceptance({ policy, checked: false, termsOpened: false });
   });
 
   const closeAcceptance = (accepted) => {
@@ -235,7 +235,7 @@ export default function Upload() {
       }
 
       const maxUploadBytes = MAX_VIDEO_UPLOAD_MB * 1024 * 1024;
-      if (file.size > maxUploadBytes) {
+      if (isMeetUpMode && file.size > maxUploadBytes) {
         throw new Error(`Video is too large. Maximum size is ${MAX_VIDEO_UPLOAD_MB} MB.`);
       }
 
@@ -440,7 +440,7 @@ export default function Upload() {
           : "Citizen videos upload to the main home video feed."}
       </p>
 
-      {acceptance && <div role="dialog" aria-modal="true" style={modalBackdropStyle}><div style={modalCardStyle}><h2>PARAGON PLANET VIDEO UPLOAD</h2><p><strong>Video:</strong> {acceptance.policy.fileName}</p><p><strong>Video Size:</strong> {acceptance.policy.sizeMb} MB</p><p><strong>Pricing Tier:</strong> {Math.ceil((acceptance.policy.quote?.tier?.minBytes || 0) / 1048576)}–{Math.round((acceptance.policy.quote?.tier?.maxBytes || 0) / 1048576)} MB</p><p><strong>Current Upload Fee:</strong> {acceptance.policy.uploadFee} PARAG</p><p><strong>Monthly Maintenance:</strong> {acceptance.policy.maintenanceFee} PARAG/month</p><p><strong>Maximum Upload Size:</strong> {Math.round(Number(acceptance.policy.quote?.maxUploadSizeBytes || 0) / 1073741824 * 10) / 10} GB</p><p><strong>Current Pricing Version:</strong> {acceptance.policy.quote?.pricingVersion}</p><p><strong>Current Terms Version:</strong> {acceptance.policy.quote?.termsVersion}</p><details><summary>View Video Upload Terms &amp; Conditions</summary><p>{acceptance.policy.terms?.body}</p></details><label><input type="checkbox" checked={acceptance.checked} onChange={(event) => setAcceptance((current) => ({ ...current, checked: event.target.checked }))} /> I have read and agree to the Terms and displayed upload and maintenance charges.</label><div style={{display:"flex",gap:12,marginTop:16}}><button type="button" onClick={() => closeAcceptance(false)}>CANCEL</button><button type="button" disabled={!acceptance.checked} onClick={() => closeAcceptance(true)}>AGREE &amp; UPLOAD</button></div></div></div>}
+      {acceptance && <div role="dialog" aria-modal="true" style={modalBackdropStyle}><div style={modalCardStyle}><h2>PARAGON PLANET VIDEO UPLOAD</h2><p><strong>Video:</strong> {acceptance.policy.fileName}</p><p><strong>Video Size:</strong> {acceptance.policy.sizeMb} MB</p><p><strong>Pricing Tier:</strong> {Math.ceil((acceptance.policy.quote?.tier?.minBytes || 0) / 1048576)}–{Math.round((acceptance.policy.quote?.tier?.maxBytes || 0) / 1048576)} MB</p><p><strong>Current Upload Fee:</strong> {acceptance.policy.uploadFee} PARAG</p><p><strong>Monthly Maintenance:</strong> {acceptance.policy.maintenanceFee} PARAG/month</p><p><strong>Maximum Upload Size:</strong> {Math.round(Number(acceptance.policy.quote?.maxUploadSizeBytes || 0) / 1073741824 * 10) / 10} GB</p><details onToggle={(event) => { if (event.currentTarget.open) setAcceptance((current) => ({ ...current, termsOpened: true })); }}><summary style={{cursor:"pointer",fontWeight:700}}>VIEW VIDEO UPLOAD TERMS &amp; CONDITIONS</summary><div style={{whiteSpace:"pre-wrap",lineHeight:1.55}}>{acceptance.policy.terms?.body}</div></details><label><input type="checkbox" disabled={!acceptance.termsOpened} checked={acceptance.checked} onChange={(event) => setAcceptance((current) => ({ ...current, checked: event.target.checked }))} /> I have read and agree to the Terms and displayed upload and maintenance charges.</label>{!acceptance.termsOpened && <p style={{fontSize:13,color:"#6b5b40"}}>Open the Terms &amp; Conditions before accepting.</p>}<div style={{display:"flex",gap:12,marginTop:16}}><button type="button" onClick={() => closeAcceptance(false)}>CANCEL</button><button type="button" disabled={!acceptance.checked} onClick={() => closeAcceptance(true)}>AGREE &amp; UPLOAD</button></div></div></div>}
       <form onSubmit={handleUpload}>
         {isMeetUpMode ? (
           <>

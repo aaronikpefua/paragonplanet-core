@@ -139,9 +139,14 @@ export async function getCurrentVideoTerms(db) {
   const currentVersion = currentSnap.exists ? currentSnap.data()?.currentVersion : "";
   if (currentVersion) {
     const versionSnap = await db.collection(VIDEO_TERMS_COLLECTION).doc(currentVersion).get();
-    if (versionSnap.exists) return sanitizeVideoTerms(versionSnap.data() || {});
+    if (versionSnap.exists) {
+      const terms = sanitizeVideoTerms(versionSnap.data() || {});
+      if (terms.status.toLowerCase() === "published" && terms.body.trim()) return terms;
+    }
   }
-  return sanitizeVideoTerms(DEFAULT_VIDEO_TERMS);
+  const error = new Error("No published Citizen Video Terms & Conditions are currently available. Upload is temporarily unavailable.");
+  error.status = 503;
+  throw error;
 }
 
 export async function publishVideoPricingVersion({ db, user, pricing }) {

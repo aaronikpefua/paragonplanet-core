@@ -243,6 +243,10 @@ data class VideoUploadPolicy(
     val maxUploadSizeBytes: Long,
     val termsTitle: String,
     val termsBody: String,
+    val termsStatus: String,
+    val termsEffectiveAt: String,
+    val tierMinBytes: Long,
+    val tierMaxBytes: Long,
 )
 
 data class WalletBankOption(
