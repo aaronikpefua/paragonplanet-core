@@ -550,6 +550,31 @@ class ParagonApiService {
         )
     }
 
+    suspend fun fetchCitizenVideoTerms(idToken: String): CitizenVideoTerms = withContext(Dispatchers.IO) {
+        val response = request(
+            path = "/api/video/terms",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            retryWithoutAppCheckOnFailure = true,
+        )
+        val terms = JSONObject(response).optJSONObject("terms") ?: JSONObject()
+        CitizenVideoTerms(
+            title = terms.optString("title").ifBlank { "Paragon Planet Citizen Video Upload Terms & Conditions" },
+            body = terms.optString("body"),
+            requiresAcceptance = terms.optBoolean("requiresAcceptance", true),
+        )
+    }
+
+    suspend fun acceptCitizenVideoTerms(idToken: String) = withContext(Dispatchers.IO) {
+        request(
+            path = "/api/video/terms/accept",
+            method = "POST",
+            authorization = "Bearer $idToken",
+            retryWithoutAppCheckOnFailure = true,
+            jsonBody = JSONObject().put("accepted", true).toString(),
+        )
+    }
+
     suspend fun completeVideoUpload(
         idToken: String,
         appCheckToken: String?,

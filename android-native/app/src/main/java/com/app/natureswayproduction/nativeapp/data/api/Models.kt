@@ -249,6 +249,12 @@ data class VideoUploadPolicy(
     val tierMaxBytes: Long,
 )
 
+data class CitizenVideoTerms(
+    val title: String,
+    val body: String,
+    val requiresAcceptance: Boolean,
+)
+
 data class WalletBankOption(
     val code: String,
     val name: String,

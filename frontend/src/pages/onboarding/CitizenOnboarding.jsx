@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "../../config/firebase";
 import {
@@ -9,6 +9,8 @@ import {
 } from "firebase/firestore";
 import { savePublicProfile } from "../../lib/publicProfile";
 import CitizenAboutContent from "../../components/CitizenAboutContent";
+import CitizenVideoTermsDialog from "../../components/CitizenVideoTermsDialog";
+import { acceptCitizenVideoTerms, loadCitizenVideoTerms } from "../../lib/citizenVideoTerms";
 
 const TALENTS = [
   "Cultural Performer",
@@ -50,6 +52,14 @@ export default function CitizenOnboarding() {
     talents: [],
   });
   const [showAbout, setShowAbout] = useState(false);
+  const [terms, setTerms] = useState(null);
+  const [termsError, setTermsError] = useState("");
+  const [showTerms, setShowTerms] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+
+  useEffect(() => {
+    loadCitizenVideoTerms().then(setTerms).catch((error) => setTermsError(error.message));
+  }, []);
 
   const toggleTalent = (talent) => {
     setForm((prev) => ({
@@ -75,8 +85,13 @@ export default function CitizenOnboarding() {
       alert("Citizen must be 18 years or older");
       return;
     }
+    if (!terms || !acceptedTerms) {
+      alert(termsError || "Read and accept the Citizen Video Upload Terms & Conditions before continuing.");
+      return;
+    }
 
     try {
+      await acceptCitizenVideoTerms();
       const promoterSnap = invitePromoterId
         ? await getDoc(doc(db, "promoter_profiles", invitePromoterId))
         : null;
@@ -313,7 +328,22 @@ export default function CitizenOnboarding() {
       <br />
       <br />
 
-      <button type="submit">Continue</button>
+      <section style={aboutBoxStyle}>
+        <h3>Citizen Video Upload Terms & Conditions</h3>
+        {terms ? (
+          <>
+            <button type="button" onClick={() => setShowTerms(true)} style={backButtonStyle}>Read Complete Terms</button>
+            <label style={checkboxLabelStyle}>
+              <input type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} />
+              I have read and agree to the Paragon Planet Citizen Video Upload Terms & Conditions.
+            </label>
+          </>
+        ) : <p style={{ color: "#9b1c1c" }}>{termsError || "Loading Citizen Video Terms…"}</p>}
+      </section>
+
+      <button type="submit" disabled={!terms || !acceptedTerms}>Continue</button>
+
+      {showTerms && <CitizenVideoTermsDialog terms={terms} onClose={() => setShowTerms(false)} />}
 
     </form>
   );

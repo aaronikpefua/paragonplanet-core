@@ -16,12 +16,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.app.natureswayproduction.nativeapp.ui.theme.ParagonGold
 import kotlinx.coroutines.launch
+import com.app.natureswayproduction.nativeapp.data.api.CitizenVideoTerms
 
 private val citizenTalents = listOf(
     "Cultural Performer",
@@ -62,6 +66,16 @@ fun CitizenOnboardingScreen(
     var isSaving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var successNote by remember { mutableStateOf<String?>(null) }
+    var terms by remember { mutableStateOf<CitizenVideoTerms?>(null) }
+    var termsError by remember { mutableStateOf<String?>(null) }
+    var showTerms by remember { mutableStateOf(false) }
+    var acceptedTerms by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        runCatching { repository.loadCitizenVideoTerms() }
+            .onSuccess { terms = it }
+            .onFailure { termsError = it.message ?: "Citizen Video Terms are temporarily unavailable." }
+    }
 
     var stageName by remember { mutableStateOf("") }
     var realName by remember { mutableStateOf("") }
@@ -221,6 +235,17 @@ fun CitizenOnboardingScreen(
             )
         }
 
+        Text("Citizen Video Upload Terms & Conditions", fontWeight = FontWeight.Bold, color = Color(0xFF111111))
+        if (terms != null) {
+            Button(onClick = { showTerms = true }) { Text("Read Complete Terms") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = acceptedTerms, onCheckedChange = { acceptedTerms = it })
+                Text("I have read and agree to the Paragon Planet Citizen Video Upload Terms & Conditions.")
+            }
+        } else {
+            Text(termsError ?: "Loading Citizen Video Terms…", color = Color(0xFFB00020))
+        }
+
         Button(
             onClick = {
                 isSaving = true
@@ -254,7 +279,7 @@ fun CitizenOnboardingScreen(
                     }
                 }
             },
-            enabled = !isSaving,
+            enabled = !isSaving && terms != null && acceptedTerms,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(8.dp),
             colors = ButtonDefaults.buttonColors(
@@ -271,6 +296,15 @@ fun CitizenOnboardingScreen(
                 Text("Continue", fontWeight = FontWeight.ExtraBold)
             }
         }
+    }
+
+    if (showTerms && terms != null) {
+        AlertDialog(
+            onDismissRequest = { showTerms = false },
+            title = { Text(terms!!.title) },
+            text = { Text(terms!!.body, modifier = Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { Button(onClick = { showTerms = false }) { Text("Close") } },
+        )
     }
 }
 

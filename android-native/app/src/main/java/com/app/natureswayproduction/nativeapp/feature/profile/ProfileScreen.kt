@@ -61,6 +61,7 @@ import com.app.natureswayproduction.nativeapp.data.api.InvitedCitizenItem
 import com.app.natureswayproduction.nativeapp.data.api.MobileProfile
 import com.app.natureswayproduction.nativeapp.data.api.ProfileProductItem
 import com.app.natureswayproduction.nativeapp.data.api.ProfileVideoItem
+import com.app.natureswayproduction.nativeapp.data.api.CitizenVideoTerms
 import com.app.natureswayproduction.nativeapp.feature.auth.AuthViewModel
 import com.app.natureswayproduction.nativeapp.ui.theme.ParagonGold
 import kotlinx.coroutines.launch
@@ -800,6 +801,8 @@ private fun CitizenProfileHero(
     var showAmbassadors by remember { mutableStateOf(false) }
     var ambassadorError by remember { mutableStateOf<String?>(null) }
     var selectedAmbassador by remember { mutableStateOf<AmbassadorContactItem?>(null) }
+    var videoTerms by remember { mutableStateOf<CitizenVideoTerms?>(null) }
+    var termsError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -851,6 +854,13 @@ private fun CitizenProfileHero(
         ProfileActionChip("Inbox", unreadCount = inboxUnreadCount)
         ProfileActionChip("Wallet", onClick = onOpenWallet)
         ProfileActionChip("Meet-Up", onClick = onOpenMeetUp)
+        ProfileActionChip("VIDEO TERMS", onClick = {
+            scope.launch {
+                runCatching { profileViewModel.loadCitizenVideoTerms() }
+                    .onSuccess { videoTerms = it }
+                    .onFailure { termsError = it.message ?: "Citizen Video Terms are temporarily unavailable." }
+            }
+        })
         ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
         ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
             }
@@ -876,6 +886,21 @@ private fun CitizenProfileHero(
             profile = profile,
             profileViewModel = profileViewModel,
             onClose = { selectedAmbassador = null },
+        )
+    }
+    videoTerms?.let { currentTerms ->
+        AlertDialog(
+            onDismissRequest = { videoTerms = null },
+            title = { Text(currentTerms.title) },
+            text = { Text(currentTerms.body) },
+            confirmButton = { TextButton(onClick = { videoTerms = null }) { Text("Close") } },
+        )
+    }
+    termsError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { termsError = null },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { termsError = null }) { Text("Close") } },
         )
     }
 }
@@ -1315,6 +1340,7 @@ private fun BackerProfileQuickActions(
         ProfileActionChip("📹 Video Call", onClick = onOpenVideoCall)
         ProfileActionChip("Add Role", onClick = onOpenEarnRoles)
     }
+
 }
 
 @Composable

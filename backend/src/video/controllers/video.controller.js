@@ -12,7 +12,9 @@ import admin from "../../config/firebase.js";
 import { isAdminUser } from "../../lib/adminAccess.js";
 import { getPublicUrlForObject } from "../services/video.service.js";
 import {
+  acceptCurrentCitizenVideoTerms,
   assertAcceptedQuote,
+  assertCurrentCitizenVideoTermsAccepted,
   chargeCitizenVideoUploadFeeIfRequired,
   createInitialVideoBillingObligation,
   createVideoUploadAuthorization,
@@ -433,6 +435,10 @@ export async function requestUploadUrl(req, res) {
         getCurrentVideoPricing(db),
         getCurrentVideoTerms(db),
       ]);
+      if (acceptedTerms === true) {
+        await acceptCurrentCitizenVideoTerms({ db, userId: req.user.uid });
+      }
+      await assertCurrentCitizenVideoTermsAccepted({ db, userId: req.user.uid, terms });
       quote = assertAcceptedQuote({
         pricing,
         terms,
@@ -599,6 +605,40 @@ export async function requestUploadUrl(req, res) {
   } catch (error) {
     console.error("Upload URL request failed:", error);
     res.status(400).json({ error: error.message || "Could not create upload URL" });
+  }
+}
+
+export async function getCitizenVideoTerms(req, res) {
+  try {
+    const terms = await getCurrentVideoTerms(admin.firestore());
+    return res.json({
+      terms: {
+        title: terms.title,
+        body: terms.body,
+        requiresAcceptance: terms.requiresAcceptance,
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not load Citizen Video Terms & Conditions" });
+  }
+}
+
+export async function acceptCitizenVideoTerms(req, res) {
+  try {
+    if (req.body?.accepted !== true) {
+      return res.status(400).json({ error: "Explicit acceptance is required." });
+    }
+    const acceptance = await acceptCurrentCitizenVideoTerms({
+      db: admin.firestore(),
+      userId: req.user.uid,
+    });
+    return res.json({
+      accepted: acceptance.accepted,
+      status: acceptance.status,
+      acceptedAt: acceptance.acceptedAt,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ error: error.message || "Could not record Citizen Video Terms acceptance" });
   }
 }
 

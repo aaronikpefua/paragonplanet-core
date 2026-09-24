@@ -1,5 +1,7 @@
 package com.app.natureswayproduction.nativeapp.feature.onboarding
 
+import com.app.natureswayproduction.nativeapp.data.api.CitizenVideoTerms
+import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -9,6 +11,17 @@ class RoleOnboardingRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
 ) {
+    private val apiService = ParagonApiService()
+
+    suspend fun loadCitizenVideoTerms(): CitizenVideoTerms {
+        val token = auth.currentUser?.getIdToken(false)?.await()?.token ?: error("User not authenticated")
+        return apiService.fetchCitizenVideoTerms(token)
+    }
+
+    suspend fun acceptCitizenVideoTerms() {
+        val token = auth.currentUser?.getIdToken(false)?.await()?.token ?: error("User not authenticated")
+        apiService.acceptCitizenVideoTerms(token)
+    }
     private suspend fun saveWalletAccount(uid: String, role: String) {
         firestore.collection("wallet_accounts").document(uid).set(
             mapOf(
@@ -118,6 +131,7 @@ class RoleOnboardingRepository(
 
         require(form.age.toIntOrNull()?.let { it >= 18 } == true) { "Citizen must be 18 years or older" }
         require(form.talents.isNotEmpty()) { "Select at least one talent" }
+        acceptCitizenVideoTerms()
 
         val citizenData = hashMapOf(
             "uid" to uid,

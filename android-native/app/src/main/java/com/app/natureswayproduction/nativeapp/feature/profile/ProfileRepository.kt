@@ -11,6 +11,8 @@ import com.app.natureswayproduction.nativeapp.data.api.AmbassadorContactItem
 import com.app.natureswayproduction.nativeapp.data.api.InvitedCitizenItem
 import com.app.natureswayproduction.nativeapp.data.api.ProfileProductItem
 import com.app.natureswayproduction.nativeapp.data.api.ProfileVideoItem
+import com.app.natureswayproduction.nativeapp.data.api.CitizenVideoTerms
+import com.app.natureswayproduction.nativeapp.data.api.ParagonApiService
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -22,6 +24,12 @@ class ProfileRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
 ) {
+    private val apiService = ParagonApiService()
+
+    suspend fun loadCitizenVideoTerms(): CitizenVideoTerms {
+        val token = auth.currentUser?.getIdToken(false)?.await()?.token ?: error("User not authenticated")
+        return apiService.fetchCitizenVideoTerms(token)
+    }
     private data class RoleConfig(
         val key: String,
         val label: String,

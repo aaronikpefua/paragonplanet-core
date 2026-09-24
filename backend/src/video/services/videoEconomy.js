@@ -7,6 +7,7 @@ export const VIDEO_AUTH_COLLECTION = "video_upload_authorizations";
 export const VIDEO_BILLING_COLLECTION = "video_billing_obligations";
 export const VIDEO_RECONCILIATION_COLLECTION = "video_reconciliation_jobs";
 export const VIDEO_ANALYTICS_COLLECTION = "video_analytics_daily";
+export const VIDEO_TERMS_ACCEPTANCE_COLLECTION = "citizen_video_terms_acceptances";
 
 export const DEFAULT_VIDEO_PRICING_VERSION = "video-pricing-free-v1";
 export const DEFAULT_VIDEO_TERMS_VERSION = "video-terms-v1";
@@ -147,6 +148,46 @@ export async function getCurrentVideoTerms(db) {
   const error = new Error("No published Citizen Video Terms & Conditions are currently available. Upload is temporarily unavailable.");
   error.status = 503;
   throw error;
+}
+
+export async function acceptCurrentCitizenVideoTerms({ db, userId }) {
+  const terms = await getCurrentVideoTerms(db);
+  const acceptedAt = nowTimestamp();
+  const acceptanceId = `${userId}_${terms.version}`;
+  await db.collection(VIDEO_TERMS_ACCEPTANCE_COLLECTION).doc(acceptanceId).set({
+    acceptanceId,
+    userId,
+    citizenId: userId,
+    termsVersion: terms.version,
+    status: "accepted",
+    acceptedAt,
+    createdAt: acceptedAt,
+  }, { merge: true });
+  return { accepted: true, acceptedAt, status: "accepted", termsVersion: terms.version };
+}
+
+export async function getCurrentCitizenVideoTermsAcceptance({ db, userId, terms = null }) {
+  const currentTerms = terms || await getCurrentVideoTerms(db);
+  const snap = await db.collection(VIDEO_TERMS_ACCEPTANCE_COLLECTION)
+    .doc(`${userId}_${currentTerms.version}`)
+    .get();
+  const data = snap.exists ? snap.data() || {} : {};
+  return {
+    accepted: snap.exists && data.status === "accepted",
+    acceptedAt: data.acceptedAt || null,
+    status: data.status || "not_accepted",
+    termsVersion: currentTerms.version,
+  };
+}
+
+export async function assertCurrentCitizenVideoTermsAccepted({ db, userId, terms = null }) {
+  const acceptance = await getCurrentCitizenVideoTermsAcceptance({ db, userId, terms });
+  if (!acceptance.accepted) {
+    const error = new Error("Accept the current Citizen Video Terms & Conditions before uploading.");
+    error.status = 403;
+    throw error;
+  }
+  return acceptance;
 }
 
 export async function publishVideoPricingVersion({ db, user, pricing }) {

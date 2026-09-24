@@ -18,6 +18,8 @@ import { deleteUser } from "firebase/auth";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import SuperbossAboutContent from "../components/SuperbossAboutContent";
 import CitizenAboutContent from "../components/CitizenAboutContent";
+import CitizenVideoTermsDialog from "../components/CitizenVideoTermsDialog";
+import { loadCitizenVideoTerms } from "../lib/citizenVideoTerms";
 import BackerAboutContent from "../components/BackerAboutContent";
 import AmbassadorAboutContent from "../components/AmbassadorAboutContent";
 import {
@@ -55,6 +57,7 @@ export default function Profile() {
   const [inboxUnreadCount, setInboxUnreadCount] = useState(0);
   const [buyerInboxUnreadCount, setBuyerInboxUnreadCount] = useState(0);
   const [showCitizenContestantAbout, setShowCitizenContestantAbout] = useState(false);
+  const [citizenVideoTerms, setCitizenVideoTerms] = useState(null);
   const [showAmbassadorAbout, setShowAmbassadorAbout] = useState(false);
   const [showUserAbout, setShowUserAbout] = useState(false);
   const [showMerchantAbout, setShowMerchantAbout] = useState(false);
@@ -827,6 +830,10 @@ export default function Profile() {
           <Button onClick={() => navigate("/inbox")}>{renderActionLabel("Inbox", inboxUnreadCount)}</Button>
           <Button onClick={() => navigate("/wallet")}>Wallet</Button>
           <Button onClick={() => navigate("/meet-up")}>Meet-Up</Button>
+          <Button onClick={async () => {
+            try { setCitizenVideoTerms(await loadCitizenVideoTerms()); }
+            catch (error) { alert(error.message); }
+          }}>VIDEO TERMS</Button>
         </ActionRow>
       );
     }
@@ -1902,6 +1909,9 @@ export default function Profile() {
             </div>
           </div>
         </div>
+      )}
+      {citizenVideoTerms && (
+        <CitizenVideoTermsDialog terms={citizenVideoTerms} onClose={() => setCitizenVideoTerms(null)} />
       )}
 
     </div>

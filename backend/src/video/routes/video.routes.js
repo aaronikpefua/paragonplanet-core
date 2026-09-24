@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { authenticate } from "../../middlewares/auth.middleware.js";
 import {
+  acceptCitizenVideoTerms,
   completeVideoUpload,
+  getCitizenVideoTerms,
   getVideoUploadPolicy,
   requestUploadUrl,
   listVideos,
@@ -26,6 +28,8 @@ import { heartbeatVideoView, startVideoView } from "../controllers/videoAnalytic
 const router = Router();
 
 router.get("/upload-policy", authenticate, getVideoUploadPolicy);
+router.get("/terms", authenticate, getCitizenVideoTerms);
+router.post("/terms/accept", authenticate, acceptCitizenVideoTerms);
 router.post("/upload", authenticate, requestUploadUrl);
 router.post("/upload-complete", authenticate, completeVideoUpload);
 router.post("/trigger-compression", authenticate, triggerCompression);

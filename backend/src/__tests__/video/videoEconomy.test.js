@@ -3,6 +3,8 @@ import {
   DEFAULT_VIDEO_PRICING,
   DEFAULT_VIDEO_TERMS,
   assertAcceptedQuote,
+  acceptCurrentCitizenVideoTerms,
+  assertCurrentCitizenVideoTermsAccepted,
   prepareCitizenVideoUpload,
   getCurrentVideoTerms,
   resolveVideoPricingForSize,
@@ -118,5 +120,53 @@ describe("Citizen video economy foundation", () => {
   it("does not accept a draft terms version as current production terms", async () => {
     const draft = sanitizeVideoTerms({ ...DEFAULT_VIDEO_TERMS, version: "draft-1", status: "draft" });
     await expect(getCurrentVideoTerms(makeDb({ terms: draft }))).rejects.toThrow(/No published Citizen Video Terms/i);
+  });
+});
+
+describe("Citizen video terms acceptance", () => {
+  function acceptanceDb() {
+    const records = new Map();
+    const terms = sanitizeVideoTerms({ ...DEFAULT_VIDEO_TERMS, version: "terms-current", status: "published" });
+    return {
+      records,
+      collection(name) {
+        return {
+          doc(id) {
+            const key = `${name}/${id}`;
+            return {
+              async get() {
+                if (name === "platform_settings") return makeDoc({ currentVersion: terms.version });
+                if (name === "video_terms_versions") return makeDoc(terms);
+                return makeDoc(records.get(key));
+              },
+              async set(value) { records.set(key, value); },
+            };
+          },
+        };
+      },
+    };
+  }
+
+  it("records server-side acceptance for the current published version", async () => {
+    const db = acceptanceDb();
+    await expect(assertCurrentCitizenVideoTermsAccepted({ db, userId: "citizen-1" })).rejects.toThrow(/Accept the current/i);
+    const accepted = await acceptCurrentCitizenVideoTerms({ db, userId: "citizen-1" });
+    expect(accepted).toMatchObject({ accepted: true, status: "accepted", termsVersion: "terms-current" });
+    expect(db.records.get("citizen_video_terms_acceptances/citizen-1_terms-current")).toMatchObject({
+      userId: "citizen-1",
+      termsVersion: "terms-current",
+      status: "accepted",
+    });
+    await expect(assertCurrentCitizenVideoTermsAccepted({ db, userId: "citizen-1" })).resolves.toMatchObject({ accepted: true });
+  });
+
+  it("does not carry acceptance forward to a different published version", async () => {
+    const db = acceptanceDb();
+    await acceptCurrentCitizenVideoTerms({ db, userId: "citizen-2" });
+    await expect(assertCurrentCitizenVideoTermsAccepted({
+      db,
+      userId: "citizen-2",
+      terms: sanitizeVideoTerms({ ...DEFAULT_VIDEO_TERMS, version: "terms-next", status: "published" }),
+    })).rejects.toThrow(/Accept the current/i);
   });
 });

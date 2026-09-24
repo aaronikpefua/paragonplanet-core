@@ -8,6 +8,7 @@ import com.app.natureswayproduction.nativeapp.data.api.AccountRoleItem
 import com.app.natureswayproduction.nativeapp.data.api.BackerChallengeBundle
 import com.app.natureswayproduction.nativeapp.data.api.BackerChallengeQuestion
 import com.app.natureswayproduction.nativeapp.data.api.MobileProfile
+import com.app.natureswayproduction.nativeapp.data.api.CitizenVideoTerms
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 class ProfileViewModel(
     private val repository: ProfileRepository = ProfileRepository(),
 ) : ViewModel() {
+    suspend fun loadCitizenVideoTerms(): CitizenVideoTerms = repository.loadCitizenVideoTerms()
     private val _uiState = MutableStateFlow(ProfileUiState())
     val uiState: StateFlow<ProfileUiState> = _uiState.asStateFlow()
     private var cachedInboxUnreadCount: Int? = null
