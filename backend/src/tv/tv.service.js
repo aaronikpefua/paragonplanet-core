@@ -234,6 +234,69 @@ export async function getChannel({ db, channelId }) {
   return serializeDoc(snap);
 }
 
+export async function adminListChannels({ db, requestedPageSize, cursor }) {
+  const size = pageSize(requestedPageSize);
+  const decoded = decodeCursor(cursor);
+  let query = db.collection(TV_COLLECTIONS.channels)
+    .orderBy("name", "asc")
+    .orderBy(admin.firestore.FieldPath.documentId(), "asc")
+    .limit(size + 1);
+  if (decoded) {
+    if (!decoded.name || !decoded.id) throw Object.assign(new Error("cursor is invalid"), { status: 400 });
+    query = query.startAfter(decoded.name, decoded.id);
+  }
+  const snap = await query.get();
+  const hasMore = snap.docs.length > size;
+  const docs = snap.docs.slice(0, size);
+  const last = docs.at(-1);
+  return {
+    items: docs.map(serializeDoc),
+    hasMore,
+    nextCursor: hasMore && last ? encodeCursor({ name: last.data().name, id: last.id }) : null,
+  };
+}
+
+export async function adminGetChannel({ db, channelId }) {
+  const snap = await db.collection(TV_COLLECTIONS.channels).doc(safeId(channelId, "channelId")).get();
+  if (!snap.exists) throw Object.assign(new Error("Channel not found"), { status: 404 });
+  return serializeDoc(snap);
+}
+
+export async function adminListPrograms({ db, requestedPageSize, cursor, channelId = "", status = "" }) {
+  const size = pageSize(requestedPageSize);
+  const decoded = decodeCursor(cursor);
+  const safeChannelId = channelId ? safeId(channelId, "channelId") : "";
+  const safeStatus = status ? String(status).toUpperCase() : "";
+  if (safeStatus && !isTvProgramState(safeStatus)) throw Object.assign(new Error("Program status is invalid"), { status: 400 });
+  let query = db.collection(TV_COLLECTIONS.programs);
+  if (safeChannelId) query = query.where("channelId", "==", safeChannelId);
+  if (safeStatus) query = query.where("status", "==", safeStatus);
+  query = query
+    .orderBy("createdAt", "desc")
+    .orderBy(admin.firestore.FieldPath.documentId(), "desc")
+    .limit(size + 1);
+  if (decoded) {
+    const millis = Number(decoded.createdAtMillis);
+    if (!Number.isFinite(millis) || !decoded.id) throw Object.assign(new Error("cursor is invalid"), { status: 400 });
+    query = query.startAfter(admin.firestore.Timestamp.fromMillis(millis), decoded.id);
+  }
+  const snap = await query.get();
+  const hasMore = snap.docs.length > size;
+  const docs = snap.docs.slice(0, size);
+  const last = docs.at(-1);
+  return {
+    items: docs.map(serializeDoc),
+    hasMore,
+    nextCursor: hasMore && last ? encodeCursor({ createdAtMillis: timestampMillis(last.data().createdAt), id: last.id }) : null,
+  };
+}
+
+export async function adminGetProgram({ db, programId }) {
+  const snap = await db.collection(TV_COLLECTIONS.programs).doc(safeId(programId, "programId")).get();
+  if (!snap.exists) throw Object.assign(new Error("Program not found"), { status: 404 });
+  return serializeDoc(snap);
+}
+
 export async function getCurrentProgram({ db, channelId, now = new Date() }) {
   const id = safeId(channelId, "channelId");
   const snap = await db.collection(TV_COLLECTIONS.publicSchedule)

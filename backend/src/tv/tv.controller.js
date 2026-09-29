@@ -1,5 +1,9 @@
 import admin from "../config/firebase.js";
 import {
+  adminGetChannel,
+  adminGetProgram,
+  adminListChannels,
+  adminListPrograms,
   createChannel,
   createProgram,
   getChannel,
@@ -30,6 +34,10 @@ export const adminDeactivateChannel = handler((req, db) => setChannelStatus({ db
 export const adminCreateProgram = handler((req, db) => createProgram({ db, body: req.body, actorUid: req.user.uid }));
 export const adminUpdateProgram = handler((req, db) => updateProgram({ db, programId: req.params.programId, body: req.body, actorUid: req.user.uid }));
 export const adminScheduleProgram = handler((req, db) => scheduleProgram({ db, programId: req.params.programId, startsAt: req.body?.startsAt, endsAt: req.body?.endsAt, actorUid: req.user.uid }));
+export const adminReadChannels = handler((req, db) => adminListChannels({ db, requestedPageSize: req.query.pageSize, cursor: req.query.cursor }));
+export const adminReadChannel = handler((req, db) => adminGetChannel({ db, channelId: req.params.channelId }));
+export const adminReadPrograms = handler((req, db) => adminListPrograms({ db, requestedPageSize: req.query.pageSize, cursor: req.query.cursor, channelId: req.query.channelId, status: req.query.status }));
+export const adminReadProgram = handler((req, db) => adminGetProgram({ db, programId: req.params.programId }));
 
 export const publicListChannels = handler((req, db) => listChannels({ db, requestedPageSize: req.query.pageSize, cursor: req.query.cursor }));
 export const publicGetChannel = handler((req, db) => getChannel({ db, channelId: req.params.channelId }));

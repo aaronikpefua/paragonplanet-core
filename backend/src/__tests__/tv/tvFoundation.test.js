@@ -14,6 +14,10 @@ vi.mock("../../config/firebase.js", () => ({
 
 const {
   TV_COLLECTIONS,
+  adminGetChannel,
+  adminGetProgram,
+  adminListChannels,
+  adminListPrograms,
   createChannel,
   createProgram,
   getCurrentProgram,
@@ -26,6 +30,7 @@ const {
 } = await import("../../tv/tv.service.js");
 const { TV_CHANNEL_STATES, TV_PROGRAM_STATES } = await import("../../tv/tvStates.js");
 const { default: tvRouter } = await import("../../routes/tv/tv.routes.js");
+const { requireAdmin } = await import("../../middlewares/admin.middleware.js");
 
 function stamp(value) {
   const millis = value instanceof Date ? value.getTime() : Number(value);
@@ -49,7 +54,7 @@ class FakeQuery {
   where(field, op, value) { this.filters.push({ field, op, value }); return this; }
   orderBy(field, direction = "asc") { this.orders.push({ field, direction }); return this; }
   startAfter(...values) { this.after = values; return this; }
-  limit(value) { this.max = value; return this; }
+  limit(value) { this.max = value; this.db.queryLimits.push(value); return this; }
   async get() {
     let rows = [...(this.db.data[this.collection]?.entries() || [])].map(([id, data]) => ({ id, data }));
     for (const filter of this.filters) {
@@ -84,6 +89,7 @@ function makeDb(seed = {}) {
   const db = {
     data: Object.fromEntries(Object.entries(seed).map(([name, docs]) => [name, new Map(Object.entries(docs))])),
     touched: [],
+    queryLimits: [],
     collection(name) {
       db.data[name] ||= new Map();
       return {
@@ -125,13 +131,80 @@ describe("Paragon TV Milestone 1A", () => {
       methods: Object.keys(layer.route.methods),
       handlers: layer.route.stack.map((entry) => entry.handle.name),
     }));
-    expect(routes.filter((route) => route.path.startsWith("/admin/"))).toHaveLength(7);
+    expect(routes.filter((route) => route.path.startsWith("/admin/"))).toHaveLength(11);
     for (const route of routes.filter((entry) => entry.path.startsWith("/admin/"))) {
       expect(route.handlers).toContain("authenticate");
       expect(route.handlers).toContain("requireAdmin");
     }
     expect(routes.find((route) => route.path === "/channels")).toMatchObject({ methods: ["get"] });
     expect(routes.find((route) => route.path === "/channels/:channelId/schedule")).toMatchObject({ methods: ["get"] });
+  });
+
+  it("denies a non-Admin before an Admin read handler runs", () => {
+    const response = {
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+    const next = vi.fn();
+    requireAdmin({ user: { uid: "ordinary-user" } }, response, next);
+    expect(response.statusCode).toBe(403);
+    expect(response.body.error).toMatch(/Admin permission required/i);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("lists every channel state for Admins with stable cursor pagination", async () => {
+    fakeDb = makeDb({ tv_channels: {
+      active: { name: "Alpha", status: "ACTIVE" },
+      draft: { name: "Beta", status: "DRAFT" },
+      inactive: { name: "Gamma", status: "INACTIVE" },
+    } });
+    const first = await adminListChannels({ db: fakeDb, requestedPageSize: 2 });
+    const second = await adminListChannels({ db: fakeDb, requestedPageSize: 2, cursor: first.nextCursor });
+    expect(first.items.map((item) => item.status)).toEqual(["ACTIVE", "DRAFT"]);
+    expect(second.items.map((item) => item.status)).toEqual(["INACTIVE"]);
+    expect(fakeDb.queryLimits).toEqual([3, 3]);
+  });
+
+  it("retrieves Admin channel detail regardless of state and returns a 404 for missing IDs", async () => {
+    fakeDb = makeDb({ tv_channels: { draft: { name: "Draft", status: "DRAFT" } } });
+    expect(await adminGetChannel({ db: fakeDb, channelId: "draft" })).toMatchObject({ id: "draft", status: "DRAFT" });
+    await expect(adminGetChannel({ db: fakeDb, channelId: "missing" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("lists programs with channel, status, and combined filters", async () => {
+    fakeDb = makeDb({ tv_programs: {
+      a: { channelId: "channel-one", title: "A", status: "DRAFT", createdAt: stamp(400) },
+      b: { channelId: "channel-one", title: "B", status: "SCHEDULED", createdAt: stamp(300) },
+      c: { channelId: "channel-two", title: "C", status: "DRAFT", createdAt: stamp(200) },
+      d: { channelId: "channel-two", title: "D", status: "ENDED", createdAt: stamp(100) },
+    } });
+    expect((await adminListPrograms({ db: fakeDb })).items).toHaveLength(4);
+    expect((await adminListPrograms({ db: fakeDb, channelId: "channel-one" })).items.map((item) => item.id)).toEqual(["a", "b"]);
+    expect((await adminListPrograms({ db: fakeDb, status: "DRAFT" })).items.map((item) => item.id)).toEqual(["a", "c"]);
+    expect((await adminListPrograms({ db: fakeDb, channelId: "channel-one", status: "DRAFT" })).items.map((item) => item.id)).toEqual(["a"]);
+  });
+
+  it("cursor-paginates programs deterministically and caps oversized reads", async () => {
+    const programs = {};
+    for (let index = 0; index < 55; index += 1) {
+      programs[`program-${String(index).padStart(2, "0")}`] = { channelId: "channel-one", title: `Program ${index}`, status: "DRAFT", createdAt: stamp(1_000 - index) };
+    }
+    fakeDb = makeDb({ tv_programs: programs });
+    const first = await adminListPrograms({ db: fakeDb, requestedPageSize: 500 });
+    const second = await adminListPrograms({ db: fakeDb, requestedPageSize: 50, cursor: first.nextCursor });
+    expect(first.items).toHaveLength(50);
+    expect(first.hasMore).toBe(true);
+    expect(second.items).toHaveLength(5);
+    expect(new Set([...first.items, ...second.items].map((item) => item.id)).size).toBe(55);
+    expect(fakeDb.queryLimits).toEqual([51, 51]);
+  });
+
+  it("retrieves Admin program detail regardless of state and returns a 404 for missing IDs", async () => {
+    fakeDb = makeDb({ tv_programs: { ended: { channelId: "channel-one", title: "Ended", status: "ENDED", createdAt: stamp(1) } } });
+    expect(await adminGetProgram({ db: fakeDb, programId: "ended" })).toMatchObject({ id: "ended", status: "ENDED" });
+    await expect(adminGetProgram({ db: fakeDb, programId: "missing" })).rejects.toMatchObject({ status: 404 });
   });
 
   it("creates and activates a channel without touching Live collections", async () => {
