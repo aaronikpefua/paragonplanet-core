@@ -6,6 +6,7 @@ import googlePlayBillingRoutes from "./routes/googlePlayBilling.routes.js";
 import nativeXAuthRoutes from "./routes/nativeXAuth.routes.js";
 import realtimeRoutes from "./routes/realtime/realtime.routes.js";
 import liveRoutes from "./routes/live/live.routes.js";
+import tvRoutes from "./routes/tv/tv.routes.js";
 import { receiveCloudflareLiveWebhook, runLiveReconciliation } from "./live/liveInternal.controller.js";
 import { authorizeLiveMediaGateway, getLiveGatewayRestreamConfig, receiveLiveGatewayEvent, receiveLiveGatewayMetrics } from "./live/liveMediaGateway.controller.js";
 import { createM1StagingTestToken } from "./auth/stagingTestAuth.controller.js";
@@ -136,6 +137,7 @@ app.use("/api/marketplace", verifyAppCheckOrAuthenticatedUser, marketplaceRoutes
 app.use("/api/google-play-billing", verifyAppCheckOrAuthenticatedUser, googlePlayBillingRoutes);
 app.use("/api/realtime", realtimeRoutes);
 app.use("/api/live", verifyAppCheckOrAuthenticatedUser, liveRoutes);
+app.use("/api/tv", verifyAppCheckOrAuthenticatedUser, tvRoutes);
 app.use("/api/auth", verifyAppCheckOrTrustedTester, authRoutes);
 app.use("/api/video", verifyAppCheck, videoRoutes);
 export default app;
