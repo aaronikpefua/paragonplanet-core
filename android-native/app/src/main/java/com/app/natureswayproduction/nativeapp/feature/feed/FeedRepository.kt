@@ -12,8 +12,9 @@ class FeedRepository(
     private val sessionRepository: SessionRepository = SessionRepository(apiService = apiService),
 ) {
     suspend fun loadFeed(): FeedPayload = withContext(Dispatchers.IO) {
-        val appCheckToken = appCheckRepository.getToken(forceRefresh = false)
-        val videos = apiService.fetchFeed(appCheckToken = appCheckToken)
+        // The authoritative Home feed is public. Do not delay its first paint
+        // while obtaining an App Check token that this endpoint does not use.
+        val videos = apiService.fetchFeed(appCheckToken = null)
             .filter { it.isCitizenHomeFeedVideo() }
         val categories = videos.map { it.category }.distinct().ifEmpty {
             listOf("Cultural Performers", "Singers", "Dancers", "Comedians", "MCs")

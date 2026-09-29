@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
@@ -48,13 +49,15 @@ class FeedViewModel(
     private val _selectedItem = MutableStateFlow<FeedCard?>(null)
     val selectedItem: StateFlow<FeedCard?> = _selectedItem.asStateFlow()
     private var allItems: List<FeedCard> = emptyList()
+    private var refreshJob: Job? = null
 
     init {
         refresh()
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             runCatching { repository.loadFeed() }
                 .onSuccess { payload ->

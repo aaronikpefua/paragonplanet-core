@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_URL, appCheckFetch } from "../lib/supportActions";
+import { API_URL } from "../lib/supportActions";
 import { logPerf } from "../lib/perf";
 
 const PAGE_SIZE = 20;
@@ -29,7 +29,11 @@ export default function useVideos() {
     const start = performance.now();
 
     try {
-      const response = await appCheckFetch(`${API_URL}/api/video/list?${params.toString()}`);
+      // The authoritative Home feed is public. Avoid delaying first paint on
+      // an App Check token that this endpoint neither requires nor validates.
+      const response = await fetch(`${API_URL}/api/video/list?${params.toString()}`, {
+        headers: { Accept: "application/json" },
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || "Could not load videos");
 
