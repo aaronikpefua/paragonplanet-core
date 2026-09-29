@@ -289,7 +289,7 @@ describe("Citizen video feed pagination", () => {
     expect(res.body.error).toMatch(/cursor/i);
   });
 
-  it("excludes non-home, deleted, processing-failed, and merchant-product videos", async () => {
+  it("uses authoritative content-domain, feed-kind, and eligibility fields", async () => {
     fakeDb = makeDb({
       videos: [
         makeVideo("home", 100),
@@ -297,9 +297,8 @@ describe("Citizen video feed pagination", () => {
         makeVideo("deleted", 98, { feedKind: "home", feedEligible: false, status: "DELETED" }),
         makeVideo("failed", 97, { feedKind: "home", feedEligible: false, processingStatus: "processing_failed" }),
         makeVideo("market-domain", 95, { contentDomain: "marketplace", feedKind: "home", feedEligible: true }),
-        makeVideo("merchant", 96, { objectPath: "videos/same.mp4" }),
+        makeVideo("merchant", 96, { contentDomain: "marketplace", feedKind: "marketplace", feedEligible: false, objectPath: "videos/same.mp4" }),
       ],
-      merchantProducts: [{ objectPath: "videos/same.mp4" }],
     });
     const res = makeRes();
     await listVideos(makeReq({ pageSize: "20" }), res);

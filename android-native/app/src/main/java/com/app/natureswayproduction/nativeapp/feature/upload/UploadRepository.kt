@@ -85,20 +85,17 @@ class UploadRepository(
             )
         )
 
-        onProgress(5, "Uploading video file…")
+        onProgress(0, "Uploading video…")
         uploadToSignedUrl(uri, meta.mimeType, ticket.uploadUrl, onProgress)
-        if (ticket.uploadId.isNotBlank()) {
-            runCatching {
-                apiService.completeVideoUpload(
-                    idToken = idToken,
-                    appCheckToken = appCheckToken,
-                    videoId = ticket.videoId,
-                    uploadId = ticket.uploadId,
-                )
-            }
-        }
+        onProgress(100, "Upload complete — preparing video…")
+        require(ticket.uploadId.isNotBlank()) { "Upload completion identity was not returned." }
+        apiService.completeVideoUpload(
+            idToken = idToken,
+            appCheckToken = appCheckToken,
+            videoId = ticket.videoId,
+            uploadId = ticket.uploadId,
+        )
 
-        onProgress(96, "Queuing processing…")
         apiService.triggerVideoCompression(
             idToken = idToken,
             appCheckToken = appCheckToken,
@@ -111,7 +108,7 @@ class UploadRepository(
             durationSeconds = meta.durationSeconds,
         )
 
-        onProgress(100, "Upload queued successfully.")
+        onProgress(100, "Upload complete")
         ticket.videoId
     }
 
@@ -188,8 +185,8 @@ class UploadRepository(
             output.write(buffer, 0, read)
             uploaded += read
             if (totalBytes > 0) {
-                val percent = 5 + ((uploaded.toDouble() / totalBytes.toDouble()) * 90.0).toInt().coerceIn(0, 90)
-                onProgress(percent, "Uploading video file…")
+                val percent = ((uploaded.toDouble() / totalBytes.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                onProgress(percent, "Uploading video…")
             }
         }
         output.flush()

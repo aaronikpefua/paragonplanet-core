@@ -234,6 +234,13 @@ data class UploadTicket(
     val uploadId: String = "",
 )
 
+data class VideoReadiness(
+    val videoId: String,
+    val feedEligible: Boolean,
+    val streamStatus: String,
+    val processingStatus: String,
+)
+
 data class VideoUploadPolicy(
     val pricingVersion: String,
     val termsVersion: String,

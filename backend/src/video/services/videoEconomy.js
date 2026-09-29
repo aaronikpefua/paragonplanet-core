@@ -396,17 +396,22 @@ export async function createInitialVideoBillingObligation({
 }
 
 export async function enqueueVideoReconciliationJob({ db, videoId, uploadId, reason = "upload_authorized" }) {
-  const jobId = `${videoId}_${reason}`;
-  await db.collection(VIDEO_RECONCILIATION_COLLECTION).doc(jobId).set({
-    jobId,
-    videoId,
-    uploadId,
-    status: "queued",
-    reason,
-    attempts: 0,
-    createdAt: nowTimestamp(),
-    updatedAt: nowTimestamp(),
-  }, { merge: true });
+  const jobId = videoId;
+  const jobRef = db.collection(VIDEO_RECONCILIATION_COLLECTION).doc(jobId);
+  await db.runTransaction(async (transaction) => {
+    const existing = await transaction.get(jobRef);
+    if (existing.exists) return;
+    transaction.create(jobRef, {
+      jobId,
+      videoId,
+      uploadId,
+      status: "queued",
+      reason,
+      attempts: 0,
+      createdAt: nowTimestamp(),
+      updatedAt: nowTimestamp(),
+    });
+  });
   return jobId;
 }
 
@@ -430,17 +435,20 @@ export async function markUploadComplete({ db, userId, videoId, uploadId }) {
       error.status = 403;
       throw error;
     }
-    transaction.set(videoRef, {
-      lifecycleStatus: "UPLOADED",
-      processingStatus: video.processingStatus === "ready" ? "ready" : "queued",
-      uploadCompletedAt: nowTimestamp(),
-      updatedAt: nowTimestamp(),
-    }, { merge: true });
-    transaction.set(authRef, {
-      status: "UPLOADED",
-      uploadCompletedAt: nowTimestamp(),
-      updatedAt: nowTimestamp(),
-    }, { merge: true });
+    const alreadyCompleted = authorization.status === "UPLOADED" && Boolean(video.uploadCompletedAt);
+    if (!alreadyCompleted) {
+      transaction.set(videoRef, {
+        lifecycleStatus: "UPLOADED",
+        processingStatus: video.processingStatus === "ready" ? "ready" : "queued",
+        uploadCompletedAt: nowTimestamp(),
+        updatedAt: nowTimestamp(),
+      }, { merge: true });
+      transaction.set(authRef, {
+        status: "UPLOADED",
+        uploadCompletedAt: nowTimestamp(),
+        updatedAt: nowTimestamp(),
+      }, { merge: true });
+    }
   });
   await enqueueVideoReconciliationJob({ db, videoId, uploadId, reason: "upload_completed" });
 }

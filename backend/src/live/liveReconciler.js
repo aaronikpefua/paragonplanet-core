@@ -8,6 +8,27 @@ const START_EXPIRY_MS = Number(process.env.LIVE_START_EXPIRY_MS || 5 * 60 * 1000
 const DISCONNECT_GRACE_MS = Number(process.env.LIVE_DISCONNECT_GRACE_MS || 45 * 1000);
 const VISIBILITY_LEASE_MS = Number(process.env.LIVE_VISIBILITY_LEASE_MS || 90 * 1000);
 const REPLAY_RETRY_MS = Number(process.env.LIVE_REPLAY_RETRY_MS || 15 * 1000);
+const REPLAY_PROCESSING_MAX_MS = Number(process.env.LIVE_REPLAY_PROCESSING_MAX_MS || 24 * 60 * 60 * 1000);
+const REVISION_RETRY_LIMIT = Math.max(1, Number(process.env.LIVE_REVISION_RETRY_LIMIT || 4));
+const RECONCILE_CONCURRENCY = Math.max(1, Number(process.env.LIVE_RECONCILE_CONCURRENCY || 8));
+const ACTIVE_RECONCILE_STATES = ["CREATING", "WAITING_FOR_INGEST", "INGEST_CONNECTED", "VIEWER_PREPARING", "LIVE", "ENDING"];
+
+export function isLiveRevisionConflict(error) {
+  return error?.code === "LIVE_STATE_REVISION_CHANGED";
+}
+
+export async function withLiveRevisionRetry(operation, limit = REVISION_RETRY_LIMIT) {
+  let lastError;
+  for (let attempt = 0; attempt < limit; attempt += 1) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      lastError = error;
+      if (!isLiveRevisionConflict(error) || attempt === limit - 1) throw error;
+    }
+  }
+  throw lastError;
+}
 
 function millis(value) {
   if (!value) return 0;
@@ -17,6 +38,25 @@ function millis(value) {
   if (typeof value._seconds === "number") return value._seconds * 1000;
   if (typeof value.seconds === "number") return value.seconds * 1000;
   return 0;
+}
+
+export function isReplayProcessingExpired(session = {}, nowMs = Date.now()) {
+  const replayStartedMs = millis(session.endRequestedAt || session.endDetectedAt || session.endedAt);
+  return replayStartedMs > 0 && nowMs - replayStartedMs > REPLAY_PROCESSING_MAX_MS;
+}
+
+async function mapWithConcurrency(items, concurrency, operation) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await operation(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
 }
 
 function playbackFromProvider(provider, generation) {
@@ -93,7 +133,7 @@ export async function refreshLiveProjection(ref) {
   });
 }
 
-export async function reconcileLiveSession(sessionId, { reason = "periodic" } = {}) {
+async function reconcileLiveSessionOnce(sessionId, { reason = "periodic" } = {}) {
   const db = admin.firestore();
   const ref = db.collection("live_sessions").doc(sessionId);
   const snap = await ref.get();
@@ -105,20 +145,42 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
     return { outcome: "terminal", sessionId, state };
   }
 
+  if (state === "REPLAY_PROCESSING" && isReplayProcessingExpired(session)) {
+    return {
+      outcome: "replay-expired",
+      session: await transitionLiveSession(ref, "FAILED", {
+        ingestStatus: "DISCONNECTED",
+        mediaStatus: "ENDED",
+        replayStatus: "FAILED",
+        replayFailureReason: "recording_not_available_before_timeout",
+        replayFailedAt: admin.firestore.Timestamp.now(),
+      }, { expectedRevision: session.stateRevision || 0 }),
+    };
+  }
+
   const generation = Math.max(1, Number(session.mediaGeneration || 1));
   const provider = await getStreamLiveInputState(session.liveInputId, session.playbackOrigin || "");
   const observedAt = admin.firestore.Timestamp.now();
+  const gatewayMediaReady = session.gatewayMediaReady === true;
+  const gatewayIngestConnected = session.gatewayIngestConnected === true;
   const common = {
-    providerStatus: provider.providerStatus,
-    providerState: provider.providerState,
-    providerLive: Boolean(session.gatewayMediaReady || provider.providerLive),
-    viewerPlayable: Boolean(session.gatewayMediaReady || provider.viewerPlayable),
+    providerStatus: gatewayMediaReady ? "gateway_media_ready" : gatewayIngestConnected ? "gateway_ingest_connected" : provider.providerStatus,
+    providerState: gatewayIngestConnected ? "INGEST_CONNECTED" : provider.providerState,
+    providerLive: Boolean(gatewayIngestConnected || provider.providerLive),
+    viewerPlayable: Boolean(gatewayMediaReady || provider.viewerPlayable),
+    recordingProviderStatus: provider.providerStatus,
+    recordingProviderState: provider.providerState,
+    recordingProviderLive: Boolean(provider.providerLive),
+    recordingViewerPlayable: Boolean(provider.viewerPlayable),
+    recordingLifecycleStatus: provider.lifecycleStatus,
+    recordingLifecycleLive: Boolean(provider.lifecycleLive),
+    recordingVideoUid: provider.activeVideoUid || session.recordingVideoUid || "",
     cloudflareViewerPlayable: provider.viewerPlayable,
     cloudflareProviderLive: provider.providerLive,
     lifecycleStatus: provider.lifecycleStatus,
     lifecycleLive: provider.lifecycleLive,
-    activeVideoUid: provider.activeVideoUid || "",
-    providerLiveReason: provider.reason || reason,
+    activeVideoUid: provider.activeVideoUid || session.activeVideoUid || "",
+    providerLiveReason: gatewayMediaReady ? "gateway_media_ready" : gatewayIngestConnected ? "gateway_ingest_connected" : provider.reason || reason,
     lastProviderObservedAt: observedAt,
     lastProviderCheckedAt: observedAt,
     mediaGeneration: generation,
@@ -161,7 +223,7 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
     }, { expectedRevision: session.stateRevision || 0 }) };
   }
 
-  if (provider.viewerPlayable || session.gatewayMediaReady === true) {
+  if (provider.viewerPlayable || gatewayMediaReady) {
     const livePlayback = playbackFromProvider(provider, generation);
     return { outcome: "live", session: await transitionLiveSession(ref, "LIVE", {
       ...common,
@@ -179,6 +241,16 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
       lastProviderLiveAt: provider.providerLive ? observedAt : session.lastProviderLiveAt || null,
       ...(!session.viewerReadyAt ? { viewerReadyAt: observedAt, projectionLiveAt: observedAt } : {}),
       ...(!session.actualStartedAt ? { actualStartedAt: observedAt, wentLiveAt: observedAt } : {}),
+    }, { expectedRevision: session.stateRevision || 0 }) };
+  }
+
+  if (gatewayIngestConnected) {
+    return { outcome: "gateway-preparing", session: await transitionLiveSession(ref, "VIEWER_PREPARING", {
+      ...common,
+      ingestStatus: "INGEST_CONNECTED",
+      mediaStatus: "PREPARING",
+      replayStatus: "NONE",
+      lastProviderLiveAt: session.gatewayIngestConnectedAt || observedAt,
     }, { expectedRevision: session.stateRevision || 0 }) };
   }
 
@@ -216,6 +288,10 @@ export async function reconcileLiveSession(sessionId, { reason = "periodic" } = 
   return { outcome: "waiting", session: await transitionLiveSession(ref, "WAITING_FOR_INGEST", { ...common, ingestStatus: provider.providerState, mediaStatus: "WAITING_FOR_INGEST" }, { expectedRevision: session.stateRevision || 0 }) };
 }
 
+export async function reconcileLiveSession(sessionId, options = {}) {
+  return withLiveRevisionRetry(() => reconcileLiveSessionOnce(sessionId, options));
+}
+
 export async function requestLiveEnd(sessionId) {
   const ref = admin.firestore().collection("live_sessions").doc(sessionId);
   const ending = await transitionLiveSession(ref, "ENDING", {
@@ -229,17 +305,30 @@ export async function requestLiveEnd(sessionId) {
 
 export async function reconcileOpenLiveSessions({ limit = 100 } = {}) {
   const db = admin.firestore();
-  const states = ["CREATING", "WAITING_FOR_INGEST", "INGEST_CONNECTED", "VIEWER_PREPARING", "LIVE", "ENDING", "REPLAY_PROCESSING"];
-  const snap = await db.collection("live_sessions").where("sessionStatus", "in", states).limit(Math.min(100, Math.max(1, limit))).get();
-  const results = [];
-  for (const doc of snap.docs) {
+  const boundedLimit = Math.min(100, Math.max(1, Number(limit) || 100));
+  const activeLimit = Math.max(1, Math.min(80, boundedLimit));
+  const replayLimit = Math.max(1, Math.min(20, boundedLimit));
+  const now = admin.firestore.Timestamp.now();
+  const [activeSnap, replaySnap] = await Promise.all([
+    db.collection("live_sessions")
+      .where("sessionStatus", "in", ACTIVE_RECONCILE_STATES)
+      .limit(activeLimit)
+      .get(),
+    db.collection("live_sessions")
+      .where("sessionStatus", "==", "REPLAY_PROCESSING")
+      .where("nextReplayCheckAt", "<=", now)
+      .orderBy("nextReplayCheckAt", "asc")
+      .limit(replayLimit)
+      .get(),
+  ]);
+  const docs = [...activeSnap.docs, ...replaySnap.docs];
+  return mapWithConcurrency(docs, RECONCILE_CONCURRENCY, async (doc) => {
     try {
-      results.push(await reconcileLiveSession(doc.id));
+      return await reconcileLiveSession(doc.id);
     } catch (error) {
-      results.push({ sessionId: doc.id, outcome: "error", code: error.code || "RECONCILE_FAILED", message: error.message });
+      return { sessionId: doc.id, outcome: "error", code: error.code || "RECONCILE_FAILED", message: error.message };
     }
-  }
-  return results;
+  });
 }
 
 function secureEqual(provided, expected) {

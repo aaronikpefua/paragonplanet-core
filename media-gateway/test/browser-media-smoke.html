@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Paragon Live browser media smoke</title>
+<canvas id="source" width="640" height="360"></canvas>
+<video id="remote" autoplay muted playsinline></video>
+<pre id="result">starting</pre>
+<script type="module">
+const params = new URLSearchParams(location.search);
+const result = document.querySelector("#result");
+const canvas = document.querySelector("#source");
+const context = canvas.getContext("2d");
+let frame = 0;
+function draw() {
+  frame += 1;
+  context.fillStyle = frame % 60 < 30 ? "#d71920" : "#e5b321";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#fff";
+  context.font = "48px sans-serif";
+  context.fillText(`Paragon WHIP ${frame}`, 40, 190);
+  requestAnimationFrame(draw);
+}
+draw();
+
+function gathered(peer) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => peer.addEventListener("icegatheringstatechange", () => {
+    if (peer.iceGatheringState === "complete") resolve();
+  }));
+}
+
+async function exchange(peer, url, token) {
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  await gathered(peer);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/sdp" },
+    body: peer.localDescription.sdp,
+  });
+  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+  await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+}
+
+try {
+  const publish = new RTCPeerConnection();
+  const videoTrack = canvas.captureStream(30).getVideoTracks()[0];
+  publish.addTrack(videoTrack);
+  await exchange(publish, params.get("whip"), params.get("publishToken"));
+  result.textContent = "WHIP_CONNECTED";
+  await new Promise((resolve) => setTimeout(resolve, 4000));
+
+  const playback = new RTCPeerConnection();
+  playback.addTransceiver("video", { direction: "recvonly" });
+  playback.addTransceiver("audio", { direction: "recvonly" });
+  const remote = document.querySelector("#remote");
+  playback.ontrack = (event) => { remote.srcObject = event.streams[0]; };
+  await exchange(playback, params.get("whep"), params.get("playbackToken"));
+  await new Promise((resolve) => setTimeout(resolve, 4000));
+  const inbound = [...(await playback.getStats()).values()].find((entry) => entry.type === "inbound-rtp" && entry.kind === "video");
+  if (!inbound || Number(inbound.packetsReceived || 0) < 1) throw new Error("no inbound WHEP video packets");
+  result.textContent = `PASS WHIP_WHEP packets=${inbound.packetsReceived} frames=${inbound.framesDecoded || 0}`;
+} catch (error) {
+  result.textContent = `FAIL ${error.message}`;
+}
+</script>

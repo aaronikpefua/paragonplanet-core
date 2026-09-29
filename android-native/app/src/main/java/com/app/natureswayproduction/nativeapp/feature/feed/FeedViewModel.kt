@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 data class FeedCard(
     val id: String,
@@ -57,18 +58,7 @@ class FeedViewModel(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             runCatching { repository.loadFeed() }
                 .onSuccess { payload ->
-                    allItems = payload.items
-                    val activeCategory = _uiState.value.activeCategory
-                    val filteredItems = filterItems(activeCategory, payload.items)
-                    val retainedSelection = filteredItems.firstOrNull { it.id == _selectedItem.value?.id }
-                    _selectedItem.value = retainedSelection ?: filteredItems.firstOrNull()
-                    _uiState.value = FeedUiState(
-                        summary = payload.summary,
-                        categories = payload.categories,
-                        items = filteredItems,
-                        activeCategory = activeCategory,
-                        isLoading = false,
-                    )
+                    applyPayload(payload)
                 }
                 .onFailure { error ->
                     _uiState.value = _uiState.value.copy(
@@ -77,6 +67,22 @@ class FeedViewModel(
                         summary = "Feed request failed."
                     )
                 }
+        }
+    }
+
+    fun awaitUploadReadiness(videoId: String) {
+        viewModelScope.launch {
+            repeat(18) {
+                delay(5_000L)
+                val readiness = runCatching { repository.loadReadiness(videoId) }.getOrNull()
+                if (readiness?.feedEligible == true) {
+                    refresh()
+                    return@launch
+                }
+                if (readiness?.streamStatus.equals("error", true) || readiness?.processingStatus.equals("processing_failed", true)) {
+                    return@launch
+                }
+            }
         }
     }
 
@@ -137,6 +143,25 @@ class FeedViewModel(
         return filtered.ifEmpty { source }
     }
 
+    private fun applyPayload(payload: FeedPayload) {
+        allItems = payload.items
+        publishItems(payload)
+    }
+
+    private fun publishItems(payload: FeedPayload? = null) {
+        val activeCategory = _uiState.value.activeCategory
+        val filteredItems = filterItems(activeCategory, allItems)
+        val retainedSelection = filteredItems.firstOrNull { it.id == _selectedItem.value?.id }
+        _selectedItem.value = retainedSelection ?: filteredItems.firstOrNull()
+        _uiState.value = FeedUiState(
+            summary = payload?.summary ?: _uiState.value.summary,
+            categories = payload?.categories ?: _uiState.value.categories,
+            items = filteredItems,
+            activeCategory = activeCategory,
+            isLoading = false,
+        )
+    }
+
     private fun normalizeCategory(value: String): String {
         val lowered = value.trim().lowercase()
         return when (lowered) {
@@ -156,4 +181,5 @@ class FeedViewModel(
             else -> lowered
         }
     }
+
 }

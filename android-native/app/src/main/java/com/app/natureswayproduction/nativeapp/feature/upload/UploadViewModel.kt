@@ -64,7 +64,7 @@ class UploadViewModel(
     }
 
     fun updateTermsAccepted(value: Boolean) {
-        if (value && (!_uiState.value.policyLoaded || !_uiState.value.termsOpened)) return
+        if (value && !_uiState.value.policyLoaded) return
         _uiState.value = _uiState.value.copy(
             termsAccepted = value,
             errorMessage = null,
@@ -210,7 +210,7 @@ class UploadViewModel(
                 _uiState.value = _uiState.value.copy(
                     isUploading = false,
                     progress = 100,
-                    message = "Upload queued successfully for processing.",
+                    message = "Upload complete",
                     uploadedVideoId = videoId,
                 )
             }.onFailure { error ->

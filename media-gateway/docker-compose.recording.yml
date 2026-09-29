@@ -1,0 +1,28 @@
+services:
+  recording-worker:
+    build: .
+    image: paragon-live-gateway:1.0.0
+    init: true
+    restart: unless-stopped
+    env_file: /etc/paragon-live-recording/runtime.env
+    network_mode: host
+    entrypoint: ["/opt/paragon/recording-worker.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  recording-metrics:
+    build: .
+    image: paragon-live-gateway:1.0.0
+    init: true
+    restart: unless-stopped
+    env_file: /etc/paragon-live-recording/runtime.env
+    network_mode: host
+    entrypoint: ["/opt/paragon/recording-metrics.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -15,7 +15,6 @@ const MAX_VIDEO_UPLOAD_MB = Number(import.meta.env.VITE_MAX_VIDEO_UPLOAD_MB || 2
 const MAX_VIDEO_DURATION_SECONDS = Number(
   import.meta.env.VITE_MAX_VIDEO_DURATION_SECONDS || 900
 );
-const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
 const modalBackdropStyle = { position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,.78)", display: "grid", placeItems: "center", padding: 16 };
 const modalCardStyle = { width: "min(620px,100%)", maxHeight: "90vh", overflowY: "auto", background: "#fff", color: "#111", borderRadius: 16, padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,.45)" };
 
@@ -340,7 +339,7 @@ export default function Upload() {
         durationMs: Math.round(performance.now() - uploadStart),
       });
       if (!isMeetUpMode && uploadId) {
-        await appCheckFetch(`${BACKEND_URL}/api/video/upload-complete`, {
+        const completionResponse = await appCheckFetch(`${BACKEND_URL}/api/video/upload-complete`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -350,37 +349,12 @@ export default function Upload() {
             videoId: backendVideoId,
             uploadId,
           }),
-        }).catch((completeError) => {
-          console.warn("Upload completion reconciliation request failed:", completeError);
         });
+        const completion = await readJsonResponse(completionResponse);
+        if (!completionResponse.ok) throw new Error(completion.error || "Could not finalize video upload.");
+      } else if (!isMeetUpMode) {
+        throw new Error("Upload completion identity was not returned.");
       }
-      try {
-        window.sessionStorage?.setItem(
-          RECENT_UPLOAD_STORAGE_KEY,
-          JSON.stringify({
-            id: backendVideoId,
-            uid: user.uid,
-            title: effectiveTitle,
-            description: effectiveDescription,
-            about: effectiveDescription,
-            category: effectiveCategory,
-            genre: effectiveCategory,
-            fileName,
-            originalUrl: fileUrl,
-            fileUrl,
-            streamUrl: fileUrl,
-            durationSeconds,
-            fileSize: file.size,
-            status: "processing",
-            processingStatus: "queued",
-            source: isMeetUpMode ? "admin_meetup_area_upload" : "citizen_upload",
-            visibility: isMeetUpMode ? "meet_up" : "home",
-            uploadPurpose,
-            votes: 0,
-            createdAtMs: Date.now(),
-          })
-        );
-      } catch {}
 
       setStatusText("Saving video details...");
       logPerf("upload.web.T3_metadata_save_start", {
@@ -417,6 +391,25 @@ export default function Upload() {
         console.warn("Compression request failed:", compressionErr);
       });
 
+      if (!isMeetUpMode) {
+        setStatusText("Preparing video...");
+        for (let attempt = 0; attempt < 18; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 5_000));
+          const readinessResponse = await appCheckFetch(`${BACKEND_URL}/api/video/${encodeURIComponent(backendVideoId)}/status`, {
+            headers: { Authorization: `Bearer ${await user.getIdToken()}` },
+          });
+          const readiness = await readJsonResponse(readinessResponse);
+          if (!readinessResponse.ok) throw new Error(readiness.error || "Could not check video readiness.");
+          if (readiness.feedEligible === true) break;
+          if (["error", "failed", "processing_failed"].includes(String(readiness.streamStatus || readiness.processingStatus || "").toLowerCase())) {
+            throw new Error("Video processing failed.");
+          }
+          if (attempt === 17) {
+            setStatusText("Upload completed successfully. Video processing is continuing in the background. Return to Home and refresh after processing.");
+            return;
+          }
+        }
+      }
       setStatusText(isMeetUpMode ? "Returning to admin..." : "Returning to feed...");
       navigate(isMeetUpMode ? "/admin" : "/", { replace: true });
     } catch (err) {
@@ -440,7 +433,7 @@ export default function Upload() {
           : "Citizen videos upload to the main home video feed."}
       </p>
 
-      {acceptance && <div role="dialog" aria-modal="true" style={modalBackdropStyle}><div style={modalCardStyle}><h2>PARAGON PLANET VIDEO UPLOAD</h2><p><strong>Video:</strong> {acceptance.policy.fileName}</p><p><strong>Video Size:</strong> {acceptance.policy.sizeMb} MB</p><p><strong>Pricing Tier:</strong> {Math.ceil((acceptance.policy.quote?.tier?.minBytes || 0) / 1048576)}–{Math.round((acceptance.policy.quote?.tier?.maxBytes || 0) / 1048576)} MB</p><p><strong>Current Upload Fee:</strong> {acceptance.policy.uploadFee} PARAG</p><p><strong>Monthly Maintenance:</strong> {acceptance.policy.maintenanceFee} PARAG/month</p><p><strong>Maximum Upload Size:</strong> {Math.round(Number(acceptance.policy.quote?.maxUploadSizeBytes || 0) / 1073741824 * 10) / 10} GB</p><details onToggle={(event) => { if (event.currentTarget.open) setAcceptance((current) => ({ ...current, termsOpened: true })); }}><summary style={{cursor:"pointer",fontWeight:700}}>VIEW VIDEO UPLOAD TERMS &amp; CONDITIONS</summary><div style={{whiteSpace:"pre-wrap",lineHeight:1.55}}>{acceptance.policy.terms?.body}</div></details><label><input type="checkbox" disabled={!acceptance.termsOpened} checked={acceptance.checked} onChange={(event) => setAcceptance((current) => ({ ...current, checked: event.target.checked }))} /> I have read and agree to the Terms and displayed upload and maintenance charges.</label>{!acceptance.termsOpened && <p style={{fontSize:13,color:"#6b5b40"}}>Open the Terms &amp; Conditions before accepting.</p>}<div style={{display:"flex",gap:12,marginTop:16}}><button type="button" onClick={() => closeAcceptance(false)}>CANCEL</button><button type="button" disabled={!acceptance.checked} onClick={() => closeAcceptance(true)}>AGREE &amp; UPLOAD</button></div></div></div>}
+      {acceptance && <div role="dialog" aria-modal="true" style={modalBackdropStyle}><div style={modalCardStyle}><h2>PARAGON PLANET VIDEO UPLOAD</h2><p><strong>Video:</strong> {acceptance.policy.fileName}</p><p><strong>Video Size:</strong> {acceptance.policy.sizeMb} MB</p><p><strong>Pricing Tier:</strong> {Math.ceil((acceptance.policy.quote?.tier?.minBytes || 0) / 1048576)}–{Math.round((acceptance.policy.quote?.tier?.maxBytes || 0) / 1048576)} MB</p><p><strong>Current Upload Fee:</strong> {acceptance.policy.uploadFee} PARAG</p><p><strong>Monthly Maintenance:</strong> {acceptance.policy.maintenanceFee} PARAG/month</p><p><strong>Maximum Upload Size:</strong> {Math.round(Number(acceptance.policy.quote?.maxUploadSizeBytes || 0) / 1073741824 * 10) / 10} GB</p><details onToggle={(event) => { if (event.currentTarget.open) setAcceptance((current) => ({ ...current, termsOpened: true })); }}><summary style={{cursor:"pointer",fontWeight:700}}>VIEW VIDEO UPLOAD TERMS &amp; CONDITIONS</summary><div style={{whiteSpace:"pre-wrap",lineHeight:1.55}}>{acceptance.policy.terms?.body}</div></details><label><input type="checkbox" checked={acceptance.checked} onChange={(event) => setAcceptance((current) => ({ ...current, checked: event.target.checked }))} /> I have read and agree to the Terms and displayed upload and maintenance charges.</label><div style={{display:"flex",gap:12,marginTop:16}}><button type="button" onClick={() => closeAcceptance(false)}>CANCEL</button><button type="button" disabled={!acceptance.checked} onClick={() => closeAcceptance(true)}>AGREE &amp; UPLOAD</button></div></div></div>}
       <form onSubmit={handleUpload}>
         {isMeetUpMode ? (
           <>

@@ -518,6 +518,26 @@ class ParagonApiService {
         )
     }
 
+    suspend fun fetchVideoReadiness(
+        idToken: String,
+        appCheckToken: String?,
+        videoId: String,
+    ): VideoReadiness = withContext(Dispatchers.IO) {
+        val json = JSONObject(request(
+            path = "/api/video/${java.net.URLEncoder.encode(videoId, Charsets.UTF_8.name())}/status",
+            method = "GET",
+            authorization = "Bearer $idToken",
+            appCheckToken = appCheckToken,
+            retryWithoutAppCheckOnFailure = true,
+        ))
+        VideoReadiness(
+            videoId = json.optString("videoId", videoId),
+            feedEligible = json.optBoolean("feedEligible", false),
+            streamStatus = json.optString("streamStatus"),
+            processingStatus = json.optString("processingStatus"),
+        )
+    }
+
     suspend fun fetchVideoUploadPolicy(
         idToken: String,
         appCheckToken: String?,

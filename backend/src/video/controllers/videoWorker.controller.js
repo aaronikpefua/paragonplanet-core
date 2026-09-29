@@ -22,6 +22,7 @@ export async function runVideoReconciliation(req, res) {
     const result = await processVideoReconciliationJobs({
       db: admin.firestore(),
       limit: req.body?.limit,
+      videoId: req.body?.videoId,
     });
     return res.json(result);
   } catch (error) {

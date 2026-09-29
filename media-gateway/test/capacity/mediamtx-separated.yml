@@ -1,0 +1,46 @@
+logLevel: info
+logDestinations: [stdout]
+logStructured: true
+readTimeout: 15s
+writeTimeout: 15s
+writeQueueSize: 1024
+udpReadBufferSize: 4194304
+authMethod: internal
+authInternalUsers:
+  - user: any
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+api: true
+apiAddress: :9997
+metrics: true
+metricsAddress: :9998
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: :8554
+rtmp: true
+rtmpEncryption: "no"
+rtmpAddress: :1935
+hls: false
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [${CAP_GATEWAY_IP}]
+srt: false
+moq: false
+pathDefaults:
+  source: publisher
+  sourceOnDemand: false
+  maxReaders: 0
+  overridePublisher: false
+paths:
+  "~^ingest_cap[0-9]+_1$":
+    runOnReady: /opt/cap/restream.sh
+    runOnReadyRestart: true
+  "~^live_cap[0-9]+_1$": {}

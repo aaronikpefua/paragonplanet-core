@@ -83,7 +83,7 @@ fun UploadScreen(
     onOpenSignIn: () -> Unit,
     onOpenMenu: () -> Unit,
     onSignOut: () -> Unit,
-    onUploadCompleted: () -> Unit,
+    onUploadCompleted: (String) -> Unit,
 ) {
     val state by uploadViewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -124,8 +124,8 @@ fun UploadScreen(
     }
 
     LaunchedEffect(state.uploadedVideoId) {
-        if (!state.uploadedVideoId.isNullOrBlank()) {
-            onUploadCompleted()
+        state.uploadedVideoId?.takeIf { it.isNotBlank() }?.let { videoId ->
+            onUploadCompleted(videoId)
         }
     }
 
@@ -413,7 +413,7 @@ fun UploadScreen(
                             Checkbox(
                                 checked = state.termsAccepted,
                                 onCheckedChange = uploadViewModel::updateTermsAccepted,
-                                enabled = !state.isUploading && state.policyLoaded && state.termsOpened,
+                                enabled = !state.isUploading && state.policyLoaded,
                             )
                             Text(
                                 text = "I have read and agree to the Terms and displayed upload and maintenance charges.",
@@ -443,6 +443,8 @@ fun UploadScreen(
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showTermsDialog = false },
             containerColor = Color.White,
+            titleContentColor = Color(0xFF111111),
+            textContentColor = Color(0xFF111111),
             title = {
                 Column {
                     Text("PARAGON PLANET", fontWeight = FontWeight.Bold)
@@ -454,12 +456,12 @@ fun UploadScreen(
                     modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(state.termsTitle, fontWeight = FontWeight.SemiBold)
-                    Text(state.termsBody, style = MaterialTheme.typography.bodyMedium)
+                    Text(state.termsTitle, color = Color(0xFF111111), fontWeight = FontWeight.SemiBold)
+                    Text(state.termsBody, color = Color(0xFF111111), style = MaterialTheme.typography.bodyMedium)
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showTermsDialog = false }) { Text("CLOSE") }
+                TextButton(onClick = { showTermsDialog = false }) { Text("CLOSE", color = Color(0xFF7A5B00)) }
             },
         )
     }

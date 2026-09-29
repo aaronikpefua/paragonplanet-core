@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPublicLiveProjection, canonicalStateOf, canonicalTransitionPatch } from "../../live/liveLifecycle.js";
+import { isReplayProcessingExpired, withLiveRevisionRetry } from "../../live/liveReconciler.js";
 
 describe("canonical Live lifecycle", () => {
   it("progresses PREPARING to LIVE with monotonic revision and stable generation", () => {
@@ -37,5 +38,34 @@ describe("public Live projection", () => {
 
   it("tombstones terminal failures instead of exposing them", () => {
     expect(buildPublicLiveProjection({ id: "live-1", sessionStatus: "EXPIRED" })).toMatchObject({ publicStatus: "OFFLINE", visible: false });
+  });
+});
+
+describe("Live reconciliation concurrency", () => {
+  it("expires replay recovery only after the bounded recovery window", () => {
+    const now = Date.parse("2026-09-28T00:00:00Z");
+    expect(isReplayProcessingExpired({ endRequestedAt: "2026-09-27T23:30:00Z" }, now)).toBe(false);
+    expect(isReplayProcessingExpired({ endRequestedAt: "2026-09-26T23:00:00Z" }, now)).toBe(true);
+    expect(isReplayProcessingExpired({}, now)).toBe(false);
+  });
+
+  it("retries an optimistic revision conflict without weakening revision checks", async () => {
+    let attempts = 0;
+    const result = await withLiveRevisionRetry(async () => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error("changed"), { code: "LIVE_STATE_REVISION_CHANGED" });
+      return "fresh-state-applied";
+    });
+    expect(result).toBe("fresh-state-applied");
+    expect(attempts).toBe(3);
+  });
+
+  it("does not retry non-concurrency failures", async () => {
+    let attempts = 0;
+    await expect(withLiveRevisionRetry(async () => {
+      attempts += 1;
+      throw Object.assign(new Error("forbidden"), { code: "NOT_AUTHORIZED" });
+    })).rejects.toThrow("forbidden");
+    expect(attempts).toBe(1);
   });
 });

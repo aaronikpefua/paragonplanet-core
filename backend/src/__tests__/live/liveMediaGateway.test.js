@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { gatewayPaths, gatewayPublisherDescriptor, gatewayViewerDescriptor, mediaGatewayStatus, signGatewayToken, verifyGatewayToken } from "../../live/liveMediaGateway.js";
+import { authorizeGatewayInternalAccess, gatewayPaths, gatewayPublisherDescriptor, gatewayViewerDescriptor, mediaGatewayStatus, signGatewayToken, verifyGatewayToken } from "../../live/liveMediaGateway.js";
+import { isGatewayEligible } from "../../live/liveGatewayRegistry.js";
 
 const original = {};
 const variables = [
@@ -29,11 +33,47 @@ afterEach(() => {
 });
 
 describe("Live media gateway credentials", () => {
+  it("rejects heartbeat records without a routable endpoint while accepting a complete healthy origin", () => {
+    const heartbeat = { gatewayId: "gateway-primary-us-central1", healthy: true, acceptingNewPublishers: true, updatedAt: Date.now() };
+    expect(isGatewayEligible(heartbeat, "publisher")).toBe(false);
+    expect(isGatewayEligible({ ...heartbeat, publicUrl: "https://gateway.example.test:8889" }, "publisher")).toBe(true);
+  });
+
+  it("makes gateway heartbeats advertise the endpoints required by placement", () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const script = fs.readFileSync(path.resolve(testDir, "../../../../media-gateway/scripts/gateway-metrics.sh"), "utf8");
+    expect(script).toContain("publicUrl:$publicUrl");
+    expect(script).toContain("rtmpsUrl:$rtmpsUrl");
+    expect(script).toContain("srtUrl:$srtUrl");
+  });
+
+  it("URL-encodes the internal RTSP token instead of placing raw secret characters in user-info", () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const script = fs.readFileSync(path.resolve(testDir, "../../../../media-gateway/scripts/restream.sh"), "utf8");
+    expect(script).toContain("'$token|@uri'");
+    expect(script).toContain("?token=${internal_token_encoded}");
+    expect(script).not.toContain("rtsp://paragon:${PARAGON_GATEWAY_INTERNAL_TOKEN");
+  });
+
+  it("keeps the internal token in MediaMTX's query-token channel", () => {
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const controller = fs.readFileSync(path.resolve(testDir, "../../live/liveMediaGateway.controller.js"), "utf8");
+    expect(controller).toContain('new URLSearchParams(String(query || "").replace(/^\\?/, "")).get("token")');
+  });
+
   it("creates deterministic generation-scoped paths", () => {
     expect(gatewayPaths("AbCdEfGh12345678", 3)).toEqual({
       ingestPath: "ingest_AbCdEfGh12345678_3",
       playbackPath: "live_AbCdEfGh12345678_3",
     });
+  });
+
+  it("limits the internal restream credential to ingest reads and normalized-path publishes", () => {
+    expect(authorizeGatewayInternalAccess("test-internal-token", { action: "read", path: "ingest_AbCdEfGh12345678_1" })).toBe(true);
+    expect(authorizeGatewayInternalAccess("test-internal-token", { action: "publish", path: "live_AbCdEfGh12345678_1" })).toBe(true);
+    expect(authorizeGatewayInternalAccess("test-internal-token", { action: "read", path: "live_AbCdEfGh12345678_1" })).toBe(false);
+    expect(authorizeGatewayInternalAccess("test-internal-token", { action: "publish", path: "ingest_AbCdEfGh12345678_1" })).toBe(false);
+    expect(authorizeGatewayInternalAccess("wrong", { action: "read", path: "ingest_AbCdEfGh12345678_1" })).toBe(false);
   });
 
   it("rejects action, path, and signature substitution", () => {
@@ -58,5 +98,14 @@ describe("Live media gateway credentials", () => {
     expect(view.url).toContain("/live_AbCdEfGh12345678_1/whep");
     expect(publish.publishToken).not.toBe(view.token);
     expect(JSON.stringify(publish)).not.toContain(process.env.LIVE_MEDIA_GATEWAY_SIGNING_SECRET);
+  });
+
+  it("routes descriptors through the assigned gateway without changing session paths", () => {
+    const gateway = { gatewayId: "lagos-origin-2", region: "africa-west1", publicUrl: "https://viewer.example.test:8889", rtmpsUrl: "rtmps://ingest.example.test:1936", srtUrl: "srt://ingest.example.test:8890" };
+    const publish = gatewayPublisherDescriptor({ sessionId: "AbCdEfGh12345678", gateway });
+    const view = gatewayViewerDescriptor({ sessionId: "AbCdEfGh12345678", gateway });
+    expect(publish.rtmps).toContain("ingest.example.test:1936/ingest_AbCdEfGh12345678_1");
+    expect(view.url).toBe("https://viewer.example.test:8889/live_AbCdEfGh12345678_1/whep");
+    expect(view.gatewayId).toBe("lagos-origin-2");
   });
 });

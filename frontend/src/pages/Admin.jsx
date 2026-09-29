@@ -6,6 +6,7 @@ import PromoterApproval from "./admin/PromoterApproval";
 import WithdrawalsAdmin from "./admin/WithdrawalsAdmin";
 import AdminManagementPanel from "./admin/AdminManagementPanel";
 import MarketplaceAdmin from "./admin/MarketplaceAdmin";
+import ParagonLiveSettings from "./admin/ParagonLiveSettings";
 import CitizenVideoAdmin from "./admin/CitizenVideoAdmin";
 import SharedInbox from "./SharedInbox";
 
@@ -100,6 +101,7 @@ export default function Admin() {
           Admin Inbox
         </button>
 
+        <button onClick={() => setActiveTab("live-settings")} style={tabStyle(activeTab === "live-settings")}>Paragon Live Settings</button>
         <button onClick={() => setActiveTab("citizen-video")} style={tabStyle(activeTab === "citizen-video")}>Citizen Video</button>
 
       </div>
@@ -361,6 +363,7 @@ export default function Admin() {
         </section>
       )}
 
+      {activeTab === "live-settings" && <ParagonLiveSettings />}
       {activeTab === "citizen-video" && <CitizenVideoAdmin />}
 
     </div>

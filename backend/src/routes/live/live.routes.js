@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { authenticate } from "../../middlewares/auth.middleware.js";
 import { rateLimit } from "../../middlewares/rateLimit.middleware.js";
+import { requireAdmin } from "../../middlewares/admin.middleware.js";
+import { getLiveAdminSettings, listLiveEntitlements, updateLiveAdminSettings } from "../../live/liveAdmin.controller.js";
 import {
   endLiveSession,
   getLiveRoomToken,
@@ -13,6 +15,7 @@ import {
   moderateLiveRoom,
   postLiveChatMessage,
   postLiveReaction,
+  postLiveClientMetrics,
   scheduleLiveSession,
   startLiveSession,
   supportLiveSession,
@@ -21,8 +24,12 @@ import {
 const router = Router();
 
 router.get("/status", rateLimit({ windowMs: 60 * 1000, limit: 60, keyPrefix: "live-status" }), getLiveStatus);
+router.get("/admin/settings", authenticate, requireAdmin, getLiveAdminSettings);
+router.put("/admin/settings", authenticate, requireAdmin, updateLiveAdminSettings);
+router.get("/admin/entitlements", authenticate, requireAdmin, listLiveEntitlements);
 router.get("/sessions", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-sessions" }), listLiveSessions);
 router.get("/sessions/:sessionId", rateLimit({ windowMs: 60 * 1000, limit: 120, keyPrefix: "live-session" }), getLiveSession);
+router.post("/sessions/:sessionId/metrics", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 30, keyPrefix: "live-client-metrics" }), postLiveClientMetrics);
 router.post("/sessions/schedule", authenticate, rateLimit({ windowMs: 60 * 1000, limit: 10, keyPrefix: "live-schedule" }), scheduleLiveSession);
 router.post(
   "/sessions/start",

@@ -180,9 +180,9 @@ fun ParagonApp(
                         }
                     },
                     onSignOut = authViewModel::signOut,
-                    onUploadCompleted = {
+                    onUploadCompleted = { videoId ->
+                        feedViewModel.awaitUploadReadiness(videoId)
                         uploadViewModel.resetForAnotherUpload()
-                        feedViewModel.refresh()
                         navController.navigate(AppDestination.Feed.route) {
                             popUpTo(navController.graph.findStartDestination().id) {
                                 saveState = false

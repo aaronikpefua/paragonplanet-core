@@ -18,13 +18,13 @@ import {
   chargeCitizenVideoUploadFeeIfRequired,
   createInitialVideoBillingObligation,
   createVideoUploadAuthorization,
-  enqueueVideoReconciliationJob,
   getCurrentVideoPricing,
   getCurrentVideoTerms,
   markUploadComplete,
   prepareCitizenVideoUpload,
 } from "../services/videoEconomy.js";
-import { importCitizenStreamFromUrl, streamPlaybackFromUid } from "../services/cloudflareStreamVod.js";
+import { streamPlaybackFromUid } from "../services/cloudflareStreamVod.js";
+import { scheduleVideoReconciliation } from "../services/videoReconciliationTasks.js";
 
 const DEFAULT_VIDEO_FEED_PAGE_SIZE = 20;
 const MAX_VIDEO_FEED_PAGE_SIZE = 50;
@@ -202,20 +202,6 @@ async function enrichVideosWithPublicProfiles(db, videos) {
   });
 }
 
-function collectMediaKeys(item = {}) {
-  return [
-    item.objectPath,
-    item.fileName,
-    item.sourceFileName,
-    item.mediaUrl,
-    item.streamUrl,
-    item.originalUrl,
-    item.fileUrl,
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-}
-
 function parsePageSize(value) {
   if (value === undefined || value === null || value === "") return DEFAULT_VIDEO_FEED_PAGE_SIZE;
   const parsed = Number(value);
@@ -274,45 +260,6 @@ function cursorTimestamp(db, cursor) {
   return admin.firestore.Timestamp.fromMillis(cursor.createdAtMillis);
 }
 
-function chunk(values, size = 10) {
-  const chunks = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
-  }
-  return chunks;
-}
-
-async function loadMerchantProductMediaKeysForVideos(db, videos) {
-  const candidateKeys = [...new Set(videos.flatMap((video) => collectMediaKeys(video)))];
-  if (!candidateKeys.length) return new Set();
-
-  const fields = [
-    "objectPath",
-    "fileName",
-    "sourceFileName",
-    "mediaUrl",
-    "streamUrl",
-    "originalUrl",
-    "fileUrl",
-  ];
-  const keys = new Set();
-
-  for (const field of fields) {
-    for (const keyChunk of chunk(candidateKeys, 10)) {
-      const snapshot = await db
-        .collection("merchant_products")
-        .where(field, "in", keyChunk)
-        .limit(keyChunk.length)
-        .get();
-      snapshot.docs.forEach((doc) => {
-        collectMediaKeys(doc.data() || {}).forEach((key) => keys.add(key));
-      });
-    }
-  }
-
-  return keys;
-}
-
 function createVideoFeedQuery(db, { pageSize, cursor }) {
   let query = db
     .collection("videos")
@@ -355,10 +302,8 @@ export async function listCitizenFeedPage(db, { pageSize, cursor }) {
     lastScannedCursor = encodeVideoFeedCursor(normalized[normalized.length - 1]);
     currentCursor = decodeVideoFeedCursor(lastScannedCursor);
 
-    const merchantProductMediaKeys = await loadMerchantProductMediaKeysForVideos(db, normalized);
     normalized
       .filter((video) => isHomeFeedVideo(video))
-      .filter((video) => !collectMediaKeys(video).some((key) => merchantProductMediaKeys.has(key)))
       .forEach((video) => {
         if (items.length < pageSize + 1) items.push(video);
       });
@@ -586,12 +531,6 @@ export async function requestUploadUrl(req, res) {
         terms,
         quote,
       });
-      await enqueueVideoReconciliationJob({
-        db,
-        videoId: video.videoId,
-        uploadId,
-        reason: "upload_authorized",
-      });
     }
 
     res.status(201).json({
@@ -671,47 +610,40 @@ export async function completeVideoUpload(req, res) {
       videoId,
       uploadId,
     });
-    const videoRef = db.collection("videos").doc(videoId);
-    let streamStatus = "DISABLED";
-    try {
-      const claimed = await db.runTransaction(async (transaction) => {
-        const snap = await transaction.get(videoRef);
-        if (!snap.exists || snap.data()?.uid !== req.user.uid) return null;
-        const video = snap.data() || {};
-        if (video.streamUid) return { existing: true, video };
-        if (video.streamImportClaimedAt) return null;
-        transaction.set(videoRef, {
-          streamStatus: "STREAM_QUEUED",
-          streamImportClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
-          streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        return { existing: false, video };
-      });
-      if (claimed?.existing) streamStatus = claimed.video.streamStatus || "STREAM_PROCESSING";
-      else if (claimed) {
-        const imported = await importCitizenStreamFromUrl({
-          videoId,
-          sourceUrl: claimed.video.originalUrl || claimed.video.fileUrl,
-          metadata: { citizenId: req.user.uid, uploadId },
-        });
-        streamStatus = imported.enabled ? "STREAM_PROCESSING" : "DISABLED";
-        await videoRef.set({
-          streamUid: imported.streamUid || "",
-          streamStatus,
-          streamProvider: imported.enabled ? "cloudflare_stream" : "r2_fallback",
-          streamCreatedAt: imported.enabled ? admin.firestore.FieldValue.serverTimestamp() : null,
-          streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp(),
-          ...(imported.streamUid ? streamPlaybackFromUid(imported.streamUid) : {}),
-        }, { merge: true });
-      }
-    } catch (streamError) {
-      streamStatus = "RETRYING";
-      await videoRef.set({ streamStatus, streamError: streamError.message, streamLastReconciledAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-      await enqueueVideoReconciliationJob({ db, videoId, uploadId, reason: "stream_import_retry" });
-    }
-    return res.json({ ok: true, videoId, uploadId, status: "UPLOADED", streamStatus });
+    // Finalization stays lightweight. The deterministic per-video task owns
+    // Stream import and readiness checks; Cloud Tasks absorbs upload bursts.
+    await scheduleVideoReconciliation({
+      videoId,
+      delaySeconds: 0,
+      attempt: 0,
+    }).catch((taskError) => {
+      console.warn("Per-video reconciliation task scheduling failed; scheduler fallback remains active:", taskError.message);
+    });
+    return res.json({ ok: true, videoId, uploadId, status: "UPLOADED", streamStatus: "STREAM_QUEUED" });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not mark upload complete" });
+  }
+}
+
+export async function getVideoReadiness(req, res) {
+  try {
+    const snap = await admin.firestore().collection("videos").doc(String(req.params.videoId || "")).get();
+    if (!snap.exists) return res.status(404).json({ error: "Video not found" });
+    const video = snap.data() || {};
+    if (video.uid !== req.user.uid && !isAdminUser(req.user)) {
+      return res.status(403).json({ error: "You can only inspect your own upload" });
+    }
+    return res.json({
+      videoId: snap.id,
+      feedEligible: video.feedEligible === true,
+      status: video.status || null,
+      processingStatus: video.processingStatus || null,
+      lifecycleStatus: video.lifecycleStatus || null,
+      streamStatus: video.streamStatus || null,
+      streamReady: video.streamReady === true,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not load video readiness" });
   }
 }
 

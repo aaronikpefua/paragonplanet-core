@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                 val apiService = remember { ParagonApiService() }
                 val sessionRepository = remember { SessionRepository(apiService = apiService) }
                 val appCheckRepository = remember { AppCheckRepository() }
-                val feedRepository = remember { FeedRepository(apiService = apiService, appCheckRepository = appCheckRepository) }
+                val feedRepository = remember { FeedRepository(apiService = apiService, appCheckRepository = appCheckRepository, sessionRepository = sessionRepository) }
                 val billingRepository = remember { BillingRepository(applicationContext) }
                 val profileRepository = remember { ProfileRepository() }
                 val meetUpRepository = remember { MeetUpRepository() }

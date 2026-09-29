@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { issueTurnCredentials } from "./liveTurnPool.js";
 
 const TOKEN_TTL_SECONDS = Math.max(30, Number(process.env.LIVE_MEDIA_GATEWAY_TOKEN_TTL_SECONDS || 120));
 
@@ -87,8 +88,13 @@ export function verifyGatewayToken(token, { action, path } = {}) {
   return claims;
 }
 
-export function gatewayPublisherDescriptor({ sessionId, mediaGeneration = 1, publisherTransport = "rtmps", subject }) {
+export function gatewayPublisherDescriptor({ sessionId, mediaGeneration = 1, publisherTransport = "rtmps", subject, gateway = null }) {
   const current = config();
+  const endpoint = {
+    publicUrl: String(gateway?.publicUrl || current.publicUrl).replace(/\/$/, ""),
+    rtmpsUrl: String(gateway?.rtmpsUrl || current.rtmpsUrl).replace(/\/$/, ""),
+    srtUrl: String(gateway?.srtUrl || current.srtUrl).replace(/\/$/, ""),
+  };
   const paths = gatewayPaths(sessionId, mediaGeneration);
   const publishToken = signGatewayToken({ sessionId, mediaGeneration, action: "publish", path: paths.ingestPath, subject });
   const transport = String(publisherTransport || "rtmps").toLowerCase();
@@ -98,25 +104,31 @@ export function gatewayPublisherDescriptor({ sessionId, mediaGeneration = 1, pub
     ingestPath: paths.ingestPath,
     playbackPath: paths.playbackPath,
     publishToken,
-    rtmpsUrl: current.rtmpsUrl,
+    gatewayId: gateway?.gatewayId || "",
+    gatewayRegion: gateway?.region || "",
+    rtmpsUrl: endpoint.rtmpsUrl,
     rtmpsStreamKey: `${paths.ingestPath}?token=${encodeURIComponent(publishToken)}`,
-    rtmps: `${current.rtmpsUrl}/${paths.ingestPath}?token=${encodeURIComponent(publishToken)}`,
-    srtUrl: current.srtUrl,
+    rtmps: `${endpoint.rtmpsUrl}/${paths.ingestPath}?token=${encodeURIComponent(publishToken)}`,
+    srtUrl: endpoint.srtUrl,
     srtStreamId: `publish:${paths.ingestPath}:paragon:${publishToken}`,
-    webRtcPublishUrl: `${current.publicUrl}/${paths.ingestPath}/whip`,
+    webRtcPublishUrl: `${endpoint.publicUrl}/${paths.ingestPath}/whip`,
     webRtcPublishToken: publishToken,
   };
 }
 
-export function gatewayViewerDescriptor({ sessionId, mediaGeneration = 1, subject = "public" }) {
+export function gatewayViewerDescriptor({ sessionId, mediaGeneration = 1, subject = "public", gateway = null }) {
   const current = config();
+  const publicUrl = String(gateway?.publicUrl || current.publicUrl).replace(/\/$/, "");
   const paths = gatewayPaths(sessionId, mediaGeneration);
   const playbackToken = signGatewayToken({ sessionId, mediaGeneration, action: "read", path: paths.playbackPath, subject });
   return {
     transport: "whep",
-    url: `${current.publicUrl}/${paths.playbackPath}/whep`,
+    gatewayId: gateway?.gatewayId || "",
+    gatewayRegion: gateway?.region || "",
+    url: `${publicUrl}/${paths.playbackPath}/whep`,
     token: playbackToken,
     path: paths.playbackPath,
+    iceServers: issueTurnCredentials({ subject, region: gateway?.region || "" }),
   };
 }
 
@@ -128,12 +140,14 @@ export function authorizeGatewayServer(req) {
   return Boolean(expected) && left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
-export function authorizeGatewayInternalPublisher(token, path) {
+export function authorizeGatewayInternalAccess(token, { action, path } = {}) {
   const expected = config().internalToken;
   const left = Buffer.from(String(token || ""));
   const right = Buffer.from(expected);
+  const allowedPath = (action === "read" && /^ingest_[A-Za-z0-9_-]+_[1-9][0-9]*$/.test(String(path || "")))
+    || (action === "publish" && /^live_[A-Za-z0-9_-]+_[1-9][0-9]*$/.test(String(path || "")));
   return Boolean(expected)
-    && /^live_[A-Za-z0-9_-]+_[1-9][0-9]*$/.test(String(path || ""))
+    && allowedPath
     && left.length === right.length
     && crypto.timingSafeEqual(left, right);
 }

@@ -68,8 +68,9 @@ export async function runLiveReconciliation(req, res) {
   if (!authorizeInternalRequest(req, "LIVE_RECONCILE_SECRET")) {
     return res.status(401).json({ error: "Reconciliation authorization failed", code: "NOT_AUTHORIZED" });
   }
+  const startedAt = Date.now();
   const results = await reconcileOpenLiveSessions({ limit: Number(req.body?.limit || 100) });
-  return res.json({ processed: results.length, results });
+  return res.json({ processed: results.length, durationMs: Date.now() - startedAt, results });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Live reconciliation failed", code: error.code || "LIVE_RECONCILE_FAILED" });
   }

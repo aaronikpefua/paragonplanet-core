@@ -3,6 +3,11 @@ import { createLedgerEntry } from "../../models/ledger.model.js";
 import { getCitizenStreamStorageUsage, getCitizenStreamVideo, importCitizenStreamFromUrl, streamPlaybackFromUid } from "./cloudflareStreamVod.js";
 import { getCurrentVideoPricing, VIDEO_BILLING_COLLECTION, VIDEO_POLICY_COLLECTION, VIDEO_RECONCILIATION_COLLECTION } from "./videoEconomy.js";
 import { reconcileCitizenR2Usage } from "./video.service.js";
+import {
+  reconciliationRecoveryDelaySeconds,
+  scheduleVideoReconciliation,
+  VIDEO_RECOVERY_TASK_ATTEMPTS,
+} from "./videoReconciliationTasks.js";
 
 function now() {
   return admin.firestore.FieldValue.serverTimestamp();
@@ -12,14 +17,25 @@ function addDays(date, days) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
-export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
-  const snapshot = await db.collection(VIDEO_RECONCILIATION_COLLECTION)
-    .where("status", "==", "queued")
-    .limit(Math.max(1, Math.min(Number(limit) || 5, 20)))
-    .get();
+export async function processVideoReconciliationJobs({ db, limit = 5, videoId = "" } = {}) {
+  const snapshot = videoId
+    ? await db.collection(VIDEO_RECONCILIATION_COLLECTION).where("videoId", "==", videoId).limit(1).get()
+    : await db.collection(VIDEO_RECONCILIATION_COLLECTION)
+      .where("status", "==", "queued")
+      .limit(Math.max(1, Math.min(Number(limit) || 5, 20)))
+      .get();
   const results = [];
   for (const jobDoc of snapshot.docs) {
     const job = jobDoc.data() || {};
+    if (["done", "failed"].includes(String(job.status || "").toLowerCase())) {
+      results.push({ jobId: jobDoc.id, ok: true, skipped: true, reason: `job_${job.status}` });
+      continue;
+    }
+    const nextRetryAt = job.nextRetryAt?.toDate?.() || job.nextRetryAt;
+    // A targeted Cloud Task is already a bounded per-video retry. Let it run
+    // even if clock/second rounding puts it just before nextRetryAt. Recovery
+    // scheduler scans must continue respecting nextRetryAt.
+    if (!videoId && nextRetryAt instanceof Date && nextRetryAt.getTime() > Date.now()) continue;
     const videoRef = db.collection("videos").doc(job.videoId);
     await jobDoc.ref.set({ status: "processing", attempts: admin.firestore.FieldValue.increment(1), updatedAt: now() }, { merge: true });
     try {
@@ -30,6 +46,8 @@ export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
         lifecycleStatus: video.lifecycleStatus === "READY" ? "READY" : "UPLOADED",
         updatedAt: now(),
       };
+      let streamStillProcessing = false;
+      let importedThisAttempt = null;
       if (!video.streamUid && ["stream_import_retry", "upload_completed"].includes(job.reason)) {
         const imported = await importCitizenStreamFromUrl({
           videoId: job.videoId,
@@ -37,6 +55,8 @@ export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
           metadata: { citizenId: video.uid, uploadId: job.uploadId },
         });
         if (imported.enabled && imported.streamUid) {
+          importedThisAttempt = imported;
+          streamStillProcessing = true;
           Object.assign(updates, {
             streamUid: imported.streamUid,
             streamStatus: "STREAM_PROCESSING",
@@ -49,9 +69,16 @@ export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
       }
       const effectiveStreamUid = updates.streamUid || video.streamUid;
       if (effectiveStreamUid) {
-        const stream = await getCitizenStreamVideo(effectiveStreamUid);
+        const stream = importedThisAttempt
+          ? { configured: true, video: importedThisAttempt.video }
+          : await getCitizenStreamVideo(effectiveStreamUid);
         if (stream.configured && stream.video) {
           const ready = stream.video.readyToStream || stream.video.status?.state === "ready";
+          const streamState = String(stream.video.status?.state || "").toLowerCase();
+          if (streamState === "error") {
+            throw new Error(stream.video.status?.errorReasonText || "Cloudflare Stream processing failed");
+          }
+          streamStillProcessing = !ready;
           Object.assign(updates, {
             streamStatus: stream.video.status?.state || (ready ? "ready" : "processing"),
             streamReady: Boolean(ready),
@@ -67,8 +94,25 @@ export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
         }
       }
       await videoRef.set(updates, { merge: true });
-      await jobDoc.ref.set({ status: "done", completedAt: now(), updatedAt: now() }, { merge: true });
-      results.push({ jobId: jobDoc.id, ok: true });
+      if (streamStillProcessing) {
+        const nextAttempt = Number(job.attempts || 0) + 1;
+        const retryDelaySeconds = reconciliationRecoveryDelaySeconds(nextAttempt, job.videoId);
+        const taskRecoveryExhausted = nextAttempt > VIDEO_RECOVERY_TASK_ATTEMPTS;
+        await jobDoc.ref.set({
+          status: "queued",
+          nextRetryAt: new Date(Date.now() + (taskRecoveryExhausted ? 6 * 60 * 60 : retryDelaySeconds) * 1000),
+          completedAt: null,
+          recoveryMode: taskRecoveryExhausted ? "scheduler" : "cloud_task",
+          updatedAt: now(),
+        }, { merge: true });
+        if (!taskRecoveryExhausted) {
+          await scheduleVideoReconciliation({ videoId: job.videoId, delaySeconds: retryDelaySeconds, attempt: nextAttempt });
+        }
+        results.push({ jobId: jobDoc.id, ok: true, pending: true, recoveryMode: taskRecoveryExhausted ? "scheduler" : "cloud_task" });
+      } else {
+        await jobDoc.ref.set({ status: "done", nextRetryAt: null, completedAt: now(), updatedAt: now() }, { merge: true });
+        results.push({ jobId: jobDoc.id, ok: true, pending: false });
+      }
     } catch (error) {
       const attempts = Number(job.attempts || 0) + 1;
       await jobDoc.ref.set({
@@ -77,24 +121,36 @@ export async function processVideoReconciliationJobs({ db, limit = 5 } = {}) {
         nextRetryAt: attempts < 3 ? new Date(Date.now() + attempts * 60_000) : null,
         updatedAt: now(),
       }, { merge: true });
+      if (attempts < 3) {
+        await scheduleVideoReconciliation({
+          videoId: job.videoId,
+          delaySeconds: reconciliationRecoveryDelaySeconds(attempts, job.videoId),
+          attempt: attempts,
+        }).catch(() => {});
+      }
       results.push({ jobId: jobDoc.id, ok: false, error: error.message });
     }
   }
-  try {
-    const usage = await getCitizenStreamStorageUsage();
-    await db.collection("provider_reconciliation").doc("citizen_video_stream").set({
-      provider: "cloudflare_stream", enabled: Boolean(usage.configured), activeAssets: usage.configured ? Number(usage.videoCount || 0) : null,
-      storageMinutes: usage.configured ? Number(usage.totalStorageMinutes || 0) : null,
-      status: usage.configured ? "CONNECTED" : "DISABLED", lastReconciledAt: now(),
-    }, { merge: true });
-  } catch (error) {
-    await db.collection("provider_reconciliation").doc("citizen_video_stream").set({ status: "RECONCILIATION_FAILED", error: error.message, lastAttemptAt: now() }, { merge: true });
-  }
-  try {
-    const usage = await reconcileCitizenR2Usage({ maxPages: 100 });
-    await db.collection("provider_reconciliation").doc("citizen_video_r2").set({ provider: "cloudflare_r2", status: usage.complete ? "CONNECTED" : "PARTIAL", storageBytes: usage.storageBytes, objectCount: usage.objectCount, pages: usage.pages, lastReconciledAt: now() }, { merge: true });
-  } catch (error) {
-    await db.collection("provider_reconciliation").doc("citizen_video_r2").set({ status: "RECONCILIATION_FAILED", error: error.message, lastAttemptAt: now() }, { merge: true });
+  // Per-video Cloud Tasks must remain targeted and fast. Provider-wide usage
+  // reconciliation belongs to the bounded recovery scheduler, not every
+  // readiness check in a potentially large upload burst.
+  if (!videoId) {
+    try {
+      const usage = await getCitizenStreamStorageUsage();
+      await db.collection("provider_reconciliation").doc("citizen_video_stream").set({
+        provider: "cloudflare_stream", enabled: Boolean(usage.configured), activeAssets: usage.configured ? Number(usage.videoCount || 0) : null,
+        storageMinutes: usage.configured ? Number(usage.totalStorageMinutes || 0) : null,
+        status: usage.configured ? "CONNECTED" : "DISABLED", lastReconciledAt: now(),
+      }, { merge: true });
+    } catch (error) {
+      await db.collection("provider_reconciliation").doc("citizen_video_stream").set({ status: "RECONCILIATION_FAILED", error: error.message, lastAttemptAt: now() }, { merge: true });
+    }
+    try {
+      const usage = await reconcileCitizenR2Usage({ maxPages: 100 });
+      await db.collection("provider_reconciliation").doc("citizen_video_r2").set({ provider: "cloudflare_r2", status: usage.complete ? "CONNECTED" : "PARTIAL", storageBytes: usage.storageBytes, objectCount: usage.objectCount, pages: usage.pages, lastReconciledAt: now() }, { merge: true });
+    } catch (error) {
+      await db.collection("provider_reconciliation").doc("citizen_video_r2").set({ status: "RECONCILIATION_FAILED", error: error.message, lastAttemptAt: now() }, { merge: true });
+    }
   }
   return { processed: results.length, results };
 }

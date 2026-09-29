@@ -18,6 +18,14 @@
       ]
     },
     {
+      "collectionGroup": "live_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sessionStatus", "order": "ASCENDING" },
+        { "fieldPath": "nextReplayCheckAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "merchant_orders",
       "queryScope": "COLLECTION",
       "fields": [

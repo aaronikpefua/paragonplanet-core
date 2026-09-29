@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -35,6 +36,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -55,6 +57,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,6 +98,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -112,6 +116,7 @@ import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import org.webrtc.VideoSink
 import org.webrtc.audio.JavaAudioDeviceModule
 import org.webrtc.RendererCommon
 import kotlinx.coroutines.tasks.await
@@ -397,12 +402,14 @@ fun ParagonLiveScreen(
                             streamKey = existingResult.ingest.rtmpsStreamKey,
                             frontCamera = cameraLensFacing == CameraCharacteristics.LENS_FACING_FRONT,
                             microphoneEnabled = microphoneEnabled,
+                            sessionId = existingResult.session.id,
+                            mediaGeneration = existingResult.session.mediaGeneration,
                         )
                         return@LivePreviewPanel
                     }
                     isStartingLive = true
                     broadcastState = LiveBroadcastState.CREATING_SESSION
-                    statusMessage = "Creating Paragon Live session..."
+                    statusMessage = "Starting Paragon Live…"
                     scope.launch {
                         runCatching {
                             if (startRequestId.isBlank()) startRequestId = UUID.randomUUID().toString()
@@ -427,6 +434,8 @@ fun ParagonLiveScreen(
                                 streamKey = result.ingest.rtmpsStreamKey,
                                 frontCamera = cameraLensFacing == CameraCharacteristics.LENS_FACING_FRONT,
                                 microphoneEnabled = microphoneEnabled,
+                                sessionId = result.session.id,
+                                mediaGeneration = result.session.mediaGeneration,
                             )
                         }.onFailure { error ->
                             broadcastState = LiveBroadcastState.ERROR
@@ -472,7 +481,7 @@ fun ParagonLiveScreen(
                 val sessionId = startLiveResult?.session?.id.orEmpty()
                 if (broadcastState == LiveBroadcastState.LIVE && sessionId.isNotBlank() && !activeSessionMarked) {
                     activeSessionMarked = true
-                    statusMessage = "Cloudflare is confirming your Live stream..."
+                    statusMessage = "The Live gateway is confirming your stream..."
                     var markedLive = false
                     var providerConnected = false
                     var lastError: Throwable? = null
@@ -490,22 +499,22 @@ fun ParagonLiveScreen(
                                 markedLive = true
                                 statusMessage = "You are Live."
                             } else if (activeSession.providerLive) {
-                                statusMessage = "Provider connected. Preparing viewers... ${attempt + 1}/20"
+                                statusMessage = "Gateway connected. Preparing Live media... ${attempt + 1}/20"
                             } else {
-                                statusMessage = "Waiting for Cloudflare ingest confirmation... ${attempt + 1}/20"
+                                statusMessage = "Waiting for Live gateway confirmation... ${attempt + 1}/20"
                             }
                             if (!markedLive) delay(1_500)
                         }.onFailure { error ->
                             lastError = error
-                            statusMessage = "Waiting for Cloudflare Live confirmation... ${attempt + 1}/20"
+                            statusMessage = "Waiting for Live gateway confirmation... ${attempt + 1}/20"
                             delay(1_500)
                         }
                     }
                     if (!markedLive && !providerConnected) {
                         activeSessionMarked = false
-                        statusMessage = lastError?.message ?: "Cloudflare has not confirmed this Live input is active yet."
+                        statusMessage = lastError?.message ?: "The Live gateway has not confirmed playable media yet."
                     } else if (!markedLive) {
-                        statusMessage = "Provider connected. Preparing viewers..."
+                        statusMessage = "Gateway connected. Preparing Live media..."
                     }
                 }
             }
@@ -940,6 +949,8 @@ private fun LiveSessionsPanel(
                             NativeWhepPlaybackPlayer(
                                 whepUrl = selectedPlayback,
                                 authorizationToken = selectedSession.selectedPlaybackToken.orEmpty(),
+                                sessionId = selectedSession.id,
+                                mediaGeneration = selectedSession.mediaGeneration,
                             )
                         } else if (usesHls) {
                             LivePlaybackPlayer(playbackUrl = selectedPlayback)
@@ -1098,6 +1109,8 @@ private fun LiveRoomViewer(
             usesWhep -> NativeWhepPlaybackPlayer(
                 whepUrl = selectedPlayback,
                 authorizationToken = session.selectedPlaybackToken.orEmpty(),
+                sessionId = session.id,
+                mediaGeneration = session.mediaGeneration,
                 modifier = Modifier.fillMaxSize(),
                 onPlaybackUnavailable = {},
             )
@@ -1720,15 +1733,17 @@ private fun LiveAudienceActionBar() {
 private fun NativeWhepPlaybackPlayer(
     whepUrl: String,
     authorizationToken: String = "",
-    modifier: Modifier = Modifier
-        .fillMaxWidth()
-        .height(430.dp),
+    sessionId: String,
+    mediaGeneration: Long,
+    modifier: Modifier = Modifier.fillMaxWidth(),
     onPlaybackUnavailable: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val timingStartMs = remember(whepUrl) { System.currentTimeMillis() }
     var playerState by remember(whepUrl) { mutableStateOf("Connecting Live...") }
+    var receivedAspectRatio by remember(whepUrl) { mutableStateOf(16f / 9f) }
+    val latestAuthorizationToken by rememberUpdatedState(authorizationToken)
     val eglBase = remember(whepUrl) { EglBase.create() }
     var whepClient by remember(whepUrl) { mutableStateOf<NativeWhepClient?>(null) }
 
@@ -1740,27 +1755,43 @@ private fun NativeWhepPlaybackPlayer(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier.background(Color.Black, RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center,
     ) {
+        val availableRatio = if (maxHeight.value.isFinite() && maxHeight.value > 0f) {
+            maxWidth.value / maxHeight.value
+        } else {
+            0f
+        }
+        val stageModifier = if (availableRatio > 0f && receivedAspectRatio < availableRatio) {
+            Modifier.aspectRatio(receivedAspectRatio, matchHeightConstraintsFirst = true).fillMaxSize()
+        } else {
+            Modifier.fillMaxWidth().aspectRatio(receivedAspectRatio)
+        }
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = stageModifier,
             factory = { viewContext ->
                 SurfaceViewRenderer(viewContext).apply {
                     init(eglBase.eglBaseContext, null)
                     setEnableHardwareScaler(true)
-                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                     setMirror(false)
                     whepClient = NativeWhepClient(
                         context = context.applicationContext,
                         eglBase = eglBase,
                         renderer = this,
                         scope = scope,
+                        sessionId = sessionId,
+                        mediaGeneration = mediaGeneration,
+                        authorizationTokenProvider = { latestAuthorizationToken },
+                        onFrameDimensions = { width, height ->
+                            if (width > 0 && height > 0) receivedAspectRatio = width.toFloat() / height.toFloat()
+                        },
                         onState = { playerState = it },
                         onPlaybackUnavailable = onPlaybackUnavailable,
                         timingStartMs = timingStartMs,
-                    ).also { it.connect(whepUrl, authorizationToken) }
+                    ).also { it.connect(whepUrl) }
                 }
             },
         )
@@ -1775,6 +1806,10 @@ private class NativeWhepClient(
     private val eglBase: EglBase,
     private val renderer: SurfaceViewRenderer,
     private val scope: CoroutineScope,
+    private val sessionId: String,
+    private val mediaGeneration: Long,
+    private val authorizationTokenProvider: () -> String,
+    private val onFrameDimensions: (Int, Int) -> Unit,
     private val onState: (String) -> Unit,
     private val onPlaybackUnavailable: () -> Unit,
     private val timingStartMs: Long,
@@ -1784,10 +1819,29 @@ private class NativeWhepClient(
     private var peerConnection: PeerConnection? = null
     private var requestJob: Job? = null
     private var startupTimeoutJob: Job? = null
+    private var disconnectGraceJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var statsJob: Job? = null
     private var videoTrack: VideoTrack? = null
     private val firstTrackAttached = AtomicBoolean(false)
+    private val reconnectRequested = AtomicBoolean(false)
+    private var lastFrameWidth = 0
+    private var lastFrameHeight = 0
+    private var lastStatsAtMs = 0L
+    private var lastInboundBytes = 0L
+    private val dimensionAwareVideoSink = VideoSink { frame ->
+        val rotated = frame.rotation % 180 != 0
+        val width = if (rotated) frame.buffer.height else frame.buffer.width
+        val height = if (rotated) frame.buffer.width else frame.buffer.height
+        if (width != lastFrameWidth || height != lastFrameHeight) {
+            lastFrameWidth = width
+            lastFrameHeight = height
+            scope.launch(Dispatchers.Main.immediate) { onFrameDimensions(width, height) }
+        }
+        renderer.onFrame(frame)
+    }
 
-    fun connect(whepUrl: String, authorizationToken: String = "") {
+    fun connect(whepUrl: String) {
         if (whepUrl.isBlank()) {
             onState("Live playback unavailable.")
             return
@@ -1815,17 +1869,31 @@ private class NativeWhepClient(
         val observer = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+                logHealth("ice_state", state.name.lowercase())
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED,
                     PeerConnection.IceConnectionState.COMPLETED -> {
+                        disconnectGraceJob?.cancel()
+                        disconnectGraceJob = null
+                        reconnectRequested.set(false)
                         logLiveTiming("android-whep", "selected", "T6_peer_connected", timingStartMs)
                         onState("")
                     }
-                    PeerConnection.IceConnectionState.FAILED,
-                    PeerConnection.IceConnectionState.DISCONNECTED,
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        if (disconnectGraceJob == null) {
+                            disconnectGraceJob = scope.launch {
+                                delay(DISCONNECT_GRACE_MS)
+                                disconnectGraceJob = null
+                                if (!released.get() && peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.DISCONNECTED) {
+                                    requestReconnect(whepUrl, "ice_disconnected_timeout")
+                                }
+                            }
+                        }
+                    }
+                    PeerConnection.IceConnectionState.FAILED -> requestReconnect(whepUrl, "ice_failed")
                     PeerConnection.IceConnectionState.CLOSED -> {
-                        onState("Live playback unavailable.")
-                        onPlaybackUnavailable()
+                        disconnectGraceJob?.cancel()
+                        disconnectGraceJob = null
                     }
                     else -> onState("Connecting Live...")
                 }
@@ -1859,6 +1927,7 @@ private class NativeWhepClient(
             onState("Live playback unavailable.")
             return
         }
+        startStats(connection)
         connection.addTransceiver(
             MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
             RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY),
@@ -1873,7 +1942,7 @@ private class NativeWhepClient(
                 connection.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
                         requestJob = scope.launch {
-                            postOfferToWhep(whepUrl, authorizationToken, connection, description)
+                            postOfferToWhep(whepUrl, authorizationTokenProvider(), connection, description)
                         }
                     }
                 }, description)
@@ -1891,11 +1960,107 @@ private class NativeWhepClient(
         if (videoTrack === track) return
         firstTrackAttached.set(true)
         startupTimeoutJob?.cancel()
-        videoTrack?.removeSink(renderer)
+        videoTrack?.removeSink(dimensionAwareVideoSink)
         videoTrack = track
-        track.addSink(renderer)
+        track.addSink(dimensionAwareVideoSink)
         logLiveTiming("android-whep", "selected", "T5_video_track_attached", timingStartMs)
         onState("")
+    }
+
+    private fun requestReconnect(whepUrl: String, reason: String) {
+        if (released.get() || !reconnectRequested.compareAndSet(false, true)) return
+        disconnectGraceJob?.cancel()
+        disconnectGraceJob = null
+        logHealth("reconnect_required", reason)
+        onState("Reconnecting Live...")
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(RECONNECT_DELAY_MS)
+            if (released.get()) return@launch
+            statsJob?.cancel()
+            requestJob?.cancel()
+            startupTimeoutJob?.cancel()
+            videoTrack?.removeSink(dimensionAwareVideoSink)
+            videoTrack = null
+            peerConnection?.close()
+            peerConnection?.dispose()
+            peerConnection = null
+            factory?.dispose()
+            factory = null
+            firstTrackAttached.set(false)
+            lastStatsAtMs = 0L
+            lastInboundBytes = 0L
+            connect(whepUrl)
+        }
+    }
+
+    private fun startStats(connection: PeerConnection) {
+        statsJob?.cancel()
+        statsJob = scope.launch {
+            while (isActive && !released.get()) {
+                delay(STATS_INTERVAL_MS)
+                connection.getStats { report -> logStats(report.statsMap.values) }
+            }
+        }
+    }
+
+    private fun logStats(stats: Collection<org.webrtc.RTCStats>) {
+        var bytesReceived = 0L
+        var packetsLost = 0L
+        var jitter = 0.0
+        var framesReceived = 0L
+        var framesDecoded = 0L
+        var framesDropped = 0L
+        var fps = 0.0
+        var frameWidth = lastFrameWidth.toLong()
+        var frameHeight = lastFrameHeight.toLong()
+        var rtt = 0.0
+        var candidateType = ""
+        var protocol = ""
+        val candidates = stats.associateBy { it.id }
+        stats.forEach { stat ->
+            val values = stat.members
+            val mediaKind = values["kind"]?.toString() ?: values["mediaType"]?.toString()
+            if (stat.type == "inbound-rtp" && mediaKind == "video") {
+                bytesReceived += values.numberLong("bytesReceived")
+                packetsLost += values.numberLong("packetsLost")
+                jitter = maxOf(jitter, values.numberDouble("jitter"))
+                framesReceived += values.numberLong("framesReceived")
+                framesDecoded += values.numberLong("framesDecoded")
+                framesDropped += values.numberLong("framesDropped")
+                fps = maxOf(fps, values.numberDouble("framesPerSecond"))
+                frameWidth = maxOf(frameWidth, values.numberLong("frameWidth"))
+                frameHeight = maxOf(frameHeight, values.numberLong("frameHeight"))
+            }
+            if (stat.type == "candidate-pair" && values["state"]?.toString() == "succeeded" && values["nominated"] == true) {
+                rtt = maxOf(rtt, values.numberDouble("currentRoundTripTime"))
+                val local = candidates[values["localCandidateId"]?.toString()]
+                val remote = candidates[values["remoteCandidateId"]?.toString()]
+                candidateType = remote?.members?.get("candidateType")?.toString().orEmpty()
+                protocol = remote?.members?.get("protocol")?.toString()
+                    ?: local?.members?.get("protocol")?.toString().orEmpty()
+            }
+        }
+        val now = System.currentTimeMillis()
+        val elapsedSeconds = ((now - lastStatsAtMs).coerceAtLeast(1L)) / 1_000.0
+        val bitrate = if (lastStatsAtMs > 0L) (((bytesReceived - lastInboundBytes).coerceAtLeast(0L) * 8) / elapsedSeconds).toLong() else 0L
+        lastStatsAtMs = now
+        lastInboundBytes = bytesReceived
+        Log.i(
+            "ParagonLiveWebRTCHealth",
+            "sessionId=$sessionId mediaGeneration=$mediaGeneration timestamp=$now connectionState=${peerConnection?.connectionState()} " +
+                "iceConnectionState=${peerConnection?.iceConnectionState()} candidateType=$candidateType protocol=$protocol " +
+                "packetsLost=$packetsLost jitter=$jitter rtt=$rtt framesReceived=$framesReceived framesDecoded=$framesDecoded " +
+                "framesDropped=$framesDropped fps=$fps inboundBitrate=$bitrate frameWidth=$frameWidth frameHeight=$frameHeight"
+        )
+    }
+
+    private fun logHealth(event: String, reconnectReason: String = "") {
+        Log.i(
+            "ParagonLiveWebRTCHealth",
+            "sessionId=$sessionId mediaGeneration=$mediaGeneration timestamp=${System.currentTimeMillis()} event=$event " +
+                "connectionState=${peerConnection?.connectionState()} iceConnectionState=${peerConnection?.iceConnectionState()} reconnectReason=$reconnectReason"
+        )
     }
 
     private suspend fun postOfferToWhep(
@@ -1950,7 +2115,10 @@ private class NativeWhepClient(
         if (!released.compareAndSet(false, true)) return
         requestJob?.cancel()
         startupTimeoutJob?.cancel()
-        videoTrack?.removeSink(renderer)
+        disconnectGraceJob?.cancel()
+        reconnectJob?.cancel()
+        statsJob?.cancel()
+        videoTrack?.removeSink(dimensionAwareVideoSink)
         videoTrack = null
         peerConnection?.close()
         peerConnection?.dispose()
@@ -1960,7 +2128,13 @@ private class NativeWhepClient(
         renderer.release()
     }
 
+    private fun Map<String, Any>.numberLong(key: String): Long = (this[key] as? Number)?.toLong() ?: 0L
+    private fun Map<String, Any>.numberDouble(key: String): Double = (this[key] as? Number)?.toDouble() ?: 0.0
+
     companion object {
+        private const val DISCONNECT_GRACE_MS = 6_000L
+        private const val RECONNECT_DELAY_MS = 750L
+        private const val STATS_INTERVAL_MS = 3_000L
         private val initialized = AtomicBoolean(false)
 
         private fun initializeFactory(context: Context) {

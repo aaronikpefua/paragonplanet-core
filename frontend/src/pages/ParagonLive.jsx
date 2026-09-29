@@ -57,6 +57,8 @@ export default function ParagonLive() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const peerConnectionRef = useRef(null);
+  const publisherStatsTimerRef = useRef(null);
+  const publisherQualityRef = useRef({ profile: "high", poorSamples: 0, healthySamples: 0, changedAt: 0, previous: null });
   const whipResourceRef = useRef("");
   const heartbeatRef = useRef(null);
   const webLiveResultRef = useRef(null);
@@ -115,13 +117,13 @@ export default function ParagonLive() {
   }, []);
 
   useEffect(() => {
-    if (selectedSession || previewing) return undefined;
+    if (previewing) return undefined;
     loadLiveSessions(tab);
     const interval = window.setInterval(() => {
       loadLiveSessions(tab, { silent: true });
     }, LIVE_SESSION_POLL_MS[tab] || 15000);
     return () => window.clearInterval(interval);
-  }, [tab, currentUser, selectedSession, previewing]);
+  }, [tab, currentUser, previewing]);
 
   useEffect(() => {
     const sessionId = selectedSession?.id || selectedSession?.liveSessionId || "";
@@ -170,7 +172,7 @@ export default function ParagonLive() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: cameraFacingMode } }, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: cameraFacingMode }, width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 30, max: 30 } }, audio: true });
       stream.getTracks().forEach((track) => {
         track.addEventListener("ended", () => setStatus(`${track.kind === "video" ? "Camera" : "Microphone"} became unavailable.`), { once: true });
       });
@@ -196,13 +198,15 @@ export default function ParagonLive() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "Could not load Live sessions.");
-      const nextSessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      const nextSessions = sortLiveDirectorySessions(Array.isArray(payload.sessions) ? payload.sessions : [], nextTab);
       setSessions(nextSessions);
       setSelectedSession((current) => {
         if (!current) return current;
         const fresh = nextSessions.find((session) => (session.id || session.liveSessionId) === current.id);
-        if (fresh) return { ...fresh, id: fresh.id || fresh.liveSessionId };
-        return nextTab === "Live Now" ? { ...current, status: "ENDED" } : current;
+        if (fresh && isSelectableLiveSession(fresh)) return { ...fresh, id: fresh.id || fresh.liveSessionId };
+        if (nextTab !== "Live Now") return current;
+        const replacement = nextSessions.find(isActiveLiveSession);
+        return replacement ? { ...replacement, id: replacement.id || replacement.liveSessionId } : null;
       });
       setLiveProvider(payload.provider || null);
     })();
@@ -278,7 +282,7 @@ export default function ParagonLive() {
     if (!streamRef.current) return;
     const nextFacingMode = cameraFacingMode === "user" ? "environment" : "user";
     try {
-      const replacement = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: nextFacingMode } }, audio: false });
+      const replacement = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: nextFacingMode }, width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 30, max: 30 } }, audio: false });
       const nextTrack = replacement.getVideoTracks()[0];
       if (!nextTrack) throw new Error("Camera unavailable");
       const oldTrack = streamRef.current.getVideoTracks()[0];
@@ -320,7 +324,7 @@ async function startWebBroadcast() {
     if (!startRequestIdRef.current) startRequestIdRef.current = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     lastStartAttemptRef.current = now;
     setPublishing(true);
-    setStatus("Creating Paragon Live session...");
+    setStatus("Starting Paragon Live…");
     const startTiming = createLiveTiming("web-go-live", "pending");
     logLiveTiming(startTiming, "T0_start_pressed");
     try {
@@ -369,6 +373,27 @@ async function startWebBroadcast() {
         timing: startTiming,
         onPeerConnection: (peerConnection) => {
           peerConnectionRef.current = peerConnection;
+          publisherQualityRef.current = { profile: "high", poorSamples: 0, healthySamples: 0, changedAt: Date.now(), previous: null };
+          window.clearInterval(publisherStatsTimerRef.current);
+          publisherStatsTimerRef.current = window.setInterval(async () => {
+            const stats = await readWebRtcStats(peerConnection).catch(() => null);
+            if (!stats) return;
+            const sample = deriveWebRtcSample(stats, publisherQualityRef.current.previous);
+            publisherQualityRef.current.previous = stats;
+            const quality = classifyWebRtcQuality(sample, "outbound");
+            const capture = streamRef.current?.getVideoTracks?.()[0]?.getSettings?.() || {};
+            logLiveStats(normalizedSession.id || "web-publisher", {
+              mediaGeneration: Number(normalizedSession.mediaGeneration || 0),
+              direction: "outbound",
+              quality,
+              qualityProfile: publisherQualityRef.current.profile,
+              captureWidth: Number(capture.width || 0),
+              captureHeight: Number(capture.height || 0),
+              captureFps: Number(capture.frameRate || 0),
+              ...sample,
+            });
+            await adaptWebPublisher(peerConnection, quality, publisherQualityRef.current);
+          }, 3000);
         },
         onWhipResource: (resourceUrl) => {
           whipResourceRef.current = resourceUrl;
@@ -432,7 +457,7 @@ async function startWebBroadcast() {
         if (session?.viewerPlayable === true) return session;
         if (session?.providerLive === true) {
           setWebLiveResult((current) => current ? { ...current, session: { ...current.session, ...session } } : current);
-          setStatus(`Provider connected. Preparing viewers... ${attempt}/10`);
+          setStatus(`Gateway connected. Preparing Live media... ${attempt}/10`);
         }
       } catch (error) {
         lastError = error;
@@ -442,7 +467,7 @@ async function startWebBroadcast() {
       await new Promise((resolve) => window.setTimeout(resolve, attempt <= 5 ? 1500 : 3000));
     }
     if (lastSession?.providerLive === true) return lastSession;
-    throw lastError || new Error("Cloudflare has not confirmed this Live input is active yet.");
+    throw lastError || new Error("The Live gateway has not confirmed playable media yet.");
   }
 
   function setStatusFromProviderWait(message) {
@@ -451,8 +476,8 @@ async function startWebBroadcast() {
 
   function errorProviderWaitMessage(error, attempt) {
     const raw = String(error?.message || "");
-    if (raw.includes("Viewer playback is still preparing")) return `Provider connected. Preparing viewers... ${attempt}/10`;
-    return `Waiting for Cloudflare ingest confirmation... ${attempt}/10`;
+    if (raw.includes("Viewer playback is still preparing")) return `Gateway connected. Preparing Live media... ${attempt}/10`;
+    return `Waiting for Live gateway confirmation... ${attempt}/10`;
   }
 
   function startWebLiveHeartbeat(sessionId, token) {
@@ -467,7 +492,9 @@ async function startWebBroadcast() {
 
   async function stopWebBroadcast({ keepPreview = false } = {}) {
     window.clearInterval(heartbeatRef.current);
+    window.clearInterval(publisherStatsTimerRef.current);
     heartbeatRef.current = null;
+    publisherStatsTimerRef.current = null;
     const location = whipResourceRef.current;
     whipResourceRef.current = "";
     if (location) {
@@ -682,9 +709,14 @@ function LiveViewer({ session, onClose }) {
   const useWhep = selectedPlaybackTransport === "whep" && Boolean(selectedPlaybackUrl);
   const useHls = selectedPlaybackTransport === "hls" && Boolean(selectedPlaybackUrl);
   const playerRef = useRef(null);
+  const videoViewportRef = useRef(null);
   const hlsRef = useRef(null);
   const whepPeerRef = useRef(null);
   const whepResourceRef = useRef("");
+  const whepStatsTimerRef = useRef(null);
+  const whepReconnectTimerRef = useRef(null);
+  const whepFailureCountRef = useRef(0);
+  const lastInboundProgressRef = useRef({ bytes: 0, frames: 0, at: 0 });
   const startupTimerRef = useRef(null);
   const firstFrameTimerRef = useRef(null);
   const timingRef = useRef(null);
@@ -694,6 +726,34 @@ function LiveViewer({ session, onClose }) {
   const [viewerCount, setViewerCount] = useState(0);
   const [reactionNotice, setReactionNotice] = useState("");
   const [playbackControls, setPlaybackControls] = useState(false);
+  const [whepAttempt, setWhepAttempt] = useState(0);
+  const [receivedVideoSize, setReceivedVideoSize] = useState({ width: 16, height: 9 });
+  const [videoStageSize, setVideoStageSize] = useState({ width: "100%", height: "100%" });
+
+  useEffect(() => {
+    const viewport = videoViewportRef.current;
+    if (!viewport) return undefined;
+    const updateStageSize = () => {
+      const availableWidth = viewport.clientWidth;
+      const availableHeight = viewport.clientHeight;
+      if (!availableWidth || !availableHeight || !receivedVideoSize.width || !receivedVideoSize.height) return;
+      const sourceRatio = receivedVideoSize.width / receivedVideoSize.height;
+      const availableRatio = availableWidth / availableHeight;
+      const width = sourceRatio >= availableRatio ? availableWidth : availableHeight * sourceRatio;
+      const height = sourceRatio >= availableRatio ? availableWidth / sourceRatio : availableHeight;
+      setVideoStageSize({ width: `${Math.round(width)}px`, height: `${Math.round(height)}px` });
+    };
+    updateStageSize();
+    const observer = new ResizeObserver(updateStageSize);
+    observer.observe(viewport);
+    window.addEventListener("resize", updateStageSize);
+    window.addEventListener("orientationchange", updateStageSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateStageSize);
+      window.removeEventListener("orientationchange", updateStageSize);
+    };
+  }, [receivedVideoSize.height, receivedVideoSize.width]);
 
   function selectSupportMode(mode) {
     setSupportMode(mode);
@@ -738,6 +798,19 @@ function LiveViewer({ session, onClose }) {
     }, 1800);
     if (useWhep) {
       let cancelled = false;
+      const scheduleReconnect = (delayMs, reason) => {
+        if (cancelled || whepReconnectTimerRef.current) return;
+        const confirmedFailure = reason !== "ice_disconnected";
+        const boundedDelay = confirmedFailure
+          ? Math.max(delayMs, Math.min(8000, 750 * (2 ** whepFailureCountRef.current++)))
+          : delayMs;
+        setPlayerMessage("Reconnecting Live...");
+        logLiveTiming(timingRef.current, "whep_reconnect_scheduled", { reason, delayMs: boundedDelay });
+        whepReconnectTimerRef.current = window.setTimeout(() => {
+          whepReconnectTimerRef.current = null;
+          if (!cancelled) setWhepAttempt((attempt) => attempt + 1);
+        }, boundedDelay);
+      };
       connectWhepPlayback({
         video,
         whepUrl: selectedPlaybackUrl,
@@ -745,15 +818,47 @@ function LiveViewer({ session, onClose }) {
         onPeerConnection: (peerConnection) => {
           whepPeerRef.current = peerConnection;
           peerConnection.addEventListener("iceconnectionstatechange", () => {
+            const state = peerConnection.iceConnectionState;
             logLiveTiming(timingRef.current, "whep_ice_connection_state", {
-              state: peerConnection.iceConnectionState,
+              state,
             });
+            if (state === "disconnected") scheduleReconnect(6000, "ice_disconnected");
+            if (state === "failed") scheduleReconnect(750, "ice_failed");
           });
           peerConnection.addEventListener("connectionstatechange", () => {
+            const state = peerConnection.connectionState;
             logLiveTiming(timingRef.current, "whep_peer_connection_state", {
-              state: peerConnection.connectionState,
+              state,
             });
+            if (state === "connected") {
+              window.clearTimeout(whepReconnectTimerRef.current);
+              whepReconnectTimerRef.current = null;
+              whepFailureCountRef.current = 0;
+            }
+            if (state === "failed") scheduleReconnect(750, "peer_failed");
           });
+          lastInboundProgressRef.current = { bytes: 0, frames: 0, at: Date.now() };
+          let previousStats = null;
+          whepStatsTimerRef.current = window.setInterval(async () => {
+            const stats = await readWebRtcStats(peerConnection).catch(() => null);
+            if (!stats || cancelled) return;
+            const previous = lastInboundProgressRef.current;
+            const progressed = stats.bytesReceived > previous.bytes || stats.framesDecoded > previous.frames;
+            lastInboundProgressRef.current = {
+              bytes: stats.bytesReceived,
+              frames: stats.framesDecoded,
+              at: progressed ? Date.now() : previous.at,
+            };
+            const sample = deriveWebRtcSample(stats, previousStats);
+            previousStats = stats;
+            logLiveStats(session.id || session.liveSessionId || "", {
+              mediaGeneration: Number(session.mediaGeneration || 0),
+              direction: "inbound",
+              quality: classifyWebRtcQuality(sample, "inbound"),
+              ...sample,
+            });
+            if (document.visibilityState === "visible" && Date.now() - lastInboundProgressRef.current.at > 15000) scheduleReconnect(750, "inbound_media_stalled");
+          }, 3000);
         },
         onRemoteTrack: () => {
           logLiveTiming(timingRef.current, "T5_first_remote_track");
@@ -771,6 +876,10 @@ function LiveViewer({ session, onClose }) {
       }).catch((error) => {
         window.clearTimeout(startupTimerRef.current);
         window.clearTimeout(firstFrameTimerRef.current);
+        window.clearTimeout(whepReconnectTimerRef.current);
+        window.clearInterval(whepStatsTimerRef.current);
+        whepReconnectTimerRef.current = null;
+        whepStatsTimerRef.current = null;
         logLiveTiming(timingRef.current, "whep_startup_failed", {
           message: error?.message || "WHEP startup failed",
         hasHlsFallback: Boolean(fallbackPlaybackUrl),
@@ -793,6 +902,10 @@ function LiveViewer({ session, onClose }) {
       return () => {
         window.clearTimeout(startupTimerRef.current);
         window.clearTimeout(firstFrameTimerRef.current);
+        window.clearTimeout(whepReconnectTimerRef.current);
+        window.clearInterval(whepStatsTimerRef.current);
+        whepReconnectTimerRef.current = null;
+        whepStatsTimerRef.current = null;
         cancelled = true;
         const resource = whepResourceRef.current;
         whepResourceRef.current = "";
@@ -894,20 +1007,25 @@ function LiveViewer({ session, onClose }) {
       };
     }
     return undefined;
-  }, [selectedPlaybackTransport, selectedPlaybackUrl, lowLatencyPlaybackUrl, fallbackPlaybackUrl, session.id, useHls, useWhep]);
+  }, [selectedPlaybackTransport, selectedPlaybackUrl, lowLatencyPlaybackUrl, fallbackPlaybackUrl, session.id, useHls, useWhep, whepAttempt]);
 
   const playbackReady = Boolean(selectedPlaybackUrl && (useHls || useWhep));
   const ended = ["ENDED", "REPLAY_READY"].includes(String(session.status || "").toUpperCase());
   return (
     <section style={liveRoomStyle}>
-      {playbackReady ? (
-        <video
+      <div ref={videoViewportRef} className="paragon-live-video-viewport">
+        <div className="paragon-live-video-stage" style={videoStageSize}>
+          {playbackReady ? (
+            <video
           ref={playerRef}
           controls={ended || playbackControls}
           autoPlay
           playsInline
           preload="auto"
+          className="paragon-live-viewer-video"
           style={liveRoomVideoStyle}
+          onLoadedMetadata={(event) => updateReceivedVideoSize(event.currentTarget, setReceivedVideoSize)}
+          onResize={(event) => updateReceivedVideoSize(event.currentTarget, setReceivedVideoSize)}
           onLoadedData={() => {
             window.clearTimeout(startupTimerRef.current);
             if (playerRef.current?.readyState >= 2) setPlayerMessage("");
@@ -936,12 +1054,14 @@ function LiveViewer({ session, onClose }) {
             }, 1400);
           }}
           onEnded={() => setPlayerMessage("This Live has ended.")}
-        />
-      ) : (
-        <div style={{ ...liveRoomVideoStyle, display: "grid", placeItems: "center" }}>
-          <p style={noticeStyle}>Preparing Live stream...</p>
+            />
+          ) : (
+            <div className="paragon-live-viewer-placeholder">
+              <p style={noticeStyle}>Preparing Live stream...</p>
+            </div>
+          )}
         </div>
-      )}
+      </div>
       <div style={liveBrandOverlayStyle}>
         <span style={liveLogoDotStyle}>🌐</span>
         <strong>Paragon Planet</strong>
@@ -987,6 +1107,13 @@ function LiveViewer({ session, onClose }) {
       ) : null}
     </section>
   );
+}
+
+function updateReceivedVideoSize(video, setSize) {
+  const width = Number(video?.videoWidth || 0);
+  const height = Number(video?.videoHeight || 0);
+  if (!width || !height) return;
+  setSize((current) => current.width === width && current.height === height ? current : { width, height });
 }
 
 function LiveSupportRail({ onSelect }) {
@@ -1283,16 +1410,174 @@ async function connectWhepPlayback({ video, whepUrl, authorizationToken, onPeerC
   await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
 }
 
+async function readWebRtcStats(peerConnection) {
+  const report = await peerConnection.getStats();
+  const result = { sampledAt: Date.now(), bytesReceived: 0, bytesSent: 0, packetsReceived: 0, packetsLost: 0, remotePacketsLost: 0, packetsSent: 0, retransmittedPacketsSent: 0, jitter: 0, remoteJitter: 0, framesReceived: 0, framesDecoded: 0, framesDropped: 0, framesEncoded: 0, framesSent: 0, freezeCount: 0, totalFreezesDuration: 0, jitterBufferDelay: 0, jitterBufferEmittedCount: 0, nackCount: 0, pliCount: 0, firCount: 0, totalEncodeTime: 0, qualityLimitationReason: "", qualityLimitationDurations: {}, encoderImplementation: "", decoderImplementation: "", width: 0, height: 0, fps: 0, rtt: 0, availableOutgoingBitrate: 0, candidateType: "", localCandidateType: "", protocol: "", codec: "", iceState: peerConnection.iceConnectionState, connectionState: peerConnection.connectionState, signalingState: peerConnection.signalingState };
+  const codecs = new Map();
+  const candidates = new Map();
+  report.forEach((entry) => { if (entry.type === "codec") codecs.set(entry.id, entry.mimeType || entry.codec || ""); });
+  report.forEach((entry) => { if (entry.type === "local-candidate" || entry.type === "remote-candidate") candidates.set(entry.id, entry); });
+  report.forEach((entry) => {
+    if (entry.type === "inbound-rtp" && entry.kind === "video") {
+      result.bytesReceived += Number(entry.bytesReceived || 0);
+      result.packetsReceived += Number(entry.packetsReceived || 0);
+      result.packetsLost += Number(entry.packetsLost || 0);
+      result.jitter = Math.max(result.jitter, Number(entry.jitter || 0));
+      result.framesReceived += Number(entry.framesReceived || 0);
+      result.framesDecoded += Number(entry.framesDecoded || 0);
+      result.framesDropped += Number(entry.framesDropped || 0);
+      result.freezeCount += Number(entry.freezeCount || 0);
+      result.totalFreezesDuration += Number(entry.totalFreezesDuration || 0);
+      result.jitterBufferDelay += Number(entry.jitterBufferDelay || 0);
+      result.jitterBufferEmittedCount += Number(entry.jitterBufferEmittedCount || 0);
+      result.nackCount += Number(entry.nackCount || 0);
+      result.pliCount += Number(entry.pliCount || 0);
+      result.firCount += Number(entry.firCount || 0);
+      result.decoderImplementation = entry.decoderImplementation || result.decoderImplementation;
+      result.width = Number(entry.frameWidth || 0);
+      result.height = Number(entry.frameHeight || 0);
+      result.fps = Number(entry.framesPerSecond || 0);
+      result.codec = codecs.get(entry.codecId) || result.codec;
+    }
+    if (entry.type === "outbound-rtp" && entry.kind === "video") {
+      result.bytesSent += Number(entry.bytesSent || 0);
+      result.packetsSent += Number(entry.packetsSent || 0);
+      result.retransmittedPacketsSent += Number(entry.retransmittedPacketsSent || 0);
+      result.framesEncoded += Number(entry.framesEncoded || 0);
+      result.framesSent += Number(entry.framesSent || 0);
+      result.totalEncodeTime += Number(entry.totalEncodeTime || 0);
+      result.qualityLimitationReason = entry.qualityLimitationReason || result.qualityLimitationReason;
+      result.qualityLimitationDurations = entry.qualityLimitationDurations || result.qualityLimitationDurations;
+      result.nackCount += Number(entry.nackCount || 0);
+      result.pliCount += Number(entry.pliCount || 0);
+      result.firCount += Number(entry.firCount || 0);
+      result.encoderImplementation = entry.encoderImplementation || result.encoderImplementation;
+      result.width = Number(entry.frameWidth || result.width || 0);
+      result.height = Number(entry.frameHeight || result.height || 0);
+      result.fps = Number(entry.framesPerSecond || result.fps || 0);
+      result.codec = codecs.get(entry.codecId) || result.codec;
+    }
+    if (entry.type === "remote-inbound-rtp" && entry.kind === "video") {
+      result.remotePacketsLost += Number(entry.packetsLost || 0);
+      result.remoteJitter = Math.max(result.remoteJitter, Number(entry.jitter || 0));
+      result.rtt = Math.max(result.rtt, Number(entry.roundTripTime || 0));
+    }
+    if (entry.type === "candidate-pair" && entry.state === "succeeded" && entry.nominated) {
+      result.rtt = Number(entry.currentRoundTripTime || 0);
+      result.availableOutgoingBitrate = Number(entry.availableOutgoingBitrate || 0);
+      const local = candidates.get(entry.localCandidateId);
+      const remote = candidates.get(entry.remoteCandidateId);
+      result.localCandidateType = local?.candidateType || "";
+      result.candidateType = remote?.candidateType || "";
+      result.protocol = remote?.protocol || local?.protocol || "";
+    }
+  });
+  return result;
+}
+
+function deriveWebRtcSample(current, previous) {
+  if (!previous) return { ...current, bitrate: 0, packetLossPercent: 0, droppedFramePercent: 0 };
+  const seconds = Math.max(0.25, (current.sampledAt - previous.sampledAt) / 1000);
+  const bytes = Math.max(0, (current.bytesSent + current.bytesReceived) - (previous.bytesSent + previous.bytesReceived));
+  const received = Math.max(0, current.packetsReceived - previous.packetsReceived);
+  const lost = Math.max(0, current.packetsLost - previous.packetsLost);
+  const sent = Math.max(0, current.packetsSent - previous.packetsSent);
+  const remoteLost = Math.max(0, current.remotePacketsLost - previous.remotePacketsLost);
+  const decoded = Math.max(0, current.framesDecoded - previous.framesDecoded);
+  const dropped = Math.max(0, current.framesDropped - previous.framesDropped);
+  const inboundLossPercent = (lost / Math.max(1, received + lost)) * 100;
+  const outboundLossPercent = (remoteLost / Math.max(1, sent + remoteLost)) * 100;
+  return {
+    ...current,
+    bitrate: Math.round((bytes * 8) / seconds),
+    packetLossPercent: Number((sent > 0 ? outboundLossPercent : inboundLossPercent).toFixed(2)),
+    droppedFramePercent: Number(((dropped / Math.max(1, decoded + dropped)) * 100).toFixed(2)),
+    freezeEvents: Math.max(0, current.freezeCount - previous.freezeCount),
+    freezeDurationDelta: Math.max(0, current.totalFreezesDuration - previous.totalFreezesDuration),
+  };
+}
+
+function classifyWebRtcQuality(sample, direction) {
+  if (["failed", "closed"].includes(sample.connectionState) || sample.packetLossPercent >= 8 || sample.freezeEvents > 1 || sample.rtt >= 0.8) return "POOR";
+  if (sample.packetLossPercent >= 4 || sample.jitter >= 0.08 || sample.rtt >= 0.45 || (sample.fps > 0 && sample.fps < 18)) return "FAIR";
+  if (sample.packetLossPercent >= 1.5 || sample.jitter >= 0.04 || sample.rtt >= 0.25 || (sample.fps > 0 && sample.fps < 24) || (direction === "outbound" && sample.qualityLimitationReason === "bandwidth")) return "GOOD";
+  return sample.bitrate > 0 && sample.fps >= 27 ? "EXCELLENT" : "GOOD";
+}
+
+const WEB_QUALITY_PROFILES = {
+  high: { maxBitrate: 2_400_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
+  medium: { maxBitrate: 1_500_000, maxFramerate: 27, scaleResolutionDownBy: 1.333 },
+  low: { maxBitrate: 850_000, maxFramerate: 24, scaleResolutionDownBy: 1.5 },
+};
+
+async function adaptWebPublisher(peerConnection, quality, state) {
+  if (quality === "POOR" || quality === "FAIR") {
+    state.poorSamples += 1;
+    state.healthySamples = 0;
+  } else {
+    state.healthySamples += 1;
+    state.poorSamples = 0;
+  }
+  if (Date.now() - state.changedAt < 20_000) return;
+  const order = ["low", "medium", "high"];
+  let index = order.indexOf(state.profile);
+  if (state.poorSamples >= 3 && index > 0) index -= 1;
+  else if (state.healthySamples >= 6 && index < order.length - 1) index += 1;
+  else return;
+  const sender = peerConnection.getSenders().find((item) => item.track?.kind === "video");
+  if (!sender) return;
+  const profileName = order[index];
+  const profile = WEB_QUALITY_PROFILES[profileName];
+  const parameters = sender.getParameters();
+  parameters.degradationPreference = "balanced";
+  parameters.encodings = (parameters.encodings?.length ? parameters.encodings : [{}]).map((encoding) => ({ ...encoding, ...profile }));
+  await sender.setParameters(parameters).catch(() => undefined);
+  state.profile = profileName;
+  state.changedAt = Date.now();
+  state.poorSamples = 0;
+  state.healthySamples = 0;
+}
+
+function logLiveStats(sessionId, stats) {
+  if (!liveDebugEnabled()) return;
+  console.info("[ParagonLiveWebRTCStats]", JSON.stringify({ sessionId, at: Date.now(), ...stats }));
+  const user = auth.currentUser;
+  if (!user || !sessionId) return;
+  user.getIdToken().then((token) => fetch(`${API_URL}/api/live/sessions/${encodeURIComponent(sessionId)}/metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      mediaGeneration: Number(stats.mediaGeneration || 1), role: stats.direction === "outbound" ? "publisher" : "viewer",
+      packetLoss: Number(stats.packetLossPercent || stats.packetsLost || 0), jitter: Number(stats.jitter || 0), rtt: Number(stats.rtt || 0),
+      fps: Number(stats.fps || stats.captureFps || 0), bitrate: Number(stats.bitrate || 0), framesDropped: Number(stats.framesDropped || 0),
+      reconnectReason: String(stats.reconnectReason || ""), candidateType: String(stats.candidateType || ""), protocol: String(stats.protocol || ""),
+      width: Number(stats.width || stats.captureWidth || 0), height: Number(stats.height || stats.captureHeight || 0),
+    }),
+  })).catch(() => undefined);
+}
+
 async function publishStreamWithWhip({ stream, whipUrl, authorizationToken, onPeerConnection, onWhipResource, onConnected, timing }) {
   const peerConnection = new RTCPeerConnection();
-  stream.getTracks().forEach((track) => {
+  for (const track of stream.getTracks()) {
     const transceiver = peerConnection.addTransceiver(track, { direction: "sendonly", streams: [stream] });
     if (track.kind === "video" && typeof transceiver.setCodecPreferences === "function") {
       const codecs = RTCRtpSender.getCapabilities?.("video")?.codecs || [];
       const h264 = codecs.filter((codec) => String(codec.mimeType).toLowerCase() === "video/h264");
       if (h264.length) transceiver.setCodecPreferences([...h264, ...codecs.filter((codec) => !h264.includes(codec))]);
     }
-  });
+    if (track.kind === "video") {
+      track.contentHint = "motion";
+      const parameters = transceiver.sender.getParameters();
+      parameters.degradationPreference = "balanced";
+      parameters.encodings = (parameters.encodings?.length ? parameters.encodings : [{}]).map((encoding) => ({
+        ...encoding,
+        maxBitrate: WEB_QUALITY_PROFILES.high.maxBitrate,
+        maxFramerate: 30,
+        scaleResolutionDownBy: 1,
+      }));
+      await transceiver.sender.setParameters(parameters).catch(() => undefined);
+    }
+  }
   onPeerConnection?.(peerConnection);
   logLiveTiming(timing, "T2_peer_created", {
     videoTracks: stream.getVideoTracks().length,
@@ -1428,6 +1713,34 @@ function emptyMessageForTab(tab) {
   return "No replays available yet.";
 }
 
+function liveSessionTime(session) {
+  const value = session.actualStartedAt || session.wentLiveAt || session.projectionLiveAt || session.startedAt || session.createdAt;
+  if (typeof value === "number") return value;
+  if (value?.seconds) return Number(value.seconds) * 1000;
+  return Date.parse(value || "") || 0;
+}
+
+function isActiveLiveSession(session) {
+  const status = String(session.sessionStatus || session.publicStatus || session.status || "").toUpperCase();
+  return status === "LIVE" || status === "ACTIVE";
+}
+
+function isSelectableLiveSession(session) {
+  const status = String(session.sessionStatus || session.publicStatus || session.status || "").toUpperCase();
+  return isActiveLiveSession(session) || ["PREPARING", "VIEWER_PREPARING", "STARTING"].includes(status);
+}
+
+function sortLiveDirectorySessions(items, tab) {
+  if (tab !== "Live Now") return items;
+  return [...items].sort((a, b) => {
+    const stateOrder = Number(isActiveLiveSession(b)) - Number(isActiveLiveSession(a));
+    if (stateOrder) return stateOrder;
+    const timeOrder = liveSessionTime(b) - liveSessionTime(a);
+    if (timeOrder) return timeOrder;
+    return String(a.id || a.liveSessionId || "").localeCompare(String(b.id || b.liveSessionId || ""));
+  });
+}
+
 function formatSchedule(value, prefix = "Starts in") {
   if (!value) return "";
   const date = new Date(value);
@@ -1540,8 +1853,8 @@ const chatBubbleStyle = { margin: 0, padding: "8px 10px", borderRadius: 14, back
 const chatComposerStyle = { display: "flex", gap: 8, alignItems: "center" };
 const chatInputStyle = { ...inputStyle, flex: 1, minWidth: 0 };
 const liveViewerPageStyle = { position: "fixed", inset: 0, zIndex: 50, background: "#000", color: "#fff", overflow: "hidden" };
-const liveRoomStyle = { position: "relative", width: "100vw", height: "100vh", overflow: "hidden", borderRadius: 0, background: "#000", display: "grid", placeItems: "center", textAlign: "left" };
-const liveRoomVideoStyle = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", background: "#000" };
+const liveRoomStyle = { position: "relative", width: "100vw", height: "100dvh", minHeight: 0, overflow: "hidden", borderRadius: 0, background: "#000", display: "grid", placeItems: "center", textAlign: "left" };
+const liveRoomVideoStyle = { objectFit: "contain", objectPosition: "center", background: "#000" };
 const liveBrandOverlayStyle = { position: "absolute", top: 22, left: 18, display: "flex", alignItems: "center", gap: 10, fontSize: 22, textShadow: "0 2px 14px rgba(0,0,0,0.9)" };
 const liveLogoDotStyle = { display: "grid", placeItems: "center", width: 44, height: 44, borderRadius: 12, background: "rgba(0,0,0,0.35)" };
 const liveNavOverlayStyle = { position: "absolute", top: 118, right: 28, display: "flex", gap: 24, alignItems: "center", textShadow: "0 2px 14px rgba(0,0,0,0.9)" };

@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL, appCheckFetch } from "../lib/supportActions";
 import { logPerf } from "../lib/perf";
 
-const RECENT_UPLOAD_STORAGE_KEY = "paragon_recent_home_upload";
-const RECENT_UPLOAD_TTL_MS = 10 * 60 * 1000;
 const PAGE_SIZE = 20;
 
 export default function useVideos() {
@@ -39,13 +37,7 @@ export default function useVideos() {
       const normalizedItems = items
         .map((video) => normalizeFeedVideo(video))
         .filter((video) => isHomeFeedVideo(video));
-      const recentUpload = reset ? readRecentHomeUpload() : null;
-      const withRecentUpload =
-        recentUpload && isHomeFeedVideo(recentUpload)
-          ? [normalizeFeedVideo(recentUpload, true), ...normalizedItems]
-          : normalizedItems;
-
-      setVideos((current) => (reset ? mergeVideos([], withRecentUpload) : mergeVideos(current, withRecentUpload)));
+      setVideos((current) => (reset ? mergeVideos([], normalizedItems) : mergeVideos(current, normalizedItems)));
       const next = Array.isArray(payload) ? "" : payload.nextCursor || "";
       const more = Array.isArray(payload) ? false : Boolean(payload.hasMore && next);
       cursorRef.current = next;
@@ -89,12 +81,11 @@ export default function useVideos() {
   return videos;
 }
 
-function normalizeFeedVideo(video, recentUploadOptimistic = false) {
+function normalizeFeedVideo(video) {
   const displayName = resolveVideoDisplayName(video);
   return {
     ...video,
     id: video.id || video.videoId,
-    recentUploadOptimistic,
     displayName,
     performerName: displayName,
     creatorName: displayName,
@@ -107,24 +98,6 @@ function normalizeFeedVideo(video, recentUploadOptimistic = false) {
       video.thumbnail ||
       "",
   };
-}
-
-function readRecentHomeUpload() {
-  try {
-    const raw = window.sessionStorage?.getItem(RECENT_UPLOAD_STORAGE_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw);
-    const createdAtMs = Number(parsed?.createdAtMs || 0);
-    if (!parsed?.id || !createdAtMs || Date.now() - createdAtMs > RECENT_UPLOAD_TTL_MS) {
-      window.sessionStorage?.removeItem(RECENT_UPLOAD_STORAGE_KEY);
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
 }
 
 function resolveVideoDisplayName(video = {}) {

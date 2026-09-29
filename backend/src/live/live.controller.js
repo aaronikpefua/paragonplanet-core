@@ -1,10 +1,14 @@
 import admin from "../config/firebase.js";
-import { createStreamLiveInput, getStreamLiveInputState, lowLatencyHlsUrl, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
+import { createStreamLiveInput, getStreamLiveInputPlayback, lowLatencyHlsUrl, streamLiveProviderStatus } from "./cloudflareStreamLive.js";
 import { liveRoomRealtimeStatus, publishLiveRoomEvent, signLiveRoomToken } from "./liveRoomRealtime.js";
 import { measureAsync, measureFirestore } from "../observability/perf.js";
 import { canonicalStateOf, LIVE_MEDIA_PROFILE, LIVE_RECORDING_MODE } from "./liveLifecycle.js";
 import { reconcileLiveSession, refreshLiveProjection, requestLiveEnd, transitionLiveSession } from "./liveReconciler.js";
 import { gatewayPublisherDescriptor, gatewayViewerDescriptor, mediaGatewayStatus } from "./liveMediaGateway.js";
+import { chooseIngestGateway, gatewayAssignment } from "./liveGatewayRegistry.js";
+import { grantLiveEntitlement } from "./liveTariff.js";
+import { RECORDING_STATES } from "./liveRecordingAutoscale.js";
+import { ensureGatewayReady } from "./liveGatewayRuntime.js";
 
 const HOST_ROLES = new Set(["CITIZEN", "AMBASSADOR", "PROMOTER", "BACKER", "SUPERBOSS", "SUPERNAL", "MERCHANT"]);
 const LIVE_STATUSES = new Set(["ACTIVE", "LIVE", "STARTING"]);
@@ -115,6 +119,7 @@ export function serializeLiveSession(session) {
     sessionStatus: canonicalStateOf(session),
     mediaProfile: session.mediaProfile || LIVE_MEDIA_PROFILE,
     recordingMode: session.recordingMode || LIVE_RECORDING_MODE,
+    recordingStatus: session.recordingStatus || RECORDING_STATES.CAPACITY_PENDING,
     mediaGeneration: Math.max(1, Number(session.mediaGeneration || 1)),
     stateRevision: Number(session.stateRevision || 0),
     providerEventRevision: Number(session.providerEventRevision || 0),
@@ -177,6 +182,11 @@ function livePlaybackPolicy(session, now = Date.now()) {
     const playback = gatewayViewerDescriptor({
       sessionId: session.liveSessionId || session.id,
       mediaGeneration: session.mediaGeneration,
+      gateway: {
+        gatewayId: session.viewerGatewayId || session.gatewayId || session.originGatewayId,
+        region: session.gatewayRegion,
+        publicUrl: session.viewerGatewayPublicUrl || session.gatewayPublicUrl,
+      },
     });
     return {
       primaryPlayback: "whep",
@@ -423,6 +433,14 @@ export async function listLiveSessions(req, res) {
     }
     sessions.sort((a, b) => {
       if (tab.includes("upcoming")) return timestampMillis(a.scheduledAt) - timestampMillis(b.scheduledAt);
+      if (tab.includes("live now") || (!tab.includes("replay") && !tab.includes("following"))) {
+        const activeOrder = Number(b.publicStatus === "LIVE") - Number(a.publicStatus === "LIVE");
+        if (activeOrder) return activeOrder;
+        const newestOrder = timestampMillis(b.actualStartedAt || b.wentLiveAt || b.projectionLiveAt || b.startedAt || b.createdAt)
+          - timestampMillis(a.actualStartedAt || a.wentLiveAt || a.projectionLiveAt || a.startedAt || a.createdAt);
+        if (newestOrder) return newestOrder;
+        return String(a.id).localeCompare(String(b.id));
+      }
       return Number(b.rankingKey || 0) - Number(a.rankingKey || 0);
     });
     return res.json({ sessions: sessions.map(serializeLiveSession), provider: streamLiveProviderStatus() });
@@ -437,10 +455,39 @@ export async function getLiveSession(req, res) {
     if (!sessionId) return res.status(400).json({ error: "Live session id is required" });
     const snap = await liveCollection(admin.firestore()).doc(sessionId).get();
     if (!snap.exists) return res.status(404).json({ error: "Live session not found" });
-    return res.json({ session: serializeLiveSession({ id: snap.id, ...snap.data() }) });
+    const session = { id: snap.id, ...snap.data() };
+    const viewerUid = await optionalAuthUid(req);
+    if (viewerUid && canonicalStateOf(session) === "LIVE") {
+      await grantLiveEntitlement({ userId: viewerUid, sessionId, mediaGeneration: session.mediaGeneration, role: "viewer" }).catch((error) => {
+        if (error.code === "LIVE_SETTLEMENT_DISABLED") throw error;
+      });
+    }
+    return res.json({ session: serializeLiveSession(session) });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not load Live session" });
   }
+}
+
+export async function postLiveClientMetrics(req, res) {
+  try {
+    const userId = assertAuth(req);
+    const sessionId = String(req.params.sessionId || "").trim();
+    const generation = Math.max(1, Number(req.body?.mediaGeneration || 1));
+    const snap = await liveCollection(admin.firestore()).doc(sessionId).get();
+    if (!snap.exists || Number(snap.data()?.mediaGeneration || 1) !== generation) return res.status(409).json({ error: "Live media generation changed" });
+    const metric = req.body || {};
+    await admin.firestore().collection("live_media_metrics").add({
+      sessionId, mediaGeneration: generation, gatewayId: snap.data()?.gatewayId || "",
+      userId, role: String(metric.role || "viewer") === "publisher" ? "publisher" : "viewer",
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      packetLoss: Math.max(0, Number(metric.packetLoss || metric.packetsLost || 0)), jitter: Math.max(0, Number(metric.jitter || 0)),
+      rtt: Math.max(0, Number(metric.rtt || 0)), fps: Math.max(0, Number(metric.fps || 0)), bitrate: Math.max(0, Number(metric.bitrate || 0)),
+      framesDropped: Math.max(0, Number(metric.framesDropped || 0)), reconnectReason: String(metric.reconnectReason || "").slice(0, 80),
+      candidateType: String(metric.candidateType || "").slice(0, 20), protocol: String(metric.protocol || "").slice(0, 20),
+      width: Math.max(0, Number(metric.width || 0)), height: Math.max(0, Number(metric.height || 0)),
+    });
+    return res.status(202).json({ accepted: true });
+  } catch (error) { return res.status(error.status || 500).json({ error: error.message || "Could not persist Live metrics" }); }
 }
 
 export async function startLiveSession(req, res) {
@@ -499,6 +546,8 @@ export async function startLiveSession(req, res) {
       });
     }
 
+    if (gatewayStatus.configured) await ensureGatewayReady();
+    const selectedGateway = gatewayStatus.configured ? await chooseIngestGateway({ region: String(req.body?.preferredRegion || "") }) : null;
     sessionRef = liveCollection(db).doc();
     const sessionId = sessionRef.id;
 
@@ -526,8 +575,10 @@ export async function startLiveSession(req, res) {
       replayStatus: "NONE",
       mediaProfile: LIVE_MEDIA_PROFILE,
       recordingMode: LIVE_RECORDING_MODE,
+      recordingStatus: RECORDING_STATES.CAPACITY_PENDING,
       ingestTransport: String(publisherTransport || "").toLowerCase() === "whip" ? "WHIP" : String(publisherTransport || "").toLowerCase() === "srt" ? "SRT" : "RTMPS",
       playbackTransport: gatewayStatus.configured ? "whep" : "hls",
+      ...(selectedGateway ? gatewayAssignment(selectedGateway) : {}),
       mediaGeneration: 1,
       stateRevision: 1,
       providerEventRevision: 0,
@@ -546,7 +597,7 @@ export async function startLiveSession(req, res) {
     const normalizedPublisherTransport = requestedTransport === "srt" ? "srt" : requestedTransport === "whip" ? "whip" : "rtmps";
     const playbackTransport = gatewayStatus.configured ? "whep" : "hls";
     const gatewayPublisher = gatewayStatus.configured
-      ? gatewayPublisherDescriptor({ sessionId, mediaGeneration: 1, publisherTransport: normalizedPublisherTransport, subject: hostUid })
+      ? gatewayPublisherDescriptor({ sessionId, mediaGeneration: 1, publisherTransport: normalizedPublisherTransport, subject: hostUid, gateway: selectedGateway })
       : null;
     await measureFirestore({
       domain: "live",
@@ -583,11 +634,20 @@ export async function startLiveSession(req, res) {
       providerState: "WAITING_FOR_INGEST",
       lifecycleLive: false,
       mediaStatus: "WAITING_FOR_INGEST",
-      providerLiveReason: "waiting_for_cloudflare_ingest",
+      providerLiveReason: gatewayPublisher ? "waiting_for_gateway_ingest" : "waiting_for_cloudflare_ingest",
       provider: provider.provider,
       providerConfigured: true,
       startedAt: admin.firestore.Timestamp.now(),
     }, { expectedRevision: 1 }));
+
+    await db.collection("live_recording_jobs").doc(`${sessionId}_1`).set({
+      sessionId, mediaGeneration: 1, originGatewayId: selectedGateway?.gatewayId || "",
+      sourcePath: gatewayPublisher?.ingestPath || "", cloudflareLiveInputId: liveInput.liveInputId,
+      state: RECORDING_STATES.CAPACITY_PENDING, recordingStatus: RECORDING_STATES.CAPACITY_PENDING,
+      retryCount: 0, recordingNodeId: "", leaseExpiresAt: null,
+      cloudflareDestination: { provider: "cloudflare-stream", liveInputId: liveInput.liveInputId },
+      createdAt: nowField(), updatedAt: nowField(),
+    }, { merge: false });
 
     const snap = await sessionRef.get();
     return res.status(201).json({
@@ -605,7 +665,7 @@ export async function startLiveSession(req, res) {
         failedAt: admin.firestore.Timestamp.now(),
       }).catch(() => undefined);
     }
-    return res.status(error.status || 500).json({ error: error.message || "Could not start Paragon Live" });
+    return res.status(error.status || 500).json({ error: error.message || "Could not start Paragon Live", ...(error.code ? { code: error.code } : {}) });
   }
 }
 
@@ -617,6 +677,13 @@ function liveIngestResponse(session, { hostUid = session.hostUid } = {}) {
       mediaGeneration: session.mediaGeneration,
       publisherTransport: session.publisherTransport,
       subject: hostUid,
+      gateway: {
+        gatewayId: session.gatewayId || session.originGatewayId,
+        region: session.gatewayRegion,
+        publicUrl: session.gatewayPublicUrl,
+        rtmpsUrl: session.gatewayRtmpsUrl,
+        srtUrl: session.gatewaySrtUrl,
+      },
     });
   }
   return {
@@ -650,53 +717,6 @@ export async function markLiveSessionActive(req, res) {
     if (!LIVE_STATUSES.has(session.status)) return res.status(409).json({ error: "Live session is not starting." });
     const reconciled = await reconcileLiveSession(ref.id, { reason: "host-active-check" });
     return res.json({ session: serializeLiveSession(reconciled.session || session) });
-    /* legacy provider mutation path retained temporarily below for migration reference */
-    const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
-    if (!providerState.providerLive) {
-      await ref.set({
-        sessionStatus: "STARTING",
-        ingestStatus: providerState.providerState || "WAITING_FOR_INGEST",
-        providerStatus: providerState.providerStatus || "",
-        providerState: providerState.providerState || "",
-        providerLive: Boolean(providerState.providerLive),
-        viewerPlayable: Boolean(providerState.viewerPlayable),
-        activeVideoUid: providerState.activeVideoUid || "",
-        lifecycleStatus: providerState.lifecycleStatus || "",
-        lifecycleLive: Boolean(providerState.lifecycleLive),
-        mediaStatus: providerState.providerState || "WAITING_FOR_INGEST",
-        providerLiveReason: providerState.reason || "cloudflare_not_live_yet",
-        lastProviderCheckedAt: nowField(),
-        ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}),
-        updatedAt: nowField(),
-      }, { merge: true });
-      return res.status(409).json({
-        error: "Cloudflare has not confirmed this Live input is active yet.",
-        providerStatus: providerState.providerStatus || "",
-        providerState: providerState.providerState || "",
-        providerLive: Boolean(providerState.providerLive),
-        viewerPlayable: Boolean(providerState.viewerPlayable),
-        lifecycleStatus: providerState.lifecycleStatus || "",
-        lifecycleLive: Boolean(providerState.lifecycleLive),
-        activeVideoUid: providerState.activeVideoUid || "",
-        providerLiveReason: providerState.reason || "cloudflare_not_live_yet",
-      });
-    }
-    const playbackPatch = providerState.playback ? {
-      playbackId: providerState.playback.playbackId || session.playbackId || "",
-      playbackUrl: providerState.playback.playbackHlsUrl || providerState.playback.playbackDashUrl || session.playbackUrl || "",
-      hlsPlaybackUrl: providerState.playback.playbackHlsUrl || session.hlsPlaybackUrl || "",
-      playbackHlsUrl: providerState.playback.playbackHlsUrl || session.playbackHlsUrl || "",
-      playbackDashUrl: providerState.playback.playbackDashUrl || session.playbackDashUrl || "",
-    } : {};
-    await measureFirestore({
-      domain: "live",
-      operation: "mark-live-active-set",
-      collection: "live_sessions",
-      operationType: "set",
-      requestId: req.requestId,
-    }, () => ref.set({ ...playbackPatch, status: "ACTIVE", sessionStatus: "ACTIVE", ingestStatus: providerState.providerState || "INGEST_CONNECTED", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: true, viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : "PREPARING", replayStatus: "NONE", providerLiveReason: providerState.reason || (providerState.viewerPlayable ? "viewer_ready" : "preparing_viewers"), wentLiveAt: nowField(), actualStartedAt: nowField(), lastHeartbeatAt: nowField(), lastProviderActivityAt: nowField(), lastProviderCheckedAt: nowField(), updatedAt: nowField() }, { merge: true }));
-    const updated = await ref.get();
-    return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not mark Live active" });
   }
@@ -721,25 +741,6 @@ export async function heartbeatLiveSession(req, res) {
     await ref.set({ lastHostHeartbeatAt: nowField(), lastHeartbeatAt: nowField(), updatedAt: nowField() }, { merge: true });
     const reconciled = await reconcileLiveSession(ref.id, { reason: "host-heartbeat" });
     return res.json({ session: serializeLiveSession(reconciled.session || session) });
-    /* legacy provider mutation path retained temporarily below for migration reference */
-    const providerState = await getStreamLiveInputState(session.liveInputId, firstText(session.playbackOrigin, originFromUrl(session.whepPlaybackUrl), originFromUrl(session.playbackWebRtcUrl), originFromUrl(session.playbackHlsUrl)));
-    const nextStatus = providerState.providerLive ? "ACTIVE" : "STARTING";
-    const playbackPatch = providerState.playback ? {
-      playbackId: providerState.playback.playbackId || session.playbackId || "",
-      playbackUrl: providerState.playback.playbackHlsUrl || providerState.playback.playbackDashUrl || session.playbackUrl || "",
-      hlsPlaybackUrl: providerState.playback.playbackHlsUrl || session.hlsPlaybackUrl || "",
-      playbackHlsUrl: providerState.playback.playbackHlsUrl || session.playbackHlsUrl || "",
-      playbackDashUrl: providerState.playback.playbackDashUrl || session.playbackDashUrl || "",
-    } : {};
-    await measureFirestore({
-      domain: "live",
-      operation: "heartbeat-live-set",
-      collection: "live_sessions",
-      operationType: "set",
-      requestId: req.requestId,
-    }, () => ref.set({ ...playbackPatch, status: nextStatus, sessionStatus: nextStatus, ingestStatus: providerState.providerState || "WAITING_FOR_INGEST", providerStatus: providerState.providerStatus || "", providerState: providerState.providerState || "", providerLive: Boolean(providerState.providerLive), viewerPlayable: Boolean(providerState.viewerPlayable), activeVideoUid: providerState.activeVideoUid || "", lifecycleStatus: providerState.lifecycleStatus || "", lifecycleLive: Boolean(providerState.lifecycleLive), mediaStatus: providerState.viewerPlayable ? "VIEWER_READY" : providerState.providerLive ? "PREPARING" : providerState.providerState || "WAITING_FOR_INGEST", replayStatus: "NONE", providerLiveReason: providerState.reason || "cloudflare_not_live_yet", lastHeartbeatAt: nowField(), lastProviderCheckedAt: nowField(), ...(providerState.providerLive ? { lastProviderActivityAt: nowField() } : {}), updatedAt: nowField() }, { merge: true }));
-    const updated = await ref.get();
-    return res.json({ session: serializeLiveSession({ id: updated.id, ...updated.data() }) });
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message || "Could not heartbeat Live" });
   }
@@ -822,6 +823,9 @@ export async function endLiveSession(req, res) {
     const session = snap.data() || {};
     if (session.hostUid !== hostUid) return res.status(403).json({ error: "Only the host can end this Live." });
     const ended = await requestLiveEnd(ref.id);
+    await db.collection("live_recording_jobs").doc(`${ref.id}_${Math.max(1, Number(session.mediaGeneration || 1))}`).set({
+      state: "STOP_REQUESTED", stopRequestedAt: nowField(), updatedAt: nowField(),
+    }, { merge: true });
     await publishLiveRoomEvent(ref.id, {
       type: "room.closed",
       sessionId: ref.id,

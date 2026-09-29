@@ -5,6 +5,7 @@ import {
   completeVideoUpload,
   getCitizenVideoTerms,
   getVideoUploadPolicy,
+  getVideoReadiness,
   requestUploadUrl,
   listVideos,
   triggerCompression,
@@ -36,6 +37,7 @@ router.post("/trigger-compression", authenticate, triggerCompression);
 router.post("/trigger-merchant-product-compression", authenticate, triggerCompression);
 router.post("/process-queue", authenticate, processVideoQueue);
 router.get("/list", listVideos);
+router.get("/:videoId/status", authenticate, getVideoReadiness);
 router.post("/analytics/views", authenticate, startVideoView);
 router.post("/analytics/views/:sessionId/heartbeat", authenticate, heartbeatVideoView);
 router.get("/admin/settings", authenticate, requireAdmin, getCitizenVideoAdminSettings);

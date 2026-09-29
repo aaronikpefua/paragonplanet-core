@@ -29,12 +29,14 @@ class ParagonLiveBroadcaster(
     private var previewStarted = false
     private var encodersPrepared = false
     private var videoEnabled = true
-    private val videoWidth = 640
-    private val videoHeight = 480
+    private val videoWidth = 1280
+    private val videoHeight = 720
     private val videoFps = 30
-    private val videoBitrate = 1_200_000
+    private val videoBitrate = 2_200_000
     private val videoRotation = 90
     private val keyFrameIntervalSeconds = 2
+    private var liveSessionId = ""
+    private var liveMediaGeneration = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var lastEncodedFrameAtMs = 0L
     private var lastSentFrameAtMs = 0L
@@ -57,7 +59,7 @@ class ParagonLiveBroadcaster(
             Log.i(
                 TAG,
                 "mediaHealth streaming=${camera.isStreaming} preview=${camera.isOnPreview} " +
-                    "videoEnabled=$videoEnabled sentFrames=$sent encodedAgeMs=${now - lastEncodedFrameAtMs} " +
+                    "sessionId=$liveSessionId mediaGeneration=$liveMediaGeneration videoEnabled=$videoEnabled sentFrames=$sent encodedAgeMs=${now - lastEncodedFrameAtMs} " +
                     "sentAgeMs=${now - lastSentFrameAtMs} recoveryAttempt=$recoveryAttempts"
             )
             if ((encodedStalled || sentStalled) && !recoveryInProgress) recoverVideoPipeline()
@@ -141,7 +143,14 @@ class ParagonLiveBroadcaster(
         previewStarted = false
     }
 
-    fun startPublishing(rtmpsUrl: String, streamKey: String, frontCamera: Boolean, microphoneEnabled: Boolean) {
+    fun startPublishing(
+        rtmpsUrl: String,
+        streamKey: String,
+        frontCamera: Boolean,
+        microphoneEnabled: Boolean,
+        sessionId: String = "",
+        mediaGeneration: Long = 0L,
+    ) {
         if (rtmpsUrl.isBlank() || streamKey.isBlank()) {
             onStateChanged(LiveBroadcastState.ERROR, "Live ingest is missing.")
             return
@@ -151,6 +160,8 @@ class ParagonLiveBroadcaster(
             return
         }
         publishUrl = buildPublishUrl(rtmpsUrl, streamKey)
+        liveSessionId = sessionId
+        liveMediaGeneration = mediaGeneration
         reconnectAttempts = 0
         onStateChanged(LiveBroadcastState.PREPARING_ENCODER, "Preparing camera and microphone.")
         if (!prepareEncoders()) return
@@ -253,7 +264,15 @@ class ParagonLiveBroadcaster(
         }
     }
 
-    override fun onNewBitrate(bitrate: Long) = Unit
+    override fun onNewBitrate(bitrate: Long) {
+        Log.i(
+            TAG,
+            "publisherStats width=$videoWidth height=$videoHeight fps=$videoFps " +
+                "targetBitrate=$videoBitrate actualBitrate=$bitrate codec=H264-baseline level=3.1 " +
+                "gopSeconds=$keyFrameIntervalSeconds encoderImplementation=rootencoder-mediacodec " +
+                "sessionId=$liveSessionId mediaGeneration=$liveMediaGeneration sentFrames=${camera.streamClient.getSentVideoFrames()}"
+        )
+    }
 
     override fun onDisconnect() {
         stopFrameHealth()

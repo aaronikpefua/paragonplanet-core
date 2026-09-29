@@ -57,7 +57,7 @@ pathDefaults:
 paths:
   "~^ingest_[A-Za-z0-9_-]+_[1-9][0-9]*$":
     runOnAvailable: /opt/paragon/restream.sh
-    runOnAvailableRestart: false
+    runOnAvailableRestart: true
     runOnUnavailable: /opt/paragon/gateway-event.sh media-offline
   "~^live_[A-Za-z0-9_-]+_[1-9][0-9]*$":
     runOnAvailable: /opt/paragon/gateway-event.sh media-online

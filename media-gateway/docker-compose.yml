@@ -2,6 +2,7 @@ services:
   mediamtx:
     build: .
     image: paragon-live-gateway:1.0.0
+    init: true
     restart: unless-stopped
     env_file: /etc/paragon-live-gateway/runtime.env
     network_mode: host
@@ -12,6 +13,22 @@ services:
       options:
         max-size: 20m
         max-file: "5"
+
+  metrics-agent:
+    build: .
+    image: paragon-live-gateway:1.0.0
+    init: true
+    restart: unless-stopped
+    env_file: /etc/paragon-live-gateway/runtime.env
+    network_mode: host
+    entrypoint: ["/opt/paragon/gateway-metrics.sh"]
+    depends_on:
+      - mediamtx
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   coturn:
     image: coturn/coturn:4.6.3-r3
