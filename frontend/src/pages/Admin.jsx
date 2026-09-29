@@ -8,6 +8,7 @@ import AdminManagementPanel from "./admin/AdminManagementPanel";
 import MarketplaceAdmin from "./admin/MarketplaceAdmin";
 import ParagonLiveSettings from "./admin/ParagonLiveSettings";
 import CitizenVideoAdmin from "./admin/CitizenVideoAdmin";
+import ParagonTvAdmin from "./admin/ParagonTvAdmin";
 import SharedInbox from "./SharedInbox";
 
 export default function Admin() {
@@ -103,6 +104,7 @@ export default function Admin() {
 
         <button onClick={() => setActiveTab("live-settings")} style={tabStyle(activeTab === "live-settings")}>Paragon Live Settings</button>
         <button onClick={() => setActiveTab("citizen-video")} style={tabStyle(activeTab === "citizen-video")}>Citizen Video</button>
+        <button onClick={() => setActiveTab("paragon-tv")} style={tabStyle(activeTab === "paragon-tv")}>Paragon TV</button>
 
       </div>
 
@@ -365,6 +367,7 @@ export default function Admin() {
 
       {activeTab === "live-settings" && <ParagonLiveSettings />}
       {activeTab === "citizen-video" && <CitizenVideoAdmin />}
+      {activeTab === "paragon-tv" && <ParagonTvAdmin />}
 
     </div>
   );
